@@ -19,7 +19,7 @@ Several of the cooler features in this app are built on the work of others:
 - FT8/FT4 support = https://github.com/e04/ft8ts
 - CW 2 decoder = https://github.com/dawsonjon/HamFist
 - CW 3 decoder = https://github.com/e04/web-deep-cw-decoder
-- HamNoise denser = https://github.com/e04/HamNoise
+- HamNoise denoiser = https://github.com/e04/HamNoise
 - RNnoise denoiser = https://jmvalin.ca/demo/rnnoise/
 
 ## Features
@@ -38,10 +38,7 @@ Several of the cooler features in this app are built on the work of others:
 - **Two noise reducers for received audio**: "RNN" (RNNoise) and "HamNoise"
   (a neural denoiser trained on HF signals).
 
-PiRO is made for Icom radios with a USB CI-V port and USB audio codec. The
-CI-V address table covers the IC-7300, IC-7610, IC-9700, IC-705, IC-7100,
-IC-7850 and IC-7851, and `IC-7300` is the default model. Spectrum-scope
-behaviour varies by radio and firmware (see `docs/civ-notes.md`).
+PiRO is made for the Icom IC-7300, but may support other radio brands and models in the future.
 
 ## Contents
 
