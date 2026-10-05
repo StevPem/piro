@@ -5,8 +5,7 @@ Node.js service on a Raspberry Pi (or any small Linux machine) that is
 connected to the radio by USB. You open it in a browser on your network and
 get frequency, mode and PTT control, RX/TX audio, a spectrum scope and
 waterfall, and a set of digital-mode and noise-reduction tools. It needs no
-Hamlib, no separate audio server and no extra apps. It is loosely modelled on
-RigPi, and installs to a phone's home screen as a PWA.
+Hamlib, no separate audio server and no extra apps.
 
 Written by VK3TR. Licensed AGPL-3.0-only (see
 [Licence](#licence)).
