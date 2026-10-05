@@ -11,6 +11,9 @@ RigPi, and installs to a phone's home screen as a PWA.
 Written by VK3TR. Licensed AGPL-3.0-only (see
 [Licence](#licence)).
 
+## Warning!
+Note that it DOES NOT include any form of login or password - so don't present it to the big bad internet or some rando will start controlling your rig! Always put it behind a firewall or VPN.
+
 ## Credits
 Several of the cooler features in this app are built on the work of others:
 - FreeDV support = https://github.com/freedv/rade_c
