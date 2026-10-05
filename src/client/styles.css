@@ -1,0 +1,1059 @@
+:root {
+  --bg: #14171a;
+  --panel: #1b1f23;
+  --panel-border: #2a2f35;
+  --panel-raised: #21262b;
+  --text: #e8e6df;
+  --text-muted: #838a90;
+  --led-green: #4fd67a;
+  --led-amber: #e8a33d;
+  --led-red: #e05252;
+
+  --font-body: system-ui, -apple-system, "Segoe UI", Roboto, sans-serif;
+  --font-mono: ui-monospace, "SF Mono", "Cascadia Mono", Consolas, monospace;
+}
+
+* {
+  box-sizing: border-box;
+}
+
+html,
+body {
+  height: 100%;
+}
+
+body {
+  margin: 0;
+  background: var(--bg);
+  color: var(--text);
+  font-family: var(--font-body);
+  display: flex;
+  align-items: flex-start;
+  justify-content: center;
+  padding: 24px;
+}
+
+button {
+  font-family: inherit;
+  color: inherit;
+}
+
+.panel {
+  width: 100%;
+  max-width: 640px;
+  background: var(--panel);
+  border: 1px solid var(--panel-border);
+  border-radius: 6px;
+}
+
+.panel__header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 18px 20px;
+  border-bottom: 1px solid var(--panel-border);
+}
+
+.panel__title-group {
+  display: flex;
+  align-items: baseline;
+  gap: 8px;
+}
+
+.panel__title {
+  font-size: 1.05rem;
+  font-weight: 600;
+  letter-spacing: 0.01em;
+  margin: 0;
+}
+
+/* App version number, shown to the right of the title. Sized/colored to
+   match the "Connected"/"Connecting..." led text (#led-text, inheriting
+   .led's font-size/color) per explicit request — see docs/ui-notes.md. */
+.app-version {
+  font-family: var(--font-mono);
+  font-size: 0.8rem;
+  color: var(--text-muted);
+}
+
+.app-version:empty {
+  display: none;
+}
+
+/* "Source" link — shown only when the server has SOURCE_CODE_URL
+   configured (see app.js's 'connected' handler); same sizing/color as
+   .app-version next to it, since both are small metadata next to the
+   title rather than primary UI. */
+.app-source-link {
+  font-family: var(--font-mono);
+  font-size: 0.8rem;
+  color: var(--text-muted);
+  text-decoration: underline;
+}
+
+.app-source-link:hover,
+.app-source-link:focus-visible {
+  color: inherit;
+}
+
+.panel__body {
+  padding: 20px;
+  display: flex;
+  flex-direction: column;
+  gap: 20px;
+}
+
+.led {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  font-family: var(--font-mono);
+  font-size: 0.8rem;
+  color: var(--text-muted);
+}
+
+.led__dot {
+  width: 9px;
+  height: 9px;
+  border-radius: 50%;
+  background: var(--led-amber);
+  box-shadow: 0 0 6px 1px var(--led-amber);
+  transition: background 200ms ease, box-shadow 200ms ease;
+}
+
+.led__dot[data-state="connected"] {
+  background: var(--led-green);
+  box-shadow: 0 0 6px 1px var(--led-green);
+}
+
+.led__dot[data-state="disconnected"] {
+  background: var(--led-red);
+  box-shadow: 0 0 6px 1px var(--led-red);
+}
+
+/* --- Frequency --- */
+
+.freq__row {
+  display: flex;
+  align-items: stretch;
+  gap: 8px;
+  flex-wrap: wrap;
+}
+
+.freq__display-wrap {
+  flex: 1 1 200px;
+  min-width: 0;
+}
+
+.freq__step {
+  flex: 0 0 auto;
+  align-self: center;
+  white-space: nowrap;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  line-height: 1.3;
+}
+
+.freq__step-value {
+  font-family: var(--font-mono);
+  font-size: 0.95rem;
+}
+
+.freq__step-unit {
+  font-size: 0.7rem;
+  color: var(--text-muted);
+}
+
+.freq__display {
+  width: 100%;
+  background: var(--panel-raised);
+  border: 1px solid var(--panel-border);
+  border-radius: 4px;
+  padding: 14px 16px;
+  font-family: var(--font-mono);
+  font-size: 1.6rem;
+  letter-spacing: 0.02em;
+  text-align: center;
+  cursor: pointer;
+}
+
+.freq__display:hover {
+  border-color: var(--led-green);
+}
+
+.freq__input {
+  width: 100%;
+  background: var(--panel-raised);
+  border: 1px solid var(--led-green);
+  border-radius: 4px;
+  padding: 14px 16px;
+  font-family: var(--font-mono);
+  font-size: 1.6rem;
+  letter-spacing: 0.02em;
+  text-align: center;
+  color: var(--text);
+}
+
+.freq__input:focus {
+  outline: 2px solid var(--led-green);
+  outline-offset: 1px;
+}
+
+/* --- Row groups (band / mode) --- */
+
+.row-group {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+.row-group__label {
+  font-size: 0.8rem;
+  color: var(--text-muted);
+}
+
+.chips {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+}
+
+/* Deterministic N-per-row layouts (rather than relying on flex-wrap's
+   natural reflow, which varies with container width) — used for bands
+   (2 rows of 5) and modes (2 rows of 4: LSB/USB/AM/FM, then
+   CW/RTTY/FT8/FreeDV — see MODE_CHIPS in app.js). */
+.chips--grid-5 {
+  display: grid;
+  grid-template-columns: repeat(5, 1fr);
+}
+
+.chips--grid-4 {
+  display: grid;
+  grid-template-columns: repeat(4, 1fr);
+}
+
+.chip {
+  background: var(--panel-raised);
+  border: 1px solid var(--panel-border);
+  border-radius: 4px;
+  padding: 8px 12px;
+  font-size: 0.85rem;
+  cursor: pointer;
+}
+
+.chip:hover:not(:disabled) {
+  border-color: var(--text-muted);
+}
+
+.chip:disabled {
+  opacity: 0.45;
+  cursor: not-allowed;
+}
+
+.chip--active {
+  border-color: var(--led-green);
+  color: var(--led-green);
+  background: color-mix(in srgb, var(--led-green) 12%, var(--panel-raised));
+}
+
+/* Same display-vs-[hidden] specificity fix as .cw-ticker-section/.cw-paddle
+   below — any container this project gives an explicit `display` needs its
+   own [hidden] override, since author rules beat the UA default at equal
+   specificity. `.chips` is used for the always-visible band/mode rows. */
+.chips[hidden] {
+  display: none;
+}
+
+/* Scope span control — a single horizontal slider standing in for what
+   used to be eight separate .chip buttons (one per SPAN_OPTIONS entry —
+   see app.js). The slider's own value is an index into SPAN_OPTIONS, not
+   a Hz value, so its track always has 8 evenly-spaced stops regardless of
+   how unevenly the actual span values (2.5/5/10/25/50/100/250/500 kHz)
+   are spaced numerically. */
+.scope-span {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 4px 2px;
+}
+
+.scope-span__label {
+  font-size: 0.8rem;
+  color: var(--text-muted);
+  white-space: nowrap;
+}
+
+.scope-span__slider {
+  flex: 1;
+  min-width: 0;
+  accent-color: var(--led-green);
+  cursor: pointer;
+}
+
+.scope-span__slider:disabled {
+  cursor: not-allowed;
+  opacity: 0.45;
+}
+
+.scope-span__value {
+  font-family: var(--font-mono);
+  font-size: 0.75rem;
+  color: var(--text-muted);
+  min-width: 4.5em;
+  text-align: right;
+}
+
+/* Same display-vs-[hidden] specificity fix as .chips[hidden] above — the
+   scope span row is hidden while FT8 is active (see setFt8UiVisible() in
+   app.js), and .scope-span's own explicit `display: flex` needs the same
+   override for [hidden] to actually take effect. */
+.scope-span[hidden] {
+  display: none;
+}
+
+.cw-ticker-section {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 6px 8px;
+  background: var(--panel-raised);
+  border: 1px solid var(--panel-border);
+  border-radius: 4px;
+}
+
+/* Same class-of-bug fix already needed once for .cw-paddle: an explicit
+   `display` on the element itself has equal CSS specificity to the
+   browser's own `[hidden] { display: none }` rule, and author styles
+   win that tie over user-agent styles regardless of source order — so
+   this override is applied from the start here, not discovered the
+   hard way a second time. */
+.cw-ticker-section[hidden] {
+  display: none;
+}
+
+.cw-ticker__label {
+  font-family: var(--font-mono);
+  font-size: 0.75rem;
+  font-weight: 600;
+  color: var(--led-green);
+  flex: 0 0 auto;
+}
+
+.cw-ticker {
+  flex: 1;
+  min-width: 0; /* allow the flex item to shrink below its content's intrinsic width */
+  overflow-x: hidden;
+  white-space: nowrap;
+}
+
+.cw-ticker__text {
+  font-family: var(--font-mono);
+  font-size: 0.95rem;
+  letter-spacing: 0.04em;
+  color: var(--text);
+}
+
+/* --- FT8 panel --- */
+/* Shown in place of the PTT section while FT8 mode is active — see
+   setFt8UiVisible() in app.js. Band-activity table + a manual composer
+   (Phase 2: manual TX only, no auto-sequencing — see docs/ui-notes.md). */
+.ft8-panel {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  padding: 8px;
+  background: var(--panel-raised);
+  border: 1px solid var(--panel-border);
+  border-radius: 4px;
+}
+
+.ft8-panel[hidden] {
+  display: none;
+}
+
+.ft8-panel__header {
+  display: flex;
+  justify-content: space-between;
+  align-items: baseline;
+}
+
+.ft8-panel__slot {
+  font-family: var(--font-mono);
+  font-size: 0.75rem;
+  color: var(--text-muted);
+}
+
+.ft8-table {
+  display: flex;
+  flex-direction: column;
+  max-height: 220px;
+  overflow-y: auto;
+  border: 1px solid var(--panel-border);
+  border-radius: 4px;
+  background: #08080f;
+  font-family: var(--font-mono);
+  font-size: 0.8rem;
+}
+
+.ft8-table__head,
+.ft8-table__row {
+  display: grid;
+  grid-template-columns: 4.5em 3em 5em 3.5em 1fr;
+  gap: 6px;
+  padding: 4px 8px;
+}
+
+.ft8-table__head {
+  color: var(--text-muted);
+  font-size: 0.7rem;
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+  border-bottom: 1px solid var(--panel-border);
+  position: sticky;
+  top: 0;
+  background: #08080f;
+}
+
+.ft8-table__row {
+  cursor: pointer;
+  border-bottom: 1px solid color-mix(in srgb, var(--panel-border) 60%, transparent);
+}
+
+.ft8-table__row:hover {
+  background: var(--panel-raised);
+}
+
+/* Marks the rows belonging to the in-progress guided QSO (see
+   src/client/ft8-qso.js and app.js's ft8-decodes listener) — same amber
+   used for the QSO frequency marker on the audio spectrum (scope.js's
+   _drawQsoMarker()), so the two visibly read as "the same thing" rather
+   than two unrelated highlights. Left border rather than a full
+   background tint so the SNR-strongest-first row order/existing hover
+   state both stay perfectly legible underneath it. */
+.ft8-table__row--qso {
+  border-left: 3px solid var(--led-amber);
+  background: color-mix(in srgb, var(--led-amber) 10%, transparent);
+}
+
+.ft8-table__row--qso:hover {
+  background: color-mix(in srgb, var(--led-amber) 18%, var(--panel-raised));
+}
+
+.ft8-table__row > span {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.ft8-table__empty {
+  padding: 10px 8px;
+  color: var(--text-muted);
+  font-size: 0.8rem;
+  text-align: center;
+}
+
+.ft8-composer {
+  display: flex;
+  gap: 8px;
+}
+
+.ft8-composer__input {
+  flex: 1;
+  background: var(--panel-raised);
+  border: 1px solid var(--panel-border);
+  border-radius: 4px;
+  padding: 8px 10px;
+  font-family: var(--font-mono);
+  font-size: 0.9rem;
+  color: var(--text);
+  text-transform: uppercase;
+}
+
+.ft8-composer__input:focus {
+  outline: none;
+  border-color: var(--led-amber);
+}
+
+.ft8-composer__send:disabled {
+  opacity: 0.45;
+  cursor: not-allowed;
+}
+
+.ft8-status {
+  margin: 0;
+  font-size: 0.75rem;
+  color: var(--text-muted);
+}
+
+.ft8-status[hidden] {
+  display: none;
+}
+
+/* Guided-QSO progress line (see src/client/ft8-qso.js) — distinct from
+   .ft8-status above, which reports TX scheduling/send lifecycle; this
+   reports "what the guided sequence is doing/waiting for", which can be
+   true even when nothing is currently being sent. */
+.ft8-qso-status {
+  margin: 0;
+  font-size: 0.75rem;
+  color: var(--led-amber);
+}
+
+.ft8-qso-status[hidden] {
+  display: none;
+}
+
+/* FreeDV Reporter status message — see index.html's
+   #freedv-report-section comment. Reuses .ft8-composer's row/input/send
+   layout (flex row, .panel-raised input, .chip send button) rather than
+   inventing a second visual language for "a text field plus a send
+   button" in the same app. */
+.freedv-report {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+.freedv-report[hidden] {
+  display: none;
+}
+
+.freedv-report__row {
+  display: flex;
+  gap: 8px;
+}
+
+.freedv-report__input {
+  background: var(--panel-raised);
+  border: 1px solid var(--panel-border);
+  border-radius: 4px;
+  padding: 8px 10px;
+  font-family: var(--font-mono);
+  font-size: 0.9rem;
+  color: var(--text);
+}
+
+.freedv-report__message {
+  flex: 1;
+}
+
+.freedv-report__input:focus {
+  outline: none;
+  border-color: var(--led-amber);
+}
+
+.freedv-report__status {
+  margin: 0;
+  font-size: 0.75rem;
+  color: var(--text-muted);
+}
+
+.freedv-report__status[hidden] {
+  display: none;
+}
+
+.controls-row {
+  display: flex;
+  gap: 8px;
+  flex-wrap: wrap;
+  align-items: center;
+}
+
+.tx-power {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  margin-left: auto; /* push to the right-hand side of the row */
+}
+
+.tx-power__label {
+  font-size: 0.8rem;
+  color: var(--text-muted);
+}
+
+.tx-power__select {
+  background: var(--panel-raised);
+  border: 1px solid var(--panel-border);
+  border-radius: 4px;
+  padding: 7px 8px;
+  font-family: inherit;
+  font-size: 0.85rem;
+  color: var(--text);
+}
+
+.tx-power__select:focus {
+  outline: 2px solid var(--led-green);
+  outline-offset: 1px;
+}
+
+/* --- Rig controls: bands/modes on the left, function selects on the right --- */
+
+.rig-controls {
+  display: flex;
+  gap: 16px;
+  align-items: flex-start;
+  flex-wrap: wrap;
+}
+
+.rig-controls__left {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+  flex: 1 1 260px;
+  min-width: 0;
+}
+
+.rig-controls__right {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  flex: 0 0 auto;
+}
+
+.function-control__button {
+  min-width: 110px;
+  text-align: center;
+}
+
+/* "PSK Spot" checkbox — a <label> reusing .chip/.function-control__button's
+   sizing so it lines up with the other function controls in this column,
+   but overriding their centered-button text alignment for a left-aligned
+   checkbox + label layout instead. */
+.psk-spot-toggle {
+  display: flex;
+  align-items: center;
+  justify-content: flex-start;
+  gap: 8px;
+  text-align: left;
+}
+
+.psk-spot-toggle[hidden] {
+  display: none;
+}
+
+.psk-spot-toggle input[type='checkbox'] {
+  cursor: pointer;
+  margin: 0;
+}
+
+/* "FreeDV spot" checkbox — same left-aligned checkbox + label idea as
+   .psk-spot-toggle above. Now placed in the function-control column
+   (directly below the Filter button) rather than inline in .controls-row,
+   so it reuses .function-control__button's fixed min-width/centering
+   override the same way .psk-spot-toggle does. */
+.freedv-spot-toggle {
+  display: flex;
+  align-items: center;
+  justify-content: flex-start;
+  gap: 8px;
+  text-align: left;
+}
+
+.freedv-spot-toggle[hidden] {
+  display: none;
+}
+
+.freedv-spot-toggle input[type='checkbox'] {
+  cursor: pointer;
+  margin: 0;
+}
+
+/* "RNN" button — a plain 5-state click-to-cycle button, styled identically
+   to the FUNCTION_CONTROLS chips (Filter, etc. — .function-control__button
+   already covers layout/appearance) rather than the checkbox + label idea
+   .psk-spot-toggle/.freedv-spot-toggle use, since RNN is no
+   longer a boolean. Placed inline within the main function-control column
+   (right after the NR button — see app.js's DOM wiring), in the exact slot
+   the old Noise Blanker ("NB") button used to occupy. Unlike the
+   spot/log toggles, this one is never hidden — noise reduction is relevant
+   in any RX mode, same as NB was — so there's no [hidden] rule here. The
+   .rnnoise-toggle class is kept only as a hook for anything that still
+   wants to target this specific button; no rules of its own are needed. */
+
+/* "HamNoise" button — placed immediately after .rnnoise-toggle in the DOM
+   (beneath the RNN button, per that feature's request) and styled
+   identically via the same .chip.function-control__button classes; a
+   boolean on/off toggle rather than a 5-state cycle, but visually it's
+   the same chip. Like .rnnoise-toggle, .hamnoise-toggle is kept only as
+   a hook — no rules of its own are needed. */
+
+/* RTTY "Reverse" checkbox — lives inside .cw-ticker-section itself
+   (alongside the "RTTY" label and the ticker text) rather than the
+   function-control column .psk-spot-toggle/.freedv-spot-toggle use, since
+   it's specific to the RTTY ticker rather than a general function control.
+   `flex: 0 0 auto` keeps it from being squeezed by .cw-ticker's `flex: 1`
+   the same way .cw-ticker__label already is. */
+.cw-ticker__reverse-toggle {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  flex: 0 0 auto;
+  font-size: 0.75rem;
+  padding: 2px 6px;
+}
+
+.cw-ticker__reverse-toggle[hidden] {
+  display: none;
+}
+
+.cw-ticker__reverse-toggle input[type='checkbox'] {
+  cursor: pointer;
+  margin: 0;
+}
+
+/* --- Spectrum scope --- */
+
+.scope {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+
+.scope__range {
+  display: flex;
+  justify-content: space-between;
+  align-items: baseline;
+  font-family: var(--font-mono);
+  font-size: 0.75rem;
+  color: var(--text-muted);
+}
+
+.scope__body {
+  display: flex;
+  flex-direction: row;
+  gap: 8px;
+  align-items: stretch;
+}
+
+.scope__canvases {
+  position: relative;
+  border: 1px solid var(--panel-border);
+  border-radius: 4px;
+  overflow: hidden;
+  background: #08080f;
+  flex: 1;
+  min-width: 0; /* let the canvases shrink below their intrinsic width in the flex row */
+}
+
+.rx-gain {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 4px;
+  padding: 4px 2px;
+}
+
+.rx-gain__slider {
+  /* Vertical range input, reversed so max is at the top and min at the
+     bottom. `writing-mode: vertical-lr` is the modern, broadly-supported
+     way to orient a range input vertically; `direction: rtl` flips its
+     value-progression direction — confirmed needed after this project's
+     first attempt (writing-mode alone, no direction override) rendered
+     with min at the top on real testing. The `-webkit-appearance`
+     fallback below covers older WebKit/Blink that still look at it
+     specifically, and inherits the same top=max orientation by default
+     without needing an equivalent reversal (it's a different, older
+     mechanism, not affected by `direction`). */
+  writing-mode: vertical-lr;
+  direction: rtl;
+  -webkit-appearance: slider-vertical;
+  appearance: slider-vertical;
+  width: 20px;
+  height: 200px; /* matches .scope__trace + .scope__waterfall combined height */
+  accent-color: var(--led-green);
+  cursor: pointer;
+}
+
+.rx-gain__label {
+  /* A static "RX Gain" label, not a live numeric readout (per explicit
+     request — see app.js's own doc comment on the RX gain slider).
+     Deliberately left horizontal rather than rotated to match the
+     vertical slider above it: this control column (.rx-gain) has no
+     fixed width of its own — only the slider does (20px) — so plain
+     horizontal text just widens the column slightly to fit, with
+     .scope__canvases' own `flex: 1` absorbing the difference, no layout
+     risk the way a `transform: rotate()` guess would carry with no real
+     browser available here to check it renders right-side-up. */
+  font-family: var(--font-mono);
+  font-size: 0.7rem;
+  color: var(--text-muted);
+  white-space: nowrap;
+}
+
+.scope__trace {
+  display: block;
+  width: 100%;
+  height: 70px;
+  cursor: pointer;
+}
+
+.scope__waterfall {
+  display: block;
+  width: 100%;
+  height: 130px;
+  border-top: 1px solid var(--panel-border);
+  cursor: pointer;
+}
+
+.scope__placeholder {
+  position: absolute;
+  inset: 0;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  text-align: center;
+  padding: 16px;
+  background: color-mix(in srgb, var(--panel) 88%, transparent);
+  color: var(--text-muted);
+  font-size: 0.8rem;
+}
+
+.scope__placeholder[hidden] {
+  display: none;
+}
+
+.scope__axis {
+  position: relative;
+  height: 16px;
+  margin-top: 2px;
+}
+
+.scope__tick {
+  position: absolute;
+  top: 0;
+  transform: translateX(-50%);
+  font-family: var(--font-mono);
+  font-size: 0.65rem;
+  color: var(--text-muted);
+  white-space: nowrap;
+}
+
+/* Follows the pointer over the RF scope (see ScopeDisplay's hover
+   listeners in scope.js), previewing the exact frequency a click at
+   that position would select. `position: fixed` positions it directly
+   from clientX/clientY, independent of `.scope__canvases`'
+   `overflow: hidden`. `pointer-events: none` so it never itself becomes
+   the click/mousemove target. */
+.scope__hover-tip {
+  position: fixed;
+  z-index: 1000;
+  pointer-events: none;
+  font-family: var(--font-mono);
+  font-size: 0.7rem;
+  color: var(--led-green);
+  background: var(--panel-raised);
+  border: 1px solid var(--panel-border);
+  border-radius: 4px;
+  padding: 2px 6px;
+  white-space: nowrap;
+}
+
+.scope__hover-tip[hidden] {
+  display: none;
+}
+
+/* --- S-meter --- */
+
+.meter {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+
+.meter__readout {
+  display: flex;
+  justify-content: space-between;
+  font-family: var(--font-mono);
+  font-size: 0.8rem;
+  color: var(--text-muted);
+}
+
+/* Segmented bargraph: one box per S_METER_LEVELS entry (S1-S9, then
+   +20/+40/+60 in a distinct color — conventionally the "very strong
+   signal" zone on a physical S-meter). Segments up to the current
+   reading light up, matching classic bargraph S-meter behavior. */
+.meter__bar {
+  display: flex;
+  gap: 2px;
+}
+
+.meter__segment {
+  flex: 1;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 4px;
+}
+
+.meter__segment::before {
+  content: '';
+  display: block;
+  width: 100%;
+  height: 16px;
+  background: var(--panel-raised);
+  border: 1px solid var(--panel-border);
+  border-radius: 2px;
+  transition: background 150ms ease, border-color 150ms ease;
+}
+
+.meter__segment--active::before {
+  background: var(--led-green);
+  border-color: var(--led-green);
+}
+
+.meter__segment--over.meter__segment--active::before {
+  background: var(--led-red);
+  border-color: var(--led-red);
+}
+
+/* VSWR display mode (while transmitting) — independent of --active/--over
+   above, since some segments carry --over permanently based on their
+   S-unit bucket identity; see updateMeterAsVswr() in app.js. */
+.meter__segment--vswr-green::before {
+  background: var(--led-green);
+  border-color: var(--led-green);
+}
+
+.meter__segment--vswr-orange::before {
+  background: var(--led-amber);
+  border-color: var(--led-amber);
+}
+
+.meter__segment--vswr-red::before {
+  background: var(--led-red);
+  border-color: var(--led-red);
+}
+
+.meter__segment-label {
+  font-family: var(--font-mono);
+  font-size: 0.58rem;
+  color: var(--text-muted);
+  white-space: nowrap;
+}
+
+/* --- PTT --- */
+
+.ptt-section {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 8px;
+  padding-top: 4px;
+}
+
+/* Hidden while FT8 mode is active (see setFt8UiVisible() in app.js) —
+   same explicit-display-vs-[hidden] override needed elsewhere in this
+   file. */
+.ptt-section[hidden] {
+  display: none;
+}
+
+.ptt {
+  width: 100%;
+  padding: 22px;
+  background: var(--panel-raised);
+  border: 1px solid var(--panel-border);
+  border-radius: 6px;
+  font-size: 1rem;
+  font-weight: 600;
+  letter-spacing: 0.04em;
+  cursor: pointer;
+  user-select: none;
+  touch-action: none;
+}
+
+.ptt:disabled {
+  opacity: 0.45;
+  cursor: not-allowed;
+}
+
+.ptt--active {
+  background: color-mix(in srgb, var(--led-red) 18%, var(--panel-raised));
+  border-color: var(--led-red);
+  color: var(--led-red);
+}
+
+.ptt__hint {
+  margin: 0;
+  font-size: 0.75rem;
+  color: var(--text-muted);
+  text-align: center;
+}
+
+.cw-paddle {
+  display: flex;
+  width: 100%;
+  gap: 8px;
+}
+
+.cw-paddle[hidden] {
+  display: none;
+}
+
+.cw-paddle__btn {
+  flex: 1;
+  padding: 22px 8px;
+  background: var(--panel-raised);
+  border: 1px solid var(--panel-border);
+  border-radius: 6px;
+  font-size: 1rem;
+  font-weight: 600;
+  letter-spacing: 0.04em;
+  cursor: pointer;
+  user-select: none;
+  touch-action: none;
+}
+
+.cw-paddle__btn:disabled {
+  opacity: 0.45;
+  cursor: not-allowed;
+}
+
+.cw-paddle__btn--active {
+  background: color-mix(in srgb, var(--led-red) 18%, var(--panel-raised));
+  border-color: var(--led-red);
+  color: var(--led-red);
+}
+
+.cw-paddle__wpm {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: 2px;
+  font-size: 0.65rem;
+  color: var(--text-muted);
+  white-space: nowrap;
+}
+
+.cw-paddle__wpm input {
+  width: 3em;
+  background: var(--panel-raised);
+  border: 1px solid var(--panel-border);
+  border-radius: 4px;
+  padding: 4px;
+  font-family: inherit;
+  font-size: 0.85rem;
+  color: var(--text);
+  text-align: center;
+}
+
+/* --- Misc --- */
+
+.error-line {
+  margin: 0;
+  padding: 10px 12px;
+  background: color-mix(in srgb, var(--led-red) 14%, var(--panel-raised));
+  border: 1px solid var(--led-red);
+  border-radius: 4px;
+  color: var(--text);
+  font-size: 0.85rem;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .led__dot,
+  .meter__segment::before {
+    transition: none;
+  }
+}

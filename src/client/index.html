@@ -1,0 +1,234 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover" />
+  <title>SPARC PiRO</title>
+  <meta name="theme-color" content="#14171a" />
+  <meta name="description" content="Remote control for an Icom transceiver over CI-V." />
+
+  <link rel="manifest" href="/manifest.webmanifest" />
+  <link rel="icon" href="/icons/favicon.ico" sizes="any" />
+  <link rel="icon" href="/icons/icon-192.png" type="image/png" />
+  <link rel="apple-touch-icon" href="/icons/apple-touch-icon.png" />
+
+  <link rel="stylesheet" href="/styles.css" />
+</head>
+<body>
+  <main class="panel">
+    <header class="panel__header">
+      <div class="panel__title-group">
+        <h1 class="panel__title">SPARC PiRO</h1>
+        <span class="app-version" id="app-version"></span>
+        <!-- Hidden unless the server has SOURCE_CODE_URL configured — see
+             app.js's 'connected' handler and README.md's "Licence"
+             section (AGPL-3.0-only §13: this link is how a running
+             instance offers its corresponding source to anyone
+             interacting with it over the network). -->
+        <a class="app-source-link" id="app-source-link" href="#" target="_blank" rel="noopener" hidden>Source</a>
+      </div>
+      <span class="led">
+        <span class="led__dot" id="led-dot" data-state="connecting"></span>
+        <span id="led-text">Connecting&hellip;</span>
+      </span>
+    </header>
+
+    <div class="panel__body">
+      <section class="freq" aria-label="Frequency">
+        <div class="freq__row">
+          <button class="chip freq__step" id="freq-step-down-10k" type="button" disabled>
+            <span class="freq__step-value">&minus;10</span><span class="freq__step-unit">KHz</span>
+          </button>
+          <button class="chip freq__step" id="freq-step-down-1k" type="button" disabled>
+            <span class="freq__step-value">&minus;1</span><span class="freq__step-unit">KHz</span>
+          </button>
+          <div class="freq__display-wrap">
+            <button class="freq__display" id="freq-display" type="button" aria-label="Edit frequency">
+              &mdash;
+            </button>
+            <input
+              class="freq__input"
+              id="freq-input"
+              type="text"
+              inputmode="decimal"
+              placeholder="14.195000"
+              hidden
+            />
+          </div>
+          <button class="chip freq__step" id="freq-step-up-1k" type="button" disabled>
+            <span class="freq__step-value">+1</span><span class="freq__step-unit">KHz</span>
+          </button>
+          <button class="chip freq__step" id="freq-step-up-10k" type="button" disabled>
+            <span class="freq__step-value">+10</span><span class="freq__step-unit">KHz</span>
+          </button>
+        </div>
+      </section>
+
+      <section class="rig-controls" aria-label="Band, mode, and function controls">
+        <div class="rig-controls__left">
+          <div class="row-group" aria-label="Band">
+            <span class="row-group__label">Band</span>
+            <div class="chips chips--grid-5" id="bands"></div>
+          </div>
+
+          <div class="row-group" aria-label="Mode">
+            <span class="row-group__label">Mode</span>
+            <div class="chips chips--grid-4" id="modes"></div>
+          </div>
+        </div>
+
+        <div class="rig-controls__right" id="function-controls"></div>
+      </section>
+
+      <section class="scope" id="scope-section" aria-label="Spectrum scope">
+        <div class="scope__range">
+          <span id="scope-range-lo">&mdash;</span>
+          <span class="row-group__label">Spectrum scope</span>
+          <span id="scope-range-hi">&mdash;</span>
+        </div>
+        <div class="scope__body">
+          <div class="scope__canvases">
+            <canvas class="scope__trace" id="scope-trace"></canvas>
+            <canvas class="scope__waterfall" id="scope-waterfall"></canvas>
+            <div class="scope__placeholder" id="scope-placeholder" hidden></div>
+          </div>
+          <div class="rx-gain" aria-label="RX gain">
+            <input
+              type="range"
+              class="rx-gain__slider"
+              id="rx-gain-slider"
+              min="0"
+              max="255"
+              value="255"
+              disabled
+              orient="vertical"
+              aria-label="RX gain"
+            />
+            <span class="rx-gain__label">RX Gain</span>
+          </div>
+        </div>
+        <div class="scope__axis" id="scope-axis" aria-hidden="true"></div>
+        <div class="scope-span" id="scope-spans">
+          <label class="scope-span__label" for="scope-span-slider">Scope Span</label>
+          <input
+            type="range"
+            class="scope-span__slider"
+            id="scope-span-slider"
+            min="0"
+            max="7"
+            step="1"
+            value="5"
+            disabled
+            aria-label="Scope Span"
+          />
+          <span class="scope-span__value" id="scope-span-value">100 kHz</span>
+        </div>
+      </section>
+
+      <section class="meter" aria-label="S-meter">
+        <div class="meter__readout">
+          <span>S-meter</span>
+          <span id="meter-value">&mdash;</span>
+        </div>
+        <div class="meter__bar" id="meter-bar"></div>
+      </section>
+
+      <section class="cw-ticker-section" id="cw-ticker-section" aria-label="CW decode" hidden>
+        <span class="cw-ticker__label">CW</span>
+        <div class="cw-ticker" id="cw-ticker">
+          <span class="cw-ticker__text" id="cw-ticker-text"></span>
+        </div>
+      </section>
+
+      <!-- Reuses the .cw-ticker-section/.cw-ticker__label/.cw-ticker/
+           .cw-ticker__text classes (a plain label + scrolling mono-text
+           ticker) since RTTY's decode ticker is presentationally
+           identical to CW's — see app.js's RTTY decode wiring. -->
+      <section class="cw-ticker-section" id="rtty-ticker-section" aria-label="RTTY decode" hidden>
+        <span class="cw-ticker__label">RTTY</span>
+        <div class="cw-ticker" id="rtty-ticker">
+          <span class="cw-ticker__text" id="rtty-ticker-text"></span>
+        </div>
+      </section>
+
+      <section class="ft8-panel" id="ft8-panel" aria-label="FT8" hidden>
+        <div class="ft8-panel__header">
+          <span class="row-group__label" id="ft8-panel-label">FT8 band activity</span>
+          <span class="ft8-panel__slot" id="ft8-slot-time">&mdash;</span>
+        </div>
+        <div class="ft8-table" id="ft8-table" role="table" aria-label="Decoded FT8 messages">
+          <div class="ft8-table__head" role="row">
+            <span role="columnheader">UTC</span>
+            <span role="columnheader">dt</span>
+            <span role="columnheader">Freq</span>
+            <span role="columnheader">SNR</span>
+            <span role="columnheader">Message</span>
+          </div>
+          <div class="ft8-table__body" id="ft8-table-body"></div>
+        </div>
+        <p class="ft8-qso-status" id="ft8-qso-status" hidden></p>
+        <div class="ft8-composer">
+          <input
+            type="text"
+            class="ft8-composer__input"
+            id="ft8-composer-input"
+            placeholder="CQ VK2IO QF56"
+            autocapitalize="characters"
+            autocomplete="off"
+            spellcheck="false"
+          />
+          <button class="chip ft8-composer__send" id="ft8-send-btn" type="button">Send</button>
+        </div>
+        <p class="ft8-status" id="ft8-status" hidden></p>
+      </section>
+
+      <!-- FreeDV Reporter (qso.freedv.org) status message — shown only
+           while FreeDV mode is active, same visibility rule as the "FDV
+           Spot" checkbox (see enterFreeDvMode()/exitFreeDvMode() in
+           app.js). -->
+      <section class="freedv-report" id="freedv-report-section" aria-label="FreeDV Reporter" hidden>
+        <div class="freedv-report__row">
+          <input
+            type="text"
+            class="freedv-report__input freedv-report__message"
+            id="freedv-message-input"
+            placeholder="Status message"
+            maxlength="80"
+            autocomplete="off"
+            spellcheck="false"
+          />
+          <button class="chip freedv-report__send" id="freedv-message-set-btn" type="button">Set</button>
+        </div>
+        <p class="freedv-report__status" id="freedv-report-status" hidden></p>
+      </section>
+
+      <section class="controls-row">
+        <button class="chip" id="speaker-btn" type="button" disabled>Speaker: off</button>
+        <button class="chip" id="tuner-btn" type="button" disabled>Tuner: off</button>
+        <button class="chip" id="tune-btn" type="button" disabled>Tune</button>
+        <label class="tx-power">
+          <span class="tx-power__label">Power</span>
+          <select class="tx-power__select" id="tx-power-select" disabled></select>
+        </label>
+      </section>
+
+      <section class="ptt-section">
+        <button class="ptt" id="ptt-btn" type="button" disabled>PUSH TO TALK</button>
+        <div class="cw-paddle" id="cw-paddle" hidden>
+          <button class="cw-paddle__btn" id="cw-dot-btn" type="button" disabled>&middot; DOT</button>
+          <label class="cw-paddle__wpm">
+            WPM
+            <input type="number" id="cw-wpm-input" min="5" max="40" value="15" />
+          </label>
+          <button class="cw-paddle__btn" id="cw-dash-btn" type="button" disabled>&ndash; DASH</button>
+        </div>
+        <p class="ptt__hint" id="ptt-hint">Hold to transmit (or hold Space). First use will ask for microphone access.</p>
+      </section>
+
+      <p class="error-line" id="error-line" hidden></p>
+    </div>
+  </main>
+
+  <script type="module" src="/app.js"></script>
+</body>
+</html>

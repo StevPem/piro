@@ -1,0 +1,31 @@
+# PiRO systemd unit template.
+#
+# Don't copy this by hand: the @USER@, @DIR@ and @NODE@ placeholders are
+# filled in by the sed command in README.md's "Running PiRO as a systemd
+# service" section, which writes the result to /etc/systemd/system/piro.service.
+#
+# All of PiRO's settings live in /etc/piro/piro.env (see deploy/piro.env.example),
+# not in this file, so upgrading the unit never overwrites your configuration.
+
+[Unit]
+Description=PiRO - Icom CI-V and audio remote control
+Wants=network-online.target
+After=network-online.target sound.target
+
+[Service]
+Type=simple
+User=@USER@
+# The USB CI-V serial port needs "dialout" and the ALSA codec needs "audio".
+# Granting them here means the service works even if @USER@ isn't in those groups.
+SupplementaryGroups=dialout audio
+WorkingDirectory=@DIR@
+EnvironmentFile=/etc/piro/piro.env
+ExecStart=@NODE@ src/server/index.js
+Restart=on-failure
+RestartSec=5
+# PiRO shuts down cleanly on SIGTERM (releases the serial port, stops
+# arecord/aplay and any denoiser child processes).
+TimeoutStopSec=10
+
+[Install]
+WantedBy=multi-user.target

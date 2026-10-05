@@ -1,0 +1,26 @@
+{
+  "name": "icom-rig-pwa",
+  "version": "0.1.0",
+  "license": "AGPL-3.0-only",
+  "description": "PWA-based remote control for Icom transceivers over CI-V, running on a Raspberry Pi connected to the radio via USB.",
+  "private": true,
+  "type": "commonjs",
+  "main": "src/server/index.js",
+  "scripts": {
+    "test": "node test/frame.test.js && node test/scope.test.js && node test/civ-driver.test.js && node test/pcm-framer.test.js && node test/opus-codec.test.js && node test/mixer.test.js && node test/ws-server.test.js && node test/audio-bridge.test.js && node test/scope-bridge.test.js && node test/static-server.test.js && node test/tls-server.test.js && node test/scope-display.test.mjs && node test/smeter.test.mjs && node test/vswr.test.mjs && node test/cw-decoder.test.js && node test/hamfist-cw-decoder.test.js && node test/deepcw-decoder.test.js && node test/cw-decoder-bridge.test.js && node test/rtty-decoder.test.js && node test/rtty-decoder-bridge.test.js && node test/slot-clock.test.js && node test/resample.test.js && node test/ft8-bridge.test.js && node test/fft.test.js && node test/ft8-qso.test.mjs && node test/psk-reporter.test.js && node test/rade-pipeline.test.js && node test/rade-bridge.test.js && node test/freedv-reporter.test.js && node test/rnnoise-filter.test.js && node test/hamnoise-filter.test.js",
+    "test:civ": "node test/manual-civ-test.js",
+    "test:ws": "node test/manual-ws-test.js",
+    "start": "node src/server/index.js"
+  },
+  "dependencies": {
+    "@e04/ft8ts": "^0.0.14",
+    "onnxruntime-node": "^1.19.2",
+    "opusscript": "^0.0.8",
+    "serialport": "^12.0.0",
+    "socket.io-client": "^4.8.3",
+    "ws": "^8.18.0"
+  },
+  "engines": {
+    "node": ">=18"
+  }
+}
