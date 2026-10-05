@@ -11,6 +11,14 @@ RigPi, and installs to a phone's home screen as a PWA.
 Written by VK3TR. Licensed AGPL-3.0-only (see
 [Licence](#licence)).
 
+## Credits
+Several of the cooler features in this app are built on the work of others:
+- FT8/FT4 support = https://github.com/e04/ft8ts
+- CW 2 decoder = https://github.com/dawsonjon/HamFist
+- CW 3 decoder = https://github.com/e04/web-deep-cw-decoder
+- HamNoise denser = https://github.com/e04/HamNoise
+- RNnoise denoiser = https://jmvalin.ca/demo/rnnoise/
+
 ## Features
 
 - **Rig control** over CI-V: frequency, mode, band, filter, PTT, TX power,
