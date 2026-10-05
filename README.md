@@ -13,6 +13,7 @@ Written by VK3TR. Licensed AGPL-3.0-only (see
 
 ## Credits
 Several of the cooler features in this app are built on the work of others:
+- FreeDV support = https://github.com/freedv/rade_c
 - FT8/FT4 support = https://github.com/e04/ft8ts
 - CW 2 decoder = https://github.com/dawsonjon/HamFist
 - CW 3 decoder = https://github.com/e04/web-deep-cw-decoder
