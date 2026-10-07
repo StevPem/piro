@@ -422,7 +422,7 @@ If you open an issue about one of these, include the script's full output and
 what the radio's front panel showed. `docs/civ-notes.md` explains the common
 causes.
 
-## Configuration reference (long form)
+## Configuration reference
 
 Environment variables the server reads: `CIV_SERIAL_PATH`,
 `CIV_RADIO_MODEL`, `CIV_BAUD_RATE` (default 19200 — must match the
@@ -1135,63 +1135,6 @@ devices attached.
   app; it's expected to be layered on separately via VPN.
 
 See `docs/civ-notes.md` for CI-V protocol specifics.
-
-## Licence
-
-AGPL-3.0-only (see `LICENSE`).
-
-Every other dependency this project uses (`ws`, `serialport`,
-`opusscript`, `socket.io-client`) is permissively licensed, and the
-project itself started
-under a permissive licence. FT8 support changed that first: it uses
-[`@e04/ft8ts`](https://www.npmjs.com/package/@e04/ft8ts), a pure-TypeScript
-port of WSJT-X's own FT8 encoder/decoder, which is GPL-3.0 (as is
-WSJT-X itself). Linking a GPL-3.0 dependency into the app means the
-combined work is a derivative work under copyright law, so at that
-point the whole project became licensed GPL-3.0-or-later, not just the
-FT8-related files — a deliberate, informed choice (the alternative would
-have been porting an FT8 codec from C by hand to avoid the dependency,
-which wasn't worth it for what's gained).
-
-The "CW 3" decoder (`src/audio/deepcw-decoder.js`, see the CW decoder
-section below) moved the licence again, from GPL-3.0-or-later to
-**AGPL-3.0-only**. It bundles the model and metadata from
-[`e04/deepcw-engine`](https://github.com/e04/deepcw-engine)
-(`models/deepcw/` — see the `NOTICE.md` there), which is AGPL-3.0-only.
-GPLv3 §13 and AGPLv3 §13 contain a reciprocal permission for combining a
-GPLv3 work with an AGPLv3 work into one combined work, with the
-combination as a whole then governed by AGPLv3 — including its §13
-network-interaction clause: anyone who interacts with a running PiRO
-instance over the network is entitled to the corresponding source. Since
-PiRO is a network service by design, that requirement is real, not
-theoretical — set the `SOURCE_CODE_URL` env var to wherever you host
-your copy of this repository (a fork, a tarball, whatever satisfies
-"corresponding source" for your actual running version) and the app's
-own UI footer shows a "Source" link to it for every connected client;
-see `server/index.js`'s `SOURCE_CODE_URL` handling and
-`docs/ui-notes.md`.
-
-The "HamNoise" toggle (see "Rig control UI" above) bundles a second
-AGPL-3.0 dependency alongside DeepCW's: the prebuilt WASM binaries from
-[`e04/HamNoise`](https://github.com/e04/HamNoise) (`models/hamnoise/` —
-see the `NOTICE.md` there), same author and licence as `deepcw-engine`
-above. This doesn't change the project's overall licensing conclusion —
-PiRO was already AGPL-3.0-only because of the DeepCW bundle — but if
-you're leaving "CW 3" out per the paragraph below, leave `models/hamnoise/`
-and `src/audio/hamnoise-filter.js` out too, for the same reason.
-
-If you're integrating pieces of this codebase elsewhere and can't accept
-copyleft terms, the FT8 feature (`src/audio/ft8-bridge.js`,
-`src/audio/ft8-decode-worker.js`, the FT8-specific client UI), the
-"CW 3" decoder (`src/audio/deepcw-decoder.js`, `models/deepcw/`, the
-decoder-variant plumbing in `cw-decoder-bridge.js` that's specific to
-it), and the "HamNoise" denoiser (`src/audio/hamnoise-filter.js`,
-`models/hamnoise/`, the HamNoise-specific wiring in `audio-bridge.js`) are
-the parts to leave out — everything else here was written for
-this project under no such constraint. Leaving out "CW 3"/HamNoise and
-keeping FT8 would still leave the project at GPL-3.0-or-later, not
-AGPL-3.0; leaving out all three would allow a permissive relicensing of
-the remainder, same as before FT8 was added.
 
 ### Third-party components that are not bundled
 
