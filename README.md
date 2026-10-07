@@ -7,7 +7,7 @@ get frequency, mode and PTT control, RX/TX audio, a spectrum scope and
 waterfall, and a set of digital-mode and noise-reduction tools. It needs no
 Hamlib, no separate audio server and no extra apps.
 
-![PiRO screenshot](https://raw.githubusercontent.com/StevPem/piro/refs/heads/main/gallery/Screenshot_20261006-000127.png)
+![PiRO screenshot]<img src="[https://github.com](https://raw.githubusercontent.com/StevPem/piro/refs/heads/main/gallery/Screenshot_20261006-000127.png)" width="350">
 
 Written by VK3TR. Licensed AGPL-3.0-only (see
 [Licence](#licence)).
