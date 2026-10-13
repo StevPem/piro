@@ -545,6 +545,50 @@ async function run() {
     'sendFt8 rejects a non-string message with an error, not a crash'
   );
 
+  // --- sendTty / abortTty: validate input and emit internal events for TtyBridge to consume ---
+  {
+    const seen = [];
+    const aborts = [];
+    const onSend = (payload) => seen.push(payload);
+    const onAbort = () => aborts.push(true);
+    server.on('tty-send', onSend);
+    server.on('tty-abort', onAbort);
+
+    clientA.send(JSON.stringify({ id: 'tty1', type: 'sendTty', mode: 'JTTY', text: 'CQ VK2IO CQ', freqHz: 1500 }));
+    const jttyReply = await nextMessage(clientA);
+    check(
+      jttyReply.id === 'tty1' && jttyReply.ok === true && jttyReply.data.accepted === true,
+      'sendTty acks with accepted: true'
+    );
+    check(
+      seen.length === 1 && seen[0].mode === 'JTTY' && seen[0].text === 'CQ VK2IO CQ' && seen[0].freqHz === 1500,
+      "sendTty emits an internal 'tty-send' event carrying {mode, text, freqHz} for TtyBridge to consume"
+    );
+
+    clientA.send(JSON.stringify({ id: 'tty2', type: 'sendTty', mode: 'RTTY', text: 'CQ DE VK2IO' }));
+    const rttyReply = await nextMessage(clientA);
+    check(rttyReply.id === 'tty2' && rttyReply.ok === true && seen.length === 2 && seen[1].freqHz === undefined, 'sendTty works for RTTY, with freqHz undefined when not given');
+
+    for (const [id, bad, why] of [
+      ['tty3', { mode: 'FT8', text: 'X' }, 'an unknown mode'],
+      ['tty4', { mode: 'RTTY', text: '   ' }, 'blank text'],
+      ['tty5', { mode: 'RTTY', text: 42 }, 'non-string text'],
+      ['tty6', { mode: 'JTTY', text: 'X', freqHz: 'loud' }, 'a non-numeric freqHz'],
+      ['tty7', { mode: 'RTTY', text: 'X'.repeat(1001) }, 'over-long text'],
+    ]) {
+      clientA.send(JSON.stringify({ id, type: 'sendTty', ...bad }));
+      const r = await nextMessage(clientA);
+      check(r.id === id && r.ok === false, `sendTty rejects ${why} with an error, not a crash`);
+    }
+    check(seen.length === 2, 'rejected sendTty requests emit no internal event');
+
+    clientA.send(JSON.stringify({ id: 'tty8', type: 'abortTty' }));
+    const abortReply = await nextMessage(clientA);
+    check(abortReply.id === 'tty8' && abortReply.ok === true && aborts.length === 1, "abortTty acks and emits an internal 'tty-abort' event");
+    server.off('tty-send', onSend);
+    server.off('tty-abort', onAbort);
+  }
+
   // --- setPskSpotEnabled: the "PSK Spot" checkbox — internal event for Ft8Bridge/psk-reporter.js, plus state + broadcast like setDataMode ---
   {
     check(server.state.pskSpotEnabled === true, 'pskSpotEnabled defaults to true, per the original "enabled by default" request');
@@ -1016,6 +1060,27 @@ async function run() {
     );
     minimalClient.close();
     await minimalServer.close();
+  }
+
+  // JTTY receive arming (setJttyActive) and release when the last client leaves.
+  {
+    const jServer = new ControlServer({ civ: new StubCivDriver(), port: 0 });
+    const jPort = await jServer.listen();
+    const events = [];
+    jServer.on('jtty-active', (a) => events.push(a));
+    const c = await connect(jPort);
+    const hello = await nextMessage(c);
+    check(hello.data.jttyActive === false, 'connected snapshot reports jttyActive=false initially');
+    c.send(JSON.stringify({ id: 'j1', type: 'setJttyActive', active: 'yes' }));
+    const bad = await nextMessage(c);
+    check(bad.type === 'error' || bad.error !== undefined, 'setJttyActive rejects a non-boolean');
+    c.send(JSON.stringify({ id: 'j2', type: 'setJttyActive', active: true }));
+    await nextMessage(c);
+    check(jServer.state.jttyActive === true && events.join() === 'true', 'setJttyActive true updates state and emits jtty-active');
+    c.close();
+    await new Promise((r) => setTimeout(r, 100));
+    check(jServer.state.jttyActive === false && events.join() === 'true,false', 'last client disconnecting disarms JTTY');
+    await jServer.close();
   }
 
   // PTT fail-safe watchdog (10-minute cutoff in production; a short

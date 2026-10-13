@@ -3222,3 +3222,38 @@ graph/permissions/gesture flow and the canvas rendering itself need
 manual verification in a real browser against real hardware — see the
 step-by-step testing guidance already given for earlier phases as a
 model for how to approach that.
+
+## TTY button and Send composer (RTTY / JTTY)
+
+- The mode row's old RTTY chip is now **TTY**. First click selects the
+  radio's RTTY mode (label reads "RTTY"); the next click enters JTTY
+  (label "JTTY"); further clicks toggle between the two until any other
+  mode chip is chosen. JTTY is an app-level pseudo-mode like FT8/FreeDV:
+  the radio is put in USB with DATA MODE on, and DATA MODE is turned off
+  again when leaving.
+- While RTTY or JTTY is active the PTT button is hidden and replaced by
+  `#tty-composer`: a text field plus a **Send** button (Stop while
+  sending; Enter also sends). JTTY text is limited to 80 characters and
+  is prefilled with a CQ line built from the station callsign, only when
+  the box is empty or still holds the previous prefill.
+- Selecting JTTY (and clicking a band chip while in JTTY) tunes to that band's JTTY dial frequency (`JTTY_FREQUENCIES` in app.js, from the WSJT-X 3.3 beta list; 20m = 14.090 MHz).
+- Space-bar PTT is disabled in these modes.
+- JTTY only: `#tty-freq` ("TX freq", default 1450 Hz) sits above the text
+  field and is sent as `freqHz` with `sendTty`.
+- JTTY only: the scope shows the 0-3 kHz audio spectrum (same
+  `ft8-spectrum` binary frames and display as FT8/FT4; the frames come from
+  `JttyDecoderBridge`, computed from its 12 kHz stream every 250 ms while
+  JTTY is armed and PTT is off). The RF span buttons are hidden, an amber
+  marker (`setQsoFreq`) tracks `#tty-freq`, and clicking the spectrum sets
+  `#tty-freq`. Leaving JTTY returns to the RF scope on the next scope line.
+- JTTY only: `#jtty-rx` is a table (UTC / Freq / SNR / Message) fed by
+  `jtty-text` events. Rows are upserted by `id`; amber while `growing`; at
+  most 100 rows kept. Tapping a row copies its frequency into `#tty-freq`
+  and says so in the status line. Entering JTTY sends `setJttyActive
+  {active:true}` (arms the server decoder), leaving sends false, and a
+  reconnect re-arms from the snapshot's `jttyActive`. The server also
+  disarms when the last client disconnects.
+- Server side: `sendTty`/`abortTty` -> `tty-send`/`tty-abort` -> `TtyBridge`
+  -> `tty-tx-status` broadcasts (sending/sent/aborted/error).
+- Verified in headless Chromium with `test/manual-tty-ui.js` against a
+  stub radio; not tested on air. Service-worker cache bumped to v71. The JTTY receive path is also driven end to end in `test/manual-tty-ui.js` (synthetic 48 kHz audio -> bridge -> worker -> table).

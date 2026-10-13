@@ -151,6 +151,25 @@
         </div>
       </section>
 
+      <!-- Received JTTY messages, shown while the TTY chip is on JTTY (see
+           updateTtyUi() and the 'jtty-text' listener in app.js). One row per
+           message, updated in place as further frames of it arrive. -->
+      <section class="ft8-panel jtty-rx" id="jtty-rx" aria-label="JTTY received" hidden>
+        <div class="ft8-panel__header">
+          <span class="row-group__label">JTTY received</span>
+          <span class="ft8-panel__slot" id="jtty-rx-hint">tap a line to transmit on its frequency</span>
+        </div>
+        <div class="ft8-table jtty-table" role="table" aria-label="Received JTTY messages">
+          <div class="ft8-table__head" role="row">
+            <span role="columnheader">UTC</span>
+            <span role="columnheader">Freq</span>
+            <span role="columnheader">SNR</span>
+            <span role="columnheader">Message</span>
+          </div>
+          <div class="ft8-table__body" id="jtty-table-body"></div>
+        </div>
+      </section>
+
       <section class="ft8-panel" id="ft8-panel" aria-label="FT8" hidden>
         <div class="ft8-panel__header">
           <span class="row-group__label" id="ft8-panel-label">FT8 band activity</span>
@@ -221,6 +240,30 @@
             <input type="number" id="cw-wpm-input" min="5" max="40" value="15" />
           </label>
           <button class="cw-paddle__btn" id="cw-dash-btn" type="button" disabled>&ndash; DASH</button>
+        </div>
+        <!-- RTTY / JTTY text entry: shown in place of the PTT button while
+             the TTY mode chip is on RTTY or JTTY (see updateTtyUi() in
+             app.js). The Send button is the PTT button's replacement and
+             becomes Stop while a transmission is running. -->
+        <div class="tty-composer" id="tty-composer" hidden>
+          <label class="tty-composer__freq" id="tty-freq-label" hidden>
+            TX audio
+            <input type="number" id="tty-freq" min="200" max="2800" step="10" value="1450" inputmode="numeric" aria-label="JTTY transmit audio frequency in hertz" />
+            Hz
+          </label>
+          <input
+            type="text"
+            class="tty-composer__input"
+            id="tty-input"
+            placeholder="CQ CQ DE VK2IO K"
+            maxlength="200"
+            autocapitalize="characters"
+            autocomplete="off"
+            spellcheck="false"
+            aria-label="Text to transmit"
+          />
+          <button class="ptt tty-composer__send" id="tty-send-btn" type="button" disabled>Send</button>
+          <p class="ft8-status" id="tty-status" hidden></p>
         </div>
         <p class="ptt__hint" id="ptt-hint">Hold to transmit (or hold Space). First use will ask for microphone access.</p>
       </section>

@@ -140,6 +140,11 @@ class ControlServer extends EventEmitter {
       // multi-client-synced; only the new-connection snapshot gap this was
       // originally missing has been filled in.
       ft8Active: false,
+      // Whether the client has JTTY selected (see REQUEST.SET_JTTY_ACTIVE /
+      // server/jtty-decoder-bridge.js). Cached here for the same reason as
+      // ft8Active: JttyDecoderBridge acts on the 'jtty-active' event, and a
+      // newly-connecting client's EVENT.CONNECTED snapshot needs the value.
+      jttyActive: false,
       // Which variant the FreeDV mode button is currently in — '700E' or
       // 'RADE' (see REQUEST.SET_FREEDV_VARIANT / src/server/rade-bridge.js).
       // Defaults to 'RADE' — the only variant the client's FreeDV chip
@@ -277,12 +282,25 @@ class ControlServer extends EventEmitter {
       ws.on('close', () => {
         this.clients.delete(ws);
         this.emit('client-disconnected', ws);
+        this._releaseJttyIfAlone();
       });
       ws.on('error', () => {
         this.clients.delete(ws);
         this.emit('client-disconnected', ws);
+        this._releaseJttyIfAlone();
       });
     });
+  }
+
+  _setJttyActive(active) {
+    this.state.jttyActive = active;
+    // Handled by JttyDecoderBridge (internal-only event, same pattern as 'ft8-active').
+    this.emit('jtty-active', active);
+  }
+
+  /** JTTY decoding is CPU-heavy: don't leave it running for a browser that has gone away. */
+  _releaseJttyIfAlone() {
+    if (this.clients.size === 0 && this.state.jttyActive) this._setJttyActive(false);
   }
 
   async _handleMessage(ws, raw) {
@@ -383,6 +401,14 @@ class ControlServer extends EventEmitter {
           ws.send(makeResult(id, { active: msg.active }));
           break;
         }
+        case REQUEST.SET_JTTY_ACTIVE: {
+          if (typeof msg.active !== 'boolean') {
+            throw new Error('"active" must be a boolean');
+          }
+          this._setJttyActive(msg.active);
+          ws.send(makeResult(id, { active: msg.active }));
+          break;
+        }
         case REQUEST.SEND_FT8: {
           if (typeof msg.message !== 'string' || msg.message.trim() === '') {
             throw new Error('"message" must be a non-empty string');
@@ -403,6 +429,33 @@ class ControlServer extends EventEmitter {
           // arrives later as an EVENT.FT8_TX_STATUS broadcast, not as this
           // request's result, since it can't be known yet.
           this.emit('ft8-send', { message: msg.message, freqHz: msg.freqHz });
+          ws.send(makeResult(id, { accepted: true }));
+          break;
+        }
+        case REQUEST.SEND_TTY: {
+          if (msg.mode !== 'RTTY' && msg.mode !== 'JTTY') {
+            throw new Error('"mode" must be "RTTY" or "JTTY"');
+          }
+          if (typeof msg.text !== 'string' || msg.text.trim() === '') {
+            throw new Error('"text" must be a non-empty string');
+          }
+          if (msg.text.length > 1000) {
+            throw new Error('"text" is too long');
+          }
+          if (msg.freqHz !== undefined && (typeof msg.freqHz !== 'number' || !Number.isFinite(msg.freqHz))) {
+            throw new Error('"freqHz" must be a number (Hz) if provided');
+          }
+          // Like SEND_FT8, this only *starts* the transmission — it runs for
+          // seconds to tens of seconds, and the real outcome (including
+          // encoder rejections) arrives as EVENT.TTY_TX_STATUS broadcasts,
+          // handled by TtyBridge (internal-only event, same pattern as
+          // 'ft8-send').
+          this.emit('tty-send', { mode: msg.mode, text: msg.text, freqHz: msg.freqHz });
+          ws.send(makeResult(id, { accepted: true }));
+          break;
+        }
+        case REQUEST.ABORT_TTY: {
+          this.emit('tty-abort');
           ws.send(makeResult(id, { accepted: true }));
           break;
         }

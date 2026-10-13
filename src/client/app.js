@@ -112,7 +112,14 @@ const MODES = ['LSB', 'USB', 'AM', 'CW', 'RTTY', 'FM'];
 // already has; see "RTTY decode" below for the automatic-on-mode-entry
 // decoder ticker layered on top of it, the same pattern already used for
 // CW.
-const MODE_CHIPS = ['LSB', 'USB', 'AM', 'FM', 'CW', 'RTTY', 'FT8', 'FreeDV'];
+//
+// The 'TTY' chip stands in for what used to be the separate RTTY chip: a
+// first click selects RTTY (an ordinary CI-V hardware mode, see MODES) and
+// relabels the chip "RTTY"; every later click toggles RTTY <-> JTTY (an
+// app-level pseudo-mode like FT8, running on USB + DATA MODE) and relabels
+// it to match, until some non-TTY mode is picked and it reverts to "TTY".
+// See ttyMode()/updateTtyUi() and the 'TTY' branch in the render loop.
+const MODE_CHIPS = ['LSB', 'USB', 'AM', 'FM', 'CW', 'TTY', 'FT8', 'FreeDV'];
 
 // Standard FT8 calling/dial frequencies (USB dial, i.e. the frequency the
 // radio is tuned to — the actual audio tone sits ~1-3kHz above this
@@ -133,6 +140,24 @@ const FT8_FREQUENCIES = {
   '12m': 24915000,
   '10m': 28074000,
   '6m': 50313000,
+};
+
+// JTTY dial frequencies (USB), from the WSJT-X 3.3 beta list as published at
+// https://www.dxzone.com/jtty-frequencies/. The developers call them very
+// preliminary and expect some to change, so keep this table easy to edit.
+// The signal itself sits ~1.5 kHz above the dial frequency (see
+// JTTY_TX_FREQ_HZ); the 2m entry (144.160) has no band chip here.
+const JTTY_FREQUENCIES = {
+  '160m': 1838000,
+  '80m': 3575000,
+  '40m': 7090000,
+  '30m': 10140000,
+  '20m': 14090000,
+  '17m': 18100000,
+  '15m': 21090000,
+  '12m': 24920000,
+  '10m': 28090000,
+  '6m': 50160000,
 };
 
 // Standard FT4 calling/dial frequencies — FT4 is a *different* protocol
@@ -301,6 +326,14 @@ const txPowerSelect = document.getElementById('tx-power-select');
 const rxGainSlider = document.getElementById('rx-gain-slider');
 const pttBtn = document.getElementById('ptt-btn');
 const pttHintEl = document.getElementById('ptt-hint');
+const ttyComposerEl = document.getElementById('tty-composer');
+const ttyInputEl = document.getElementById('tty-input');
+const ttySendBtn = document.getElementById('tty-send-btn');
+const ttyStatusEl = document.getElementById('tty-status');
+const ttyFreqLabelEl = document.getElementById('tty-freq-label');
+const ttyFreqEl = document.getElementById('tty-freq');
+const jttyRxEl = document.getElementById('jtty-rx');
+const jttyTableBodyEl = document.getElementById('jtty-table-body');
 const cwPaddleEl = document.getElementById('cw-paddle');
 const cwDotBtn = document.getElementById('cw-dot-btn');
 const cwDashBtn = document.getElementById('cw-dash-btn');
@@ -369,6 +402,17 @@ let hasRequestedDefaultSpan = false; // auto-request the default span exactly on
 let ft8Active = false;
 let ft8LastBandName = null; // which band FT8's auto-tune last targeted, to detect a *new* band change rather than re-tuning on every frequency update
 let ft8SendInFlight = false;
+
+// --- JTTY state ---
+// Like ft8Active, JTTY is an app-level concept layered on USB + DATA MODE
+// (the radio has no JTTY mode), tracked independently of
+// updateModeButtons()'s hardware-mode bookkeeping. RTTY, by contrast, is
+// an ordinary CI-V mode — see ttyMode().
+let jttyActive = false;
+let jttyUsbSeen = false; // true once the radio has confirmed USB after JTTY was entered; see updateModeButtons()
+let ttyTxInFlight = false;
+let ttyShownMode = null; // which TTY mode updateTtyUi() last laid the composer out for
+let ttyLastDefaultText = ''; // the CQ text updateTtyUi() last pre-filled, so a later mode switch only replaces text the operator never touched
 
 // Which protocol the (repurposed) FT8 mode button currently drives —
 // 'FT8' or 'FT4'. Mirrors the server's own controlServer.state.ft8Variant
@@ -574,6 +618,11 @@ const scopeDisplay = new ScopeDisplay({
     // the composer text or the guided-QSO status line: this is purely a
     // frequency choice, independent of (and overridable by) the guided
     // sequence engaging a real QSO afterwards.
+    if (jttyActive && !ft8Active) {
+      // JTTY: the click sets the transmit frequency (lowest tone), as tapping a decoded line does.
+      setJttyTxFreq(hz);
+      return;
+    }
     currentQsoFreqHz = hz;
     // Also persists as the new session default (see ft8DefaultTxFreqHz's
     // doc comment) — a manual pick should stick around as "where my CQs
@@ -583,11 +632,11 @@ const scopeDisplay = new ScopeDisplay({
   },
 });
 link.addEventListener('scope-line', (event) => {
-  if (ft8Active) return; // audio-domain FFT spectrum takes over the display; see the 'ft8-spectrum' listener below
+  if (ft8Active || jttyActive) return; // audio-domain FFT spectrum takes over the display; see the 'ft8-spectrum' listener below
   scopeDisplay.pushLine(event.detail);
 });
 link.addEventListener('ft8-spectrum', (event) => {
-  if (!ft8Active) return;
+  if (!ft8Active && !jttyActive) return;
   scopeDisplay.pushAudioSpectrum(event.detail);
 });
 
@@ -749,8 +798,13 @@ link.addEventListener('connected', (event) => {
   // changed that yet on this fresh page load.
   if (data.ft8Active) reflectFt8ActiveFromServer();
   if (data.freeDvActive) reflectFreeDvActiveFromServer();
+  // JTTY receive is armed server-side only while a client says so; after a
+  // reconnect the server may have dropped it, so re-arm if we are in JTTY.
+  if (data.jttyActive) reflectJttyActiveFromServer();
+  else if (jttyActive) link.request('setJttyActive', { active: true }).catch(() => {});
 
   pttBtn.disabled = false;
+  ttySendBtn.disabled = false;
   tunerBtn.disabled = false;
   tuneBtn.disabled = false;
   txPowerSelect.disabled = false;
@@ -961,6 +1015,11 @@ for (const band of BANDS) {
       tuneFt8ToBand(band.name);
       return;
     }
+    // Likewise in JTTY: a band chip goes to that band's JTTY frequency.
+    if (jttyActive && JTTY_FREQUENCIES[band.name] != null) {
+      tuneJttyToBand(band.name);
+      return;
+    }
     link
       .request('setFrequency', { value: band.hz })
       .then(() => {
@@ -1017,6 +1076,7 @@ const modeButtons = new Map();
 let ft8ModeBtn = null;
 let freeDvModeBtn = null;
 let cwModeBtn = null;
+let ttyModeBtn = null;
 for (const entry of MODE_CHIPS) {
   const btn = document.createElement('button');
   btn.type = 'button';
@@ -1039,6 +1099,7 @@ for (const entry of MODE_CHIPS) {
       // meaningful about "both at once"). See exitFreeDvMode()'s doc
       // comment.
       if (freeDvActive) exitFreeDvMode();
+      if (jttyActive) exitJttyMode();
       // First click enters FT8/FT4 mode (whichever variant was last
       // active, or 'FT8' the first time); a click while already active
       // toggles the protocol instead — see toggleFt8Variant()'s doc
@@ -1053,10 +1114,23 @@ for (const entry of MODE_CHIPS) {
       // Mutual exclusivity with FT8 — see the FT8 click handler's mirror
       // comment above.
       if (ft8Active) exitFt8Mode();
+      if (jttyActive) exitJttyMode();
       // Unlike FT8, there's no second variant to toggle to any more (the
       // '700E' option was removed — see enterFreeDvMode()'s doc comment),
       // so a click while already active is simply a no-op.
       if (!freeDvActive) enterFreeDvMode();
+    });
+  } else if (entry === 'TTY') {
+    ttyModeBtn = btn;
+    btn.addEventListener('click', () => {
+      // Same mutual exclusivity as the other app-level modes.
+      if (ft8Active) exitFt8Mode();
+      if (freeDvActive) exitFreeDvMode();
+      // First click selects RTTY; after that the button toggles RTTY <->
+      // JTTY — a click in RTTY goes to JTTY, a click in JTTY goes back to
+      // RTTY — until a non-TTY mode is picked (which resets it to "TTY").
+      if (ttyMode() === 'RTTY') enterJttyMode();
+      else selectRttyMode();
     });
   } else if (entry === 'CW') {
     cwModeBtn = btn;
@@ -1068,6 +1142,7 @@ for (const entry of MODE_CHIPS) {
     btn.addEventListener('click', () => {
       if (ft8Active) exitFt8Mode();
       if (freeDvActive) exitFreeDvMode();
+      if (jttyActive) exitJttyMode();
       // First click enters CW mode (using whichever decoder variant is
       // already selected); a click while CW mode is already active
       // cycles the variant (CW1 -> CW2 -> CW3 -> CW1) instead of
@@ -1097,6 +1172,7 @@ for (const entry of MODE_CHIPS) {
       // pseudo-mode (there's no CI-V signal for either one).
       if (ft8Active) exitFt8Mode();
       if (freeDvActive) exitFreeDvMode();
+      if (jttyActive) exitJttyMode();
       link
         .request('setMode', { mode })
         .then(() => updateModeButtons(mode))
@@ -1113,9 +1189,281 @@ function updateModeButtons(mode) {
   for (const [name, btn] of modeButtons) {
     btn.classList.toggle('chip--active', name === mode);
   }
+  // JTTY runs on USB: if the radio is later reported in any other mode (a
+  // front-panel change, say), JTTY is over. Ignored until USB has been
+  // confirmed once, so a stale mode report that crosses with entering JTTY
+  // can't cancel it.
+  if (jttyActive) {
+    if (mode === 'USB') jttyUsbSeen = true;
+    else if (jttyUsbSeen) leaveJtty();
+  }
   setCwPaddleVisible(mode === 'CW' && !ft8Active && !freeDvActive);
-  setRttyTickerVisible(mode === 'RTTY' && !ft8Active && !freeDvActive);
+  setRttyTickerVisible(ttyMode() === 'RTTY');
+  updateTtyUi();
 }
+
+// --- TTY mode (RTTY / JTTY) ---
+
+/**
+ * Which TTY mode is currently in effect: 'JTTY' (app-level, on USB + DATA
+ * MODE), 'RTTY' (the radio's own RTTY mode, and not secretly FT8/FreeDV),
+ * or null. Everything TTY-related — the chip's label, the RTTY ticker, the
+ * text entry/Send button replacing PTT — is derived from this one answer.
+ */
+function ttyMode() {
+  if (jttyActive) return 'JTTY';
+  if (currentMode === 'RTTY' && !ft8Active && !freeDvActive) return 'RTTY';
+  return null;
+}
+
+/** TTY chip click while in JTTY or no TTY mode: select the radio's RTTY mode. */
+function selectRttyMode() {
+  link
+    .request('setMode', { mode: 'RTTY' })
+    .then(() => {
+      // Leaving JTTY turns DATA MODE back off (see leaveJtty()); done after
+      // the mode change is confirmed so the chip never flickers via "TTY".
+      leaveJtty();
+      updateModeButtons('RTTY');
+    })
+    .catch((err) => showError(err.message));
+}
+
+/**
+ * Enters JTTY: USB + DATA MODE (exactly as FT8 does — JTTY is audio-tone
+ * modulation and needs the radio's data MOD-input path; see
+ * enterFt8Mode()'s comments), no retune. Transmit only so far: nothing is
+ * decoded.
+ */
+function enterJttyMode() {
+  jttyActive = true; // updateTtyUi() below switches the scope to the audio spectrum
+  jttyUsbSeen = false;
+  // Tune to the standard JTTY frequency for the band the radio is on now
+  // (left alone if the current frequency is outside the table's bands).
+  const bandName = currentFreqHz != null ? bandNameForFrequency(currentFreqHz) : null;
+  if (bandName) tuneJttyToBand(bandName);
+  link
+    .request('setMode', { mode: 'USB' })
+    .then(() => updateModeButtons('USB'))
+    .catch((err) => showError(`Couldn't set USB for JTTY: ${err.message}`));
+  link
+    .request('setDataMode', { on: true })
+    .catch((err) => showError(`Couldn't enable DATA MODE for JTTY: ${err.message}`));
+  link.request('setJttyActive', { active: true }).catch((err) => showError(`Couldn't start JTTY receive: ${err.message}`));
+  setRttyTickerVisible(false);
+  updateTtyUi();
+}
+
+/** Tunes to a band's standard JTTY dial frequency. */
+function tuneJttyToBand(bandName) {
+  const hz = JTTY_FREQUENCIES[bandName];
+  if (hz == null) return;
+  link
+    .request('setFrequency', { value: hz })
+    .then(() => updateFrequencyDisplay(hz))
+    .catch((err) => showError(`Couldn't tune to ${bandName} JTTY frequency: ${err.message}`));
+}
+
+/** Ends JTTY locally and restores DATA MODE. Returns false if JTTY wasn't active. */
+function leaveJtty() {
+  if (!jttyActive) return false;
+  jttyActive = false;
+  jttyUsbSeen = false;
+  link.request('setDataMode', { on: false }).catch((err) => showError(`Couldn't disable DATA MODE: ${err.message}`));
+  link.request('setJttyActive', { active: false }).catch(() => {});
+  return true;
+}
+
+/**
+ * JTTY was already selected when this page connected (another browser has
+ * it open, or this one reconnected after the server forgot): reflect it
+ * locally without re-sending the radio changes enterJttyMode() makes.
+ */
+function reflectJttyActiveFromServer() {
+  if (jttyActive) return;
+  jttyActive = true;
+  jttyUsbSeen = false;
+  setRttyTickerVisible(false);
+  updateTtyUi();
+}
+
+/** Leaves JTTY because the operator picked some other mode. */
+function exitJttyMode() {
+  if (!leaveJtty()) return;
+  updateTtyUi();
+}
+
+const PTT_HINT_VOICE = 'Hold to transmit (or hold Space). First use will ask for microphone access.';
+const PTT_HINT_CW =
+  'Hold Dot/Dash to key CW (iambic — hold both to alternate). CI-V round-trip latency may make timing less precise than a hardware keyer.';
+const TTY_HINT = {
+  RTTY: 'Type your text and press Send (or Enter). Sent as AFSK RTTY, 45.45 baud / 170 Hz shift, on the same tones and Reverse setting as receive.',
+  JTTY: 'Type your text and press Send (or Enter). Received JTTY appears above; tap a line to transmit on its frequency. The radio is on USB with DATA MODE on.',
+};
+const TTY_PLACEHOLDER = { RTTY: 'CQ CQ DE VK2IO K', JTTY: 'CQ VK2IO CQ' };
+const TTY_MAX_CHARS = { RTTY: 200, JTTY: 80 };
+
+/** The CQ text the composer starts a TTY session with (empty if STATION_CALLSIGN isn't configured). */
+function ttyDefaultText(mode) {
+  if (!stationCallsign) return '';
+  return mode === 'JTTY' ? `CQ ${stationCallsign} CQ` : `CQ CQ DE ${stationCallsign} ${stationCallsign} K`;
+}
+
+/**
+ * Lays out the TTY chip and the PTT/text-entry area for whatever ttyMode()
+ * now says. Idempotent — called at the end of updateModeButtons() and from
+ * every place that changes ft8Active/freeDvActive/jttyActive. In RTTY or
+ * JTTY the PTT button is replaced by a text field and a Send button (which
+ * becomes Stop while a transmission runs); otherwise the usual PTT/CW
+ * paddle layout is restored.
+ */
+function updateTtyUi() {
+  if (!ttyModeBtn) return;
+  const mode = ttyMode();
+  ttyModeBtn.textContent = mode ?? 'TTY';
+  ttyModeBtn.classList.toggle('chip--active', mode !== null);
+  ttyComposerEl.hidden = mode === null;
+  ttyFreqLabelEl.hidden = mode !== 'JTTY';
+  jttyRxEl.hidden = mode !== 'JTTY';
+  // JTTY shows the 0-3 kHz audio spectrum (like FT8/FT4), so the RF span buttons don't apply.
+  scopeSpansEl.hidden = ft8Active || mode === 'JTTY';
+  if (mode === 'JTTY') scopeDisplay.setQsoFreq(Number(ttyFreqEl.value) || null);
+  else if (!ft8Active) scopeDisplay.setQsoFreq(null);
+
+  if (mode !== null) {
+    pttBtn.hidden = true;
+    pttHintEl.textContent = TTY_HINT[mode];
+  } else if (ttyShownMode !== null) {
+    // Just left TTY: hand the PTT button and hint back to the CW/voice layout.
+    const cwVisible = currentMode === 'CW' && !ft8Active && !freeDvActive;
+    pttBtn.hidden = cwVisible;
+    pttHintEl.textContent = cwVisible ? PTT_HINT_CW : PTT_HINT_VOICE;
+  }
+
+  if (mode !== ttyShownMode) {
+    ttyShownMode = mode;
+    if (mode !== null) {
+      ttyInputEl.placeholder = TTY_PLACEHOLDER[mode];
+      ttyInputEl.maxLength = TTY_MAX_CHARS[mode];
+      // Start each session ready to call CQ, but never clobber text the operator typed.
+      if (ttyInputEl.value === '' || ttyInputEl.value === ttyLastDefaultText) {
+        ttyLastDefaultText = ttyDefaultText(mode);
+        ttyInputEl.value = ttyLastDefaultText;
+      }
+      ttyStatusEl.hidden = true;
+    }
+  }
+}
+
+/** Sets the JTTY transmit frequency (box, status line and the marker on the audio spectrum). */
+function setJttyTxFreq(hz) {
+  ttyFreqEl.value = String(Math.round(hz));
+  scopeDisplay.setQsoFreq(Math.round(hz));
+  ttyStatusEl.hidden = false;
+  ttyStatusEl.textContent = `JTTY transmit frequency set to ${Math.round(hz)} Hz.`;
+}
+ttyFreqEl.addEventListener('input', () => {
+  if (ttyMode() === 'JTTY') scopeDisplay.setQsoFreq(Number(ttyFreqEl.value) || null);
+});
+
+/** Send button / Enter key: transmit the composer text, or cut a running transmission short. */
+function sendTty() {
+  const mode = ttyMode();
+  if (!mode) return;
+  if (ttyTxInFlight) {
+    link.request('abortTty').catch((err) => showError(`Couldn't stop the transmission: ${err.message}`));
+    return;
+  }
+  const text = ttyInputEl.value.trim();
+  if (!text) return;
+  const request = { mode, text };
+  if (mode === 'JTTY') {
+    const freqHz = Number(ttyFreqEl.value);
+    if (Number.isFinite(freqHz) && freqHz > 0) request.freqHz = freqHz;
+  }
+  link.request('sendTty', request).catch((err) => showError(`Couldn't send: ${err.message}`));
+}
+ttySendBtn.addEventListener('click', sendTty);
+ttyInputEl.addEventListener('keydown', (event) => {
+  if (event.key !== 'Enter' || event.isComposing) return;
+  event.preventDefault();
+  if (!ttyTxInFlight) sendTty();
+});
+
+// --- JTTY receive ---
+// One table row per message id, updated in place as frames arrive.
+const JTTY_MAX_ROWS = 100;
+const jttyRows = new Map(); // id -> row element
+
+function utcClock(epochMs) {
+  const d = new Date(epochMs);
+  const pad = (n) => String(n).padStart(2, '0');
+  return `${pad(d.getUTCHours())}:${pad(d.getUTCMinutes())}:${pad(d.getUTCSeconds())}`;
+}
+
+link.addEventListener('jtty-text', (event) => {
+  const u = event.detail;
+  if (!u || typeof u.id !== 'number' || typeof u.text !== 'string') return;
+  let row = jttyRows.get(u.id);
+  const stick = jttyTableBodyEl.parentElement.scrollTop + jttyTableBodyEl.parentElement.clientHeight >= jttyTableBodyEl.parentElement.scrollHeight - 8;
+  if (!row) {
+    row = document.createElement('div');
+    row.className = 'ft8-table__row';
+    row.setAttribute('role', 'row');
+    for (let i = 0; i < 4; i++) row.appendChild(document.createElement('span'));
+    row.addEventListener('click', () => {
+      const hz = Number(row.dataset.freqHz);
+      if (!Number.isFinite(hz)) return;
+      setJttyTxFreq(hz);
+    });
+    jttyRows.set(u.id, row);
+    jttyTableBodyEl.appendChild(row);
+    while (jttyTableBodyEl.children.length > JTTY_MAX_ROWS) {
+      const oldest = jttyTableBodyEl.firstElementChild;
+      for (const [id, el] of jttyRows) if (el === oldest) jttyRows.delete(id);
+      oldest.remove();
+    }
+  }
+  const cells = row.children;
+  cells[0].textContent = utcClock(u.startTime ?? u.time);
+  cells[1].textContent = Number.isFinite(u.freqHz) ? String(Math.round(u.freqHz)) : '';
+  cells[2].textContent = Number.isFinite(u.snr) ? String(u.snr) : '';
+  cells[3].textContent = u.text;
+  row.dataset.freqHz = String(u.freqHz);
+  row.classList.toggle('jtty-table__row--live', u.status === 'growing');
+  row.title = u.status === 'expired' ? 'Incomplete: the rest of this message was not received' : `${u.text} (${Math.round(u.freqHz)} Hz)`;
+  if (stick) jttyTableBodyEl.parentElement.scrollTop = jttyTableBodyEl.parentElement.scrollHeight;
+});
+
+link.addEventListener('tty-tx-status', (event) => {
+  const { status, mode, message, nframes, durationSec, error, note, freqHz } = event.detail || {};
+  ttyTxInFlight = status === 'sending';
+  ttySendBtn.textContent = ttyTxInFlight ? 'Stop' : 'Send';
+  ttySendBtn.classList.toggle('ptt--active', ttyTxInFlight);
+  ttyStatusEl.hidden = false;
+  const shown = (message || '').replace(/\r/g, '').replace(/\n/g, ' ⏎ ');
+  switch (status) {
+    case 'sending': {
+      const detail = [];
+      if (nframes) detail.push(`${nframes} frame${nframes === 1 ? '' : 's'}`);
+      if (durationSec) detail.push(`${durationSec.toFixed(1)} s`);
+      if (mode === 'JTTY' && freqHz) detail.push(`${freqHz}–${Math.round(freqHz + 93.75)} Hz`);
+      ttyStatusEl.textContent = `Sending ${mode}: "${shown}"${detail.length ? ` (${detail.join(', ')})` : ''}…${note ? ` ${note}.` : ''}`;
+      break;
+    }
+    case 'sent':
+      ttyStatusEl.textContent = `Sent ${mode}: "${shown}"`;
+      break;
+    case 'aborted':
+      ttyStatusEl.textContent = `Stopped ${mode} transmission.`;
+      break;
+    case 'error':
+      ttyStatusEl.textContent = `${mode || 'TTY'} TX failed: ${error || 'unknown error'}`;
+      break;
+    default:
+      ttyStatusEl.hidden = true;
+  }
+});
 
 // --- FT8 mode (app-level concept layered on USB — see docs/ui-notes.md) ---
 
@@ -1132,6 +1480,7 @@ function enterFt8Mode() {
   ft8ModeBtn.classList.add('chip--active');
   setCwPaddleVisible(false);
   setRttyTickerVisible(false);
+  updateTtyUi();
   setFt8UiVisible(true);
 
   // Starts every fresh FT8 session ready to call CQ — see
@@ -1212,6 +1561,7 @@ function reflectFt8ActiveFromServer() {
   ft8ModeBtn.classList.add('chip--active');
   setCwPaddleVisible(false);
   setRttyTickerVisible(false);
+  updateTtyUi();
   setFt8UiVisible(true);
   updateFt8VariantUi();
   ft8LastBandName = currentFreqHz != null ? bandNameForFrequency(currentFreqHz) : null;
@@ -1222,6 +1572,7 @@ function exitFt8Mode() {
   if (!ft8Active) return;
   ft8Active = false;
   ft8ModeBtn.classList.remove('chip--active');
+  updateTtyUi();
   // Reverts the chip's label back to the neutral "FT8/FT4" — see
   // updateFt8VariantUi()'s doc comment.
   updateFt8VariantUi();
@@ -1304,6 +1655,8 @@ function toggleFt8Variant() {
 function enterFreeDvMode() {
   freeDvActive = true;
   freeDvModeBtn.classList.add('chip--active');
+  setRttyTickerVisible(false);
+  updateTtyUi();
   freeDvSpotLabel.hidden = false;
   freeDvReportSectionEl.hidden = false;
   updateFreeDvVariantUi();
@@ -1344,6 +1697,8 @@ function reflectFreeDvActiveFromServer() {
   freeDvSpotLabel.hidden = false;
   freeDvReportSectionEl.hidden = false;
   updateFreeDvVariantUi();
+  setRttyTickerVisible(false);
+  updateTtyUi();
 }
 
 /** Leaves FreeDV mode — called when the operator picks any real hardware mode, or FT8. */
@@ -1351,6 +1706,7 @@ function exitFreeDvMode() {
   if (!freeDvActive) return;
   freeDvActive = false;
   freeDvModeBtn.classList.remove('chip--active');
+  updateTtyUi();
   freeDvSpotLabel.hidden = true;
   freeDvReportSectionEl.hidden = true;
   // Reverts the chip's label back to the neutral "FreeDV" — see
@@ -2306,7 +2662,9 @@ function isTextEntryFocused() {
   return false;
 }
 window.addEventListener('keydown', (event) => {
-  if (event.code === 'Space' && !isTextEntryFocused() && !event.repeat) {
+  // Not in RTTY/JTTY, where the PTT button is replaced by text entry + Send
+  // and nothing should be able to key the microphone.
+  if (event.code === 'Space' && !isTextEntryFocused() && !event.repeat && !ttyMode()) {
     event.preventDefault();
     engagePtt();
   }

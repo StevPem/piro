@@ -8,7 +8,9 @@ const { AudioBridge } = require('./audio-bridge');
 const { ScopeBridge } = require('./scope-bridge');
 const { CwDecoderBridge } = require('./cw-decoder-bridge');
 const { RttyDecoderBridge } = require('./rtty-decoder-bridge');
+const { JttyDecoderBridge } = require('./jtty-decoder-bridge');
 const { Ft8Bridge } = require('../audio/ft8-bridge');
+const { TtyBridge } = require('../audio/tty-bridge');
 const { RadeBridge } = require('./rade-bridge');
 const { FreeDvReporterBridge } = require('./freedv-reporter');
 
@@ -252,6 +254,8 @@ let scopeBridge;
 let cwDecoderBridge;
 let rttyDecoderBridge;
 let ft8Bridge;
+let ttyBridge;
+let jttyDecoderBridge;
 let radeBridge;
 let freeDvReporterBridge;
 
@@ -440,6 +444,33 @@ async function main() {
     ft8Bridge.start();
     console.log('FT8 bridge ready (RX decoding activates when a client opens the FT8 panel).');
 
+    // RTTY and JTTY transmit (the client's "Send" button in those modes).
+    // Same hard dependency on AudioBridge as FT8 (it plays synthesized audio
+    // out through the same path), but not slotted: a transmission starts
+    // as soon as it is requested. JTTY_TX_FREQ_HZ optionally moves JTTY's
+    // lowest-tone audio frequency (default 1450 Hz); a client request can
+    // override it per message. See audio/tty-bridge.js.
+    ttyBridge = new TtyBridge({
+      controlServer,
+      audioBridge,
+      jttyFreqHz: process.env.JTTY_TX_FREQ_HZ ? Number(process.env.JTTY_TX_FREQ_HZ) : undefined,
+    });
+    ttyBridge.start();
+    console.log('RTTY/JTTY transmit ready (Send button in RTTY and JTTY modes).');
+
+    // JTTY receive: decodes in a worker thread while the client has JTTY
+    // selected. JTTY_RX_LOW_HZ / JTTY_RX_HIGH_HZ set the audio band searched
+    // for signals (default 1000-2000 Hz). See server/jtty-decoder-bridge.js.
+    jttyDecoderBridge = new JttyDecoderBridge({
+      controlServer,
+      audioBridge,
+      quality: process.env.JTTY_RX_QUALITY || undefined,
+      lowHz: process.env.JTTY_RX_LOW_HZ ? Number(process.env.JTTY_RX_LOW_HZ) : undefined,
+      highHz: process.env.JTTY_RX_HIGH_HZ ? Number(process.env.JTTY_RX_HIGH_HZ) : undefined,
+    });
+    jttyDecoderBridge.start();
+    console.log('JTTY receive ready (decodes while JTTY is selected).');
+
     // RADE (FreeDV's neural-vocoder mode) is likewise a hard dependency
     // on AudioBridge — same reasoning as FT8 immediately above, since
     // it's also not a real CI-V mode. Unlike FT8, this doesn't decode
@@ -497,6 +528,8 @@ async function shutdown(signal) {
     if (cwDecoderBridge) cwDecoderBridge.stop();
     if (rttyDecoderBridge) rttyDecoderBridge.stop();
     if (ft8Bridge) ft8Bridge.stop();
+    if (ttyBridge) ttyBridge.stop();
+    if (jttyDecoderBridge) jttyDecoderBridge.stop();
     if (radeBridge) radeBridge.stop();
     if (freeDvReporterBridge) freeDvReporterBridge.stop();
     if (audioBridge) audioBridge.stop();

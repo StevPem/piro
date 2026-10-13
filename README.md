@@ -32,6 +32,12 @@ Several of the cooler features in this app are built on the work of others:
   codec through ALSA.
 - **Spectrum scope and waterfall** from the radio's CI-V scope data (opt-in).
 - **CW decoders**, including "CW 3" (DeepCW, a neural decoder) and an RTTY decoder.
+- **RTTY and JTTY**: one "TTY" button selects RTTY, then toggles
+  between RTTY and
+  [JTTY](https://wsjt.sourceforge.io/) (WSJT-X's new text mode, ported to
+  JavaScript here). In both, a text box and a Send button replace PTT.
+  JTTY is also decoded, in a table of messages as they arrive. See
+  [RTTY and JTTY](#rtty-and-jtty).
 - **FT8**: band-activity decoding, manual TX, and a guided QSO sequence that
   suggests each reply (you still send every message yourself). Optional PSK
   Reporter spotting.
@@ -40,7 +46,10 @@ Several of the cooler features in this app are built on the work of others:
 - **Two noise reducers for received audio**: "RNN" (RNNoise) and "HamNoise"
   (a neural denoiser trained on HF signals).
 
-PiRO is made for the Icom IC-7300, but may support other radio brands and models in the future.
+PiRO is made for Icom radios with a USB CI-V port and USB audio codec. The
+CI-V address table covers the IC-7300, IC-7610, IC-9700, IC-705, IC-7100,
+IC-7850 and IC-7851, and `IC-7300` is the default model. Spectrum-scope
+behaviour varies by radio and firmware (see `docs/civ-notes.md`).
 
 ## Contents
 
@@ -351,6 +360,9 @@ All settings are environment variables. For the systemd service they go in
 | `AUDIO_CHANNELS` | `1` | Number of audio channels. |
 | `AUDIO_CODEC` | `pcm` | `pcm` or `opus`. The shipped web app uses `pcm`. |
 | `SCREEN_TITLE` | `SPARC PiRO` | Title shown in the browser tab and on the page. |
+| `JTTY_TX_FREQ_HZ` | `1450` | Audio frequency of JTTY's lowest tone, in Hz. The signal fills about 94 Hz above it. |
+| `JTTY_RX_LOW_HZ`, `JTTY_RX_HIGH_HZ` | `1000`, `2000` | Audio range, in Hz, searched for JTTY signals. Two extra fixed channels at 1350 and 1650 Hz (±150 Hz) are always searched as well. A narrower range is cheaper on the CPU. |
+| `JTTY_RX_QUALITY` | `economy` | JTTY decoder effort. `economy` uses about 40% of `full`'s CPU and decoded nearly as many weak signals in testing. `light` is in between, `full` matches WSJT-X's search exactly, and `auto` runs `full` but drops to `economy` when the Pi falls behind. |
 | `STATION_CALLSIGN`, `STATION_GRID` | none | Your callsign and Maidenhead grid. They set the FT8 default message and guided QSO, and the FreeDV Reporter report. |
 | `TLS_CERT_PATH`, `TLS_KEY_PATH` | none | Set both to serve HTTPS and WSS. Needed for the microphone from other devices. |
 | `SOURCE_CODE_URL` | none | Link shown in the page footer. The AGPL asks you to offer the source to people who use your instance (see [Licence](#licence)). |
@@ -558,7 +570,12 @@ src/
   audio/          ALSA capture/playback, PCM framing, Opus codec (phase 3 — done);
                    also FT8 support: slot-clock (UTC 15s boundaries),
                    resampler (48k<->12k with anti-aliasing), the RX/TX
-                   bridge, and its decode worker-thread — see docs/ui-notes.md
+                   bridge, and its decode worker-thread — see docs/ui-notes.md;
+                   RTTY (rtty-decoder.js, rtty-encoder.js) and JTTY
+                   (jtty-codec.js, jtty-tx.js, jtty-rx.js, jtty-tbcc-decode.js,
+                   decimator.js, jtty-decode-worker.js); transmit is played
+                   out by tty-bridge.js and receive is fed by
+                   server/jtty-decoder-bridge.js
   server/         WebSocket control layer (phase 2 — done), audio bridge
                    (phase 3 — done), scope bridge (phase 6 — done), static
                    file server (phase 4 — done), CW decoder bridge, FT8 protocol wiring
@@ -664,6 +681,22 @@ test/
                            shape, bin-width/peak-location correctness for
                            a known tone, short-input zero-padding, and
                            silent-input edge cases
+  rtty-encoder.test.js    RTTY AFSK encoder: Baudot shifts, frame timing, and
+                           round trips through the app's own RTTY decoder
+                           (both polarities, 12/48 kHz, with noise)
+  jtty.test.js            JTTY transmit port checked against WSJT-X's own
+                           encoder: the spec's 34-bit vectors, 401 reference
+                           messages (all exchange profiles), a reference
+                           waveform; see third_party/jtty/README.md
+  tty-bridge.test.js      RTTY/JTTY transmit bridge: PTT, audio, status
+                           events, abort, refusals, stub radio and ALSA
+  jtty-rx.test.js         JTTY receiver: list decoder, multi-frame messages,
+                           two signals, noise, gaps, chunking, and WSJT-X's
+                           own 10-frame sample recording
+  jtty-decoder-bridge.test.js  JTTY receive bridge: arming, PTT, decimation,
+                           backlog dropping, broadcasts
+  manual-tty-ui.js        optional browser test of the TTY button, text box and
+                           Send/Stop (needs Playwright and Chromium)
   ft8-bridge.test.js      integration tests for the FT8 RX/TX bridge:
                            attach/detach around active-state and PTT,
                            slot-boundary decode requests to a stub
@@ -788,7 +821,7 @@ service worker — see `docs/pwa-notes.md`) and a browser that implements
 the API; degrades to the phone's normal screen-timeout behavior
 otherwise, with no other effect on the app. See `docs/ui-notes.md`.
 
-An **FT8** chip sits in the mode row itself (in RTTY's old grid slot,
+An **FT8** chip sits in the mode row itself (where the old RTTY chip used to sit,
 styled identically to the real mode chips — see below for why it isn't
 actually a hardware mode despite living there); selecting it puts the
 radio on USB, auto-tunes to the current band's standard FT8 calling
@@ -976,6 +1009,69 @@ polarity from the decoder's assumption previously decoded nothing at all;
 see `docs/ui-notes.md`'s "Real bug found" writeup for the full story.
 Unchecked by default.
 
+### RTTY and JTTY
+
+The mode row has one **TTY** button where the RTTY button used to be:
+
+1. The first click selects the radio's RTTY mode, and the button now reads **RTTY**.
+2. The next click switches to **JTTY**, and the button reads **JTTY**.
+3. Each later click toggles between RTTY and JTTY.
+   Entering JTTY also tunes to the standard JTTY dial frequency for the current
+   band (e.g. 14.090 MHz on 20 m; the list is the WSJT-X 3.3 beta's and is marked
+   preliminary), and band buttons then go to each band's JTTY frequency.
+4. Picking any other mode (LSB, USB, AM, FM, CW, FT8, FreeDV) puts the button
+   back to **TTY**.
+
+While RTTY or JTTY is selected, a text box and a **Send** button replace the
+PTT button. Enter in the text box also sends. While a message is going out,
+Send turns into **Stop**, which cuts the transmission short and releases PTT.
+The Space bar does not key the microphone in these modes. The text box starts
+with a CQ built from `STATION_CALLSIGN` (if set), and keeps whatever you
+type when you switch between the two modes.
+
+**RTTY** sends your text as audio-frequency-shift keying: 45.45 baud, 170 Hz
+shift, 2125 Hz mark and 2295 Hz space, using the same tones and the same
+"Reverse" tick-box as the decoder, so what you transmit and what you copy
+agree. The audio goes out through the same ALSA path as FT8 and voice. This is
+**AFSK, not the radio's own FSK keying**: the radio must accept audio on its
+modulation input. On an IC-7300 that means the audio must reach a mode that
+takes the USB MOD input (USB or LSB with DATA MODE on); the radio's own RTTY
+mode normally takes its keying from the RTTY key line instead. PiRO does not
+change modes for you when you press Send. If the radio does not transmit the
+tones, switch it to a mode that accepts USB audio, or use the radio's built-in
+RTTY keyer. This has been tested against PiRO's own decoder, not on air.
+
+**JTTY** is a mode from WSJT-X 3.3 (beta): 4-tone Gaussian FSK at 31.25 baud,
+no time slots, one to sixteen 1.9-second frames per message, with strong
+error correction (a K=10 convolutional code and a CRC). Text is packed into
+the fewest frames, so "CQ VK3TR CQ" takes one frame while free text takes
+one frame per five characters. A message can be up to 80 characters. Selecting
+JTTY puts the radio on USB with DATA MODE on, as FT8 does. Transmission starts
+the moment you press Send, with the lowest tone at `JTTY_TX_FREQ_HZ` (1450 Hz
+by default, so the signal sits around 1500 Hz). The **TX freq** box above the
+text field sets the frequency for the next message.
+
+**JTTY receive.** While JTTY is selected, a table under the composer lists
+messages as they are decoded: UTC time, audio frequency, SNR and text. A line
+shows in amber and grows frame by frame while the message is still arriving;
+a lost frame shows as " ... ". The spectrum scope switches to the same 0-3 kHz
+audio spectrum FT8 uses, with an amber marker at your transmit frequency;
+click the spectrum, or tap a decoded line, to move that frequency onto a
+station. Decoding happens on the Pi in a worker thread and
+only runs while JTTY is selected and you are not transmitting. It searches
+`JTTY_RX_LOW_HZ`..`JTTY_RX_HIGH_HZ` (default 1000-2000 Hz) plus two fixed
+channels around 1350 and 1650 Hz. The default `economy` effort keeps the load low on a Raspberry Pi 4;
+see `JTTY_RX_QUALITY`.
+
+The encoder and decoder are JavaScript ports of WSJT-X's; see
+[`third_party/jtty/README.md`](third_party/jtty/README.md) for what was ported
+and how both were checked against WSJT-X's own programs. The receiver is not
+tested over the air, and, as with WSJT-X itself, noise can occasionally
+produce a false decode.
+
+Transmit is refused if the radio is already transmitting. The usual PTT
+watchdog (ten minutes) still applies.
+
 **FT8 (RX + manual TX)**: since the IC-7300 has no native "FT8" CI-V
 mode — the radio only ever sees `USB` — FT8 is an app-level concept
 layered on top: opening the FT8 panel puts the radio on USB and starts
@@ -1082,9 +1178,9 @@ shapes.
   `setNoiseReduction`, `getNoiseReduction`, `setNoiseBlanker`,
   `getNoiseBlanker`, `setNotch`, `getNotch`, `setFilter`, `getFilter`,
   `setTuner`, `getTuner`, `setTxPower`, `getTxPower`, `setRxGain`,
-  `getRxGain`, `setFt8Active`, `sendFt8`)
+  `getRxGain`, `setFt8Active`, `sendFt8`, `sendTty`, `abortTty`, `setJttyActive`)
   correlated by `id`; events (`connected`, `frequency`, `mode`, `data-mode`, `ptt`,
-  `ptt-timeout`, `cw-text`, `ft8-decodes`, `ft8-tx-status`, `rig-error`,
+  `ptt-timeout`, `cw-text`, `ft8-decodes`, `ft8-tx-status`, `tty-tx-status`, `rig-error`,
   `audio-error`, `scope-error`)
   broadcast without an `id`. `setFt8Active` arms/disarms RX decoding
   (sent when the client opens/closes the FT8 panel); `sendFt8`
@@ -1097,7 +1193,14 @@ shapes.
   a reply goes out at the frequency the other station is actually
   listening on, rather than always this app's one fixed calling
   frequency. See `src/server/protocol.js` for the exact
-  `ft8-decodes`/`ft8-tx-status` payload shapes.
+  `ft8-decodes`/`ft8-tx-status` payload shapes. `sendTty`
+  (`{mode: 'RTTY'|'JTTY', text, freqHz?}`) encodes and transmits straight
+  away (neither mode is slotted); progress arrives as `tty-tx-status`
+  broadcasts (`sending` → `sent`/`aborted`/`error`), and `abortTty` cuts a
+  running transmission short. `setJttyActive` (`{active}`) starts and stops
+  JTTY decoding; decoded messages arrive as `jtty-text` broadcasts
+  (`{id, freqHz, snr, text, status: 'growing'|'complete'|'expired', time,
+  startTime}`, times in epoch ms), re-sent with the same `id` as a message grows.
 - **Audio (binary frames, tagged `BINARY_TYPE.AUDIO`)**: by default
   (`AUDIO_CODEC=pcm`), raw 16-bit PCM in both directions — no
   framing/codec requirement, chunk sizes are whatever arrives. With
@@ -1135,15 +1238,6 @@ devices attached.
   app; it's expected to be layered on separately via VPN.
 
 See `docs/civ-notes.md` for CI-V protocol specifics.
-
-### Third-party components that are not bundled
-
-- **RNNoise** (BSD-3-Clause) is not in this repository. You build it yourself
-  (see [RNNoise](#rnnoise-rnn-button)). The one file included,
-  `third_party/rnnoise/rnnoise_demo.c`, is RNNoise's example program with the
-  `wet` patch, and keeps its original copyright and licence header.
-- **rade_c** (FreeDV RADE) is built and installed separately, under its own
-  licence.
 
 If you publish a fork, set `SOURCE_CODE_URL` to it, so the footer link points
 to the source of the version that is actually running.

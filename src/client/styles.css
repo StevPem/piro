@@ -974,6 +974,42 @@ button {
   color: var(--led-red);
 }
 
+/* RTTY / JTTY text entry — replaces the PTT button while the TTY chip is
+   on RTTY or JTTY (see updateTtyUi() in app.js). Reuses .ptt for the Send
+   button so it is exactly as large and as easy to hit as PTT was. */
+.tty-composer {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  width: 100%;
+}
+
+.tty-composer[hidden] {
+  display: none;
+}
+
+.tty-composer__input {
+  width: 100%;
+  box-sizing: border-box;
+  background: var(--panel-raised);
+  border: 1px solid var(--panel-border);
+  border-radius: 4px;
+  padding: 10px 12px;
+  font-family: var(--font-mono);
+  font-size: 1rem;
+  color: var(--text);
+  text-transform: uppercase;
+}
+
+.tty-composer__input:focus {
+  outline: none;
+  border-color: var(--led-amber);
+}
+
+.tty-composer__send {
+  touch-action: manipulation; /* a tap, not a hold — unlike .ptt, which needs touch-action: none */
+}
+
 .ptt__hint {
   margin: 0;
   font-size: 0.75rem;
@@ -1056,4 +1092,38 @@ button {
   .meter__segment::before {
     transition: none;
   }
+}
+
+/* Received JTTY messages (reuses the FT8 table's look). */
+.jtty-table .ft8-table__head,
+.jtty-table .ft8-table__row {
+  grid-template-columns: 4.5em 4.6em 2.8em 1fr;
+}
+
+.jtty-table .ft8-table__row > span:last-child {
+  white-space: normal;
+  overflow-wrap: anywhere;
+}
+
+/* A message still waiting for its next frame. */
+.jtty-table__row--live {
+  border-left: 3px solid var(--led-amber);
+}
+
+.tty-composer__freq {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  font-size: 0.8rem;
+  color: var(--text-muted);
+}
+
+.tty-composer__freq input {
+  width: 5.5em;
+  padding: 4px 6px;
+  font-family: var(--font-mono);
+  color: var(--text);
+  background: #08080f;
+  border: 1px solid var(--panel-border);
+  border-radius: 4px;
 }

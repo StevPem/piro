@@ -110,6 +110,31 @@ class AlsaPlayback extends EventEmitter {
     }
   }
 
+  /**
+   * Throws away any audio still queued (in the pipe to `aplay` and in
+   * ALSA's own buffer) by replacing the `aplay` process with a fresh one.
+   * Used to cut a long transmission short (see src/audio/tty-bridge.js).
+   * The old process is detached from this object's listeners first, so its
+   * deliberate death is not reported as an unexpected 'exit'.
+   */
+  restart() {
+    const old = this.proc;
+    if (old) {
+      this.proc = null;
+      old.removeAllListeners('exit');
+      old.removeAllListeners('error');
+      old.on('error', () => {});
+      old.stdin.on('error', () => {});
+      try {
+        old.stdin.destroy();
+      } catch {
+        // already closed
+      }
+      old.kill('SIGKILL');
+    }
+    this.start();
+  }
+
   stop() {
     if (!this.proc) return;
     try {
