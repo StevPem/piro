@@ -23,6 +23,7 @@ Several of the cooler features in this app are built on the work of others:
 - CW 3 decoder = https://github.com/e04/web-deep-cw-decoder
 - HamNoise denoiser = https://github.com/e04/HamNoise
 - RNnoise denoiser = https://jmvalin.ca/demo/rnnoise/
+- JTTY support = Ported to JS from https://wsjtx.github.io/wsjtx/index.html
 
 ## Features
 
