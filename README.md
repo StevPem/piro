@@ -101,7 +101,7 @@ node --version      # must print v18 or higher
 **3. Get PiRO and install its Node dependencies.**
 
 ```bash
-git clone https://github.com/YOUR-USER/PiRO.git ~/PiRO
+git clone https://github.com/StevPem/piro.git ~/PiRO
 cd ~/PiRO
 npm install
 npm test            # optional: runs the unit tests, no radio needed
@@ -377,8 +377,10 @@ All settings are environment variables. For the systemd service they go in
 | `FREEDV_REPORTER_ENABLED` | on | `0` or `false` stops any reporting to the FreeDV Reporter. Reporting also needs the "FDV Spot" box ticked in the UI. |
 | `FREEDV_REPORTER_HOST` | public service | Only for testing against your own Reporter server. |
 
-The long-form description of each variable, with the reasoning behind the
-defaults, follows the diagnostics section below.
+`CIV_SCOPE_ENABLED` also accepts `1`. The reasoning behind the less obvious
+defaults (`HAMNOISE_QUALITY`, `RADE_TX_GAIN`, `RADE_VERSION`,
+`CIV_MAXIMIZE_USB_LEVELS`) is in `docs/ui-notes.md` and
+`docs/civ-notes.md`.
 
 ## Updating
 
@@ -434,133 +436,6 @@ node test/manual-ws-test.js ws://<pi-hostname-or-ip>:8080 # talk to a running se
 If you open an issue about one of these, include the script's full output and
 what the radio's front panel showed. `docs/civ-notes.md` explains the common
 causes.
-
-## Configuration reference
-
-Environment variables the server reads: `CIV_SERIAL_PATH`,
-`CIV_RADIO_MODEL`, `CIV_BAUD_RATE` (default 19200 — must match the
-radio's own CI-V USB Baud Rate menu setting exactly; spectrum scope use
-often needs this raised, e.g. to 115200), `WS_PORT` (default 8080),
-`AUDIO_RX_DEVICE` (audio is
-disabled entirely if unset — this also disables the CW decoder, which
-has no separate env var of its own and activates automatically off the
-same RX audio whenever mode is CW), `AUDIO_TX_DEVICE` (defaults to
-`AUDIO_RX_DEVICE` — usually the same USB codec handles both directions),
-`AUDIO_SAMPLE_RATE` (default 48000), `AUDIO_CHANNELS` (default 1),
-`AUDIO_CODEC` (`pcm` default, used by the PWA client; `opus` available
-but not used by the shipped client — see `docs/audio-notes.md`),
-`CIV_SCOPE_ENABLED` (`false`/unset by default — spectrum scope is opt-in;
-set to `true` to enable, see `docs/civ-notes.md`),
-`STATIC_DIR` (defaults to `src/client`), `TLS_CERT_PATH`/`TLS_KEY_PATH`
-(both unset by default — serves plain HTTP/WS; set both to serve
-HTTPS/WSS instead, needed for microphone access from non-localhost
-origins — see `docs/pwa-notes.md`), `SCREEN_TITLE` (default `"SPARC
-PiRO"` — shown as both the browser tab title and the on-screen heading;
-sent to clients at connect time, not baked into the static HTML, so it
-reflects the *running* server's environment even if you never rebuild
-anything — see `docs/ui-notes.md`; shown in the UI alongside a small
-app-version number, read straight from `package.json`, in text the same
-size/color as the "Connected" status — see `docs/ui-notes.md`),
-`STATION_CALLSIGN`/`STATION_GRID`
-(both unset/`null` by default — your own callsign and Maidenhead grid
-locator, e.g. `STATION_CALLSIGN=VK2IO STATION_GRID=QF56MC`; used to build
-the FT8 composer's default "CQ {CALLSIGN} {MAIDENHEAD}" message and to
-drive the guided FT8 QSO sequence — see the FT8 section below and
-`docs/ui-notes.md`; with either unset, the FT8 composer simply starts
-empty and the guided sequence stays inactive, exactly as before this
-feature existed), `CIV_MAXIMIZE_USB_LEVELS` (`true`/unset by default —
-at startup, best-effort sets the radio's own internal "AF output level
-to ACC/USB" and "MOD input level from USB" CI-V settings to maximum;
-distinct from, and in addition to, the ALSA-side `amixer` maximization
-below — see `docs/civ-notes.md`; set to `0`/`false` to leave the radio's
-own levels as found), `RADE_TX_BIN`/`RADE_RX_BIN`/`LPCNET_DEMO_BIN` (all
-default to the bare command name, i.e. resolved via PATH — the compiled
-rade_c binaries (`radae_tx`, `radae_rx`, `lpcnet_demo`) used for the
-FreeDV mode button's RADE V1 codec (its only mode now — see
-`docs/ui-notes.md`'s "700E was removed" note); see `docs/ui-notes.md` for what each
-one does and how to build/install them — rade_c also builds a fourth
-tool, `real2iq`, but this app deliberately doesn't use it, so there's no
-env var for it), `RADE_VERSION` (`v1` default — the stable, undeprecated waveform
-per rade_c's own README; set to `v2` only if you specifically want to
-experiment with the newer V2 waveform, which upstream itself currently
-describes as "under active development" and says "on-air use is not
-recommended at this stage" — both ends of a link must agree on this,
-same as any modem), `RADE_TX_GAIN` (`4` default — linear multiplier
-applied to the real part extracted from `radae_tx`'s complex IQ output
-before it reaches the radio on TX; not `1`/no-extra-gain, because a
-remote station reported only ~20% modulation at that level — `4` is a
-real-world-informed correction, not an independently confirmed "correct"
-value, so treat it as an adjust-by-ear/power-meter knob if RADE TX drive
-still seems too low or now clips/distorts on your own radio/audio chain —
-see `docs/ui-notes.md`'s "The RADE codec bridge" for the full pipeline
-and its "Real bug found: only ~20% modulation" note for why 4), `FREEDV_REPORTER_ENABLED` (`true`/unset by
-default — the ops-level switch for reporting this station to the live
-FreeDV Reporter activity map at https://qso.freedv.org, reusing
-`STATION_CALLSIGN`/`STATION_GRID` above; set to `0`/`false` to opt out
-without unsetting those two, which are also used elsewhere; even with
-this on, reporting only actually happens once the UI's own "FDV Spot"
-checkbox — below the Filter button, shown only while FreeDV mode is
-active, unchecked by default — is also checked *and* the FreeDV mode chip
-is armed — see `docs/ui-notes.md`),
-`FREEDV_REPORTER_HOST` (unset by default — connects to the real public
-service; only for testing against a self-hosted FreeDV Reporter
-instance). Once armed and spotting, the UI also shows a status-message
-field ("Looking for contacts", etc.) below the FDV Spot checkbox — see
-`docs/ui-notes.md`'s "Status message (`message_update`)" section.
-
-`RNNOISE_BIN` (defaults to the bare command name `rnnoise_demo`, i.e.
-resolved via PATH — the compiled RNNoise demo binary from
-[github.com/xiph/rnnoise](https://github.com/xiph/rnnoise)'s `examples/`
-directory, used by the "RNN" toggle button (which replaced the old Noise
-Blanker/"NB" button) to denoise the RX audio actually sent to clients;
-off by
-default, spawned lazily only once the toggle is switched on; requires
-`AUDIO_RX_DEVICE`, since it filters that same audio pipeline; deliberately
-scoped to client-audio/STT only — it never touches the raw audio CW/RTTY/
-FT8/FreeDV decode from, since RNNoise is a speech-denoiser and none of
-those are actually speech; if the binary isn't installed/on PATH, or it
-exits unexpectedly, the toggle no-ops back to unfiltered passthrough and
-an `AUDIO_ERROR` is broadcast — see `docs/ui-notes.md`'s "RNN noise
-reduction" section and `src/audio/rnnoise-filter.js`).
-
-A second, mutually-exclusive RX denoiser is also built in: the "HamNoise"
-toggle button, directly beneath "RNN", runs
-[HamNoise](https://github.com/e04/HamNoise)'s own neural denoiser — a
-band-split RNN model, architecturally unrelated to both RNNoise above and
-this project's own CW3/DeepCW decoder — over the same client-audio/STT-only
-RX path RNNoise occupies (see the paragraph above for exactly what that
-means and doesn't mean). Unlike RNNoise, it needs no separate binary
-install or env var: the two prebuilt WASM models it uses (CW and voice)
-are bundled under `models/hamnoise/` (see that directory's own
-`NOTICE.md` for provenance and licensing) and run in-process via Node's
-built-in WebAssembly support. Switching it on forces "RNN" off and vice
-versa — the operator asked for them to never run at once — but either one
-is fine to combine with the radio's own hardware NR button, which is a
-completely separate stage upstream in the actual RF/analog signal chain.
-HamNoise automatically picks its CW-trained or voice-trained model to
-match the radio's current mode, with no separate control for that; off by
-default; a load/processing failure falls back to unfiltered passthrough
-and broadcasts `AUDIO_ERROR`, the same posture as RNNoise — see
-`docs/ui-notes.md`'s "HamNoise noise reduction" section and
-`src/audio/hamnoise-filter.js`.
-
-`HAMNOISE_QUALITY` (`classic` by default, or `v2`) picks which generation
-of HamNoise's bundled models is used. This defaults to `classic` (the
-older, much cheaper single-GRU models) rather than HamNoise's own
-newer/default "v2" band-split-RNN models, because of a real-world
-performance finding: measured directly against the bundled binaries, v2
-costs roughly 36-53% of the real-time budget per hop of audio — on a fast
-x86 development machine, single-threaded and synchronous on this app's
-one event-loop thread — which a Raspberry Pi's far weaker single-core
-performance can easily push over 100%, meaning it falls further and
-further behind in a growing backlog rather than ever catching up, pinning
-the whole server at 100% CPU (starving CI-V control and every other
-WebSocket feature along with it) with nothing actually failing or logging
-an error. `classic` measured roughly 100x cheaper, leaving comfortable
-headroom even on a Pi. Only set `HAMNOISE_QUALITY=v2` on hardware you've
-confirmed can actually keep up with it in real time — see
-`src/audio/hamnoise-filter.js`'s own doc comment on its `quality` option
-for the full numbers and reasoning.
 
 ## Project layout
 
@@ -1080,14 +955,14 @@ decoding 15-second, UTC-slot-aligned band activity from the same RX
 audio the CW decoder and voice RX use, showing decoded callsigns/grids/
 reports in a band-activity table. Selecting FT8 (and any subsequent band
 change while it's active) auto-tunes the dial to that band's standard
-FT8 calling frequency. TX is manual only: you compose/pick a message and
-send it, and the app keys PTT itself and plays the encoded tone out at
-the next slot boundary — there's no auto-sequencing (WSJT-X-style
-automatic QSO completion), which is a deliberate choice, not a
-limitation of the library, to stay clearly within an operator
-*supervising* each transmission rather than software conducting a QSO on
-its own; see `docs/ui-notes.md` for the reasoning and the possible
-future auto-sequencing phase left explicitly undone for now. Decoding is
+FT8 calling frequency. Every transmission is started by the operator:
+you compose or pick a message and send it, and the app keys PTT itself
+and plays the encoded tone out at the next slot boundary. The guided QSO
+sequence (below) suggests each reply, but it never sends one by itself.
+Full WSJT-X-style auto-sequencing, where the software decides *and*
+transmits each step of a QSO, is deliberately not built: the operator
+supervises every transmission. See `docs/ui-notes.md` for the reasoning.
+Decoding is
 CPU-heavy (real seconds per slot on a busy band), so it runs in a
 background worker thread, not the main server process, to avoid
 stalling CI-V/audio/WebSocket handling. While the FT8 panel is open, the
