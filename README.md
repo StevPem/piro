@@ -12,6 +12,10 @@ Hamlib, no separate audio server and no extra apps.
 Written by VK3TR. Licensed AGPL-3.0-only (see
 [Licence](#licence)).
 
+**Current build: v71.** This is the version the app shows next to its title.
+It is the `CACHE_NAME` number in `src/client/sw.js`, which goes up with every
+change to the web app.
+
 ## Warning!
 Note that it DOES NOT include any form of login or password - so don't present it to the big bad internet or some rando will start controlling your rig! Always put it behind a firewall or VPN.
 
@@ -362,7 +366,7 @@ All settings are environment variables. For the systemd service they go in
 | `AUDIO_CODEC` | `pcm` | `pcm` or `opus`. The shipped web app uses `pcm`. |
 | `SCREEN_TITLE` | `SPARC PiRO` | Title shown in the browser tab and on the page. |
 | `JTTY_TX_FREQ_HZ` | `1450` | Audio frequency of JTTY's lowest tone, in Hz. The signal fills about 94 Hz above it. |
-| `JTTY_RX_LOW_HZ`, `JTTY_RX_HIGH_HZ` | `1000`, `2000` | Audio range, in Hz, searched for JTTY signals. Two extra fixed channels at 1350 and 1650 Hz (±150 Hz) are always searched as well. A narrower range is cheaper on the CPU. |
+| `JTTY_RX_LOW_HZ`, `JTTY_RX_HIGH_HZ` | `200`, `2900` | Audio range, in Hz, searched for JTTY signals. The default is the whole range the decoder supports. Two extra fixed channels at 1350 and 1650 Hz (±150 Hz) are always searched as well. A narrower range saves a little CPU. |
 | `JTTY_RX_QUALITY` | `economy` | JTTY decoder effort. `economy` uses about 40% of `full`'s CPU and decoded nearly as many weak signals in testing. `light` is in between, `full` matches WSJT-X's search exactly, and `auto` runs `full` but drops to `economy` when the Pi falls behind. |
 | `STATION_CALLSIGN`, `STATION_GRID` | none | Your callsign and Maidenhead grid. They set the FT8 default message and guided QSO, and the FreeDV Reporter report. |
 | `TLS_CERT_PATH`, `TLS_KEY_PATH` | none | Set both to serve HTTPS and WSS. Needed for the microphone from other devices. |
@@ -488,6 +492,8 @@ test/
                            path-traversal protection
   tls-server.test.js      confirms the server actually works over
                            HTTPS/WSS when TLS_CERT_PATH/TLS_KEY_PATH are set
+  readme-version.test.js  checks the README's "Current build" number matches
+                           CACHE_NAME in src/client/sw.js
   scope-display.test.mjs  unit tests for the client's waterfall color
                            mapping, tuning marker, click-to-tune math
                            (including the nearest-kHz snapping applied to
@@ -935,8 +941,8 @@ audio spectrum FT8 uses, with an amber marker at your transmit frequency;
 click the spectrum, or tap a decoded line, to move that frequency onto a
 station. Decoding happens on the Pi in a worker thread and
 only runs while JTTY is selected and you are not transmitting. It searches
-`JTTY_RX_LOW_HZ`..`JTTY_RX_HIGH_HZ` (default 1000-2000 Hz) plus two fixed
-channels around 1350 and 1650 Hz. The default `economy` effort keeps the load low on a Raspberry Pi 4;
+`JTTY_RX_LOW_HZ`..`JTTY_RX_HIGH_HZ` (by default the whole 200-2900 Hz
+passband) plus two fixed channels around 1350 and 1650 Hz. The default `economy` effort keeps the load low on a Raspberry Pi 4;
 see `JTTY_RX_QUALITY`.
 
 The encoder and decoder are JavaScript ports of WSJT-X's; see

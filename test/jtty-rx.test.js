@@ -172,6 +172,18 @@ function mix(parts, { seconds, snrDb, seed = 1 }) {
   const done = completed(receive(x).updates);
   check(done.length === 2 && done[0].id !== done[1].id && done[0].text === 'CQ K1ABC CQ' && done[1].text === 'CQ DL1XYZ CQ', 'two messages in turn on one frequency stay separate');
 }
+{
+  // The default search band is the whole 200-2900 Hz passband, so stations
+  // well outside the old 1000-2000 Hz default (and the fixed 1350/1650 Hz
+  // channels) are found. With that old band set explicitly, they are not.
+  const a = encodeJtty('CQ K1ABC CQ', { f0: 400, amplitude: 0.3 });
+  const b = encodeJtty('WB9XYZ 599 123', { f0: 2700, amplitude: 0.3 });
+  const x = mix([{ samples: a.samples, at: 0.2 }, { samples: b.samples, at: 0.9 }], { seconds: 8, snrDb: 5, seed: 5 });
+  const texts = completed(receive(x).updates).map((d) => d.text).sort();
+  check(texts.length === 2 && texts[0] === 'CQ K1ABC CQ' && texts[1] === 'WB9XYZ 599 123', 'default band decodes signals at 400 and 2700 Hz: ' + JSON.stringify(texts));
+  const narrow = completed(receive(x, { lowHz: 1000, highHz: 2000 }).updates);
+  check(narrow.length === 0, 'a 1000-2000 Hz band misses them: ' + JSON.stringify(narrow.map((d) => d.text)));
+}
 
 // --- 4. noise, silence, chunking, truncation -----------------------------------------
 {

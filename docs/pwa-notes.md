@@ -131,8 +131,9 @@ symptom to debug from the client side alone).
 This number doubles as the on-screen app version next to the title (see
 docs/ui-notes.md's "App version, next to the title" — `src/server/
 index.js` reads it straight out of this file), so bumping it here also
-updates what the operator sees on screen; there's no separate version
-number to remember. Once bumped, `skipWaiting()`/`clients.claim()` in `sw.js` mean the new
+updates what the operator sees on screen. The README's "Current build"
+line repeats the number, so update it at the same time;
+`test/readme-version.test.js` fails until the two match. Once bumped, `skipWaiting()`/`clients.claim()` in `sw.js` mean the new
 version takes over on the very next page load (or the current one, if
 the browser re-checks mid-session) — no need to unregister anything by
 hand. If a user reports "I updated the server but the browser still

@@ -25,9 +25,9 @@
  *      underneath can be found by a second pass;
  *   5. frames are chained into messages by frequency and one-frame timing.
  *
- * Not ported: the extra fixed 1350/1650 Hz search channels and the
- * "retro re-sweep" of earlier windows after a subtraction. The search band
- * is one configurable range (default 1000-2000 Hz) instead.
+ * The search covers one configurable range (default 200-2900 Hz, the whole
+ * passband) plus WSJT-X's two fixed channels at 1350 and 1650 Hz (+-150 Hz).
+ * Not ported: the "retro re-sweep" of earlier windows after a subtraction.
  */
 
 const { IS13, tbccEncode, genJttyWave } = require('./jtty-tx');
@@ -540,11 +540,11 @@ class JttyReceiver {
   /**
    * @param {object} [opts]
    * @param {(update: object) => void} [opts.onMessage] - called with {id, freqHz, snr, text, status: 'growing'|'complete'|'expired', startTime, latestTime}
-   * @param {number} [opts.lowHz=1000] - lower edge of the search band (audio Hz)
-   * @param {number} [opts.highHz=2000] - upper edge of the search band
+   * @param {number} [opts.lowHz=200] - lower edge of the search band (audio Hz)
+   * @param {number} [opts.highHz=2900] - upper edge of the search band
    * @param {number} [opts.smin=4.6] - minimum sync SNR (dB) to attempt a decode
    */
-  constructor({ onMessage, onDebug, lowHz = 1000, highHz = 2000, smin = DEFAULT_SMIN, light = false } = {}) {
+  constructor({ onMessage, onDebug, lowHz = 200, highHz = 2900, smin = DEFAULT_SMIN, light = false } = {}) {
     this.setLight(light);
     this.onMessage = onMessage || (() => {});
     this.onDebug = onDebug || null;

@@ -14,8 +14,9 @@ const {
 const { computeMagnitudeSpectrum } = require('../audio/fft');
 
 const JTTY_RX_RATE = 12000;
-const DEFAULT_LOW_HZ = 1000;
-const DEFAULT_HIGH_HZ = 2000;
+// The whole range the receiver can search (JttyReceiver clamps to 200-2900 Hz).
+const DEFAULT_LOW_HZ = 200;
+const DEFAULT_HIGH_HZ = 2900;
 // If the worker falls this far behind (seconds of audio queued), drop input
 // instead of letting the queue grow without bound.
 const MAX_BACKLOG_SEC = 20;

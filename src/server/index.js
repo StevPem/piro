@@ -460,7 +460,7 @@ async function main() {
 
     // JTTY receive: decodes in a worker thread while the client has JTTY
     // selected. JTTY_RX_LOW_HZ / JTTY_RX_HIGH_HZ set the audio band searched
-    // for signals (default 1000-2000 Hz). See server/jtty-decoder-bridge.js.
+    // for signals (default 200-2900 Hz, the whole passband). See server/jtty-decoder-bridge.js.
     jttyDecoderBridge = new JttyDecoderBridge({
       controlServer,
       audioBridge,

@@ -33,8 +33,8 @@ pair, serial+time, control phrases, grid), TEXT5, and the Unknown / Field Day
 Not ported: the retrospective re-sweeps of earlier windows, the N1MM
 tagged-text interface and the native function-key macros (the last two belong
 to WSJT-X's GUI layer, not to the mode itself). The receiver searches one
-configurable audio range plus the two fixed channels rather than the whole
-passband.
+configurable audio range (by default the whole 200-2900 Hz passband) plus
+the two fixed channels.
 
 ## How the port is checked
 
