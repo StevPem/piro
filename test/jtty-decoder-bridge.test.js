@@ -66,7 +66,7 @@ function setup(rate = 48000) {
 
 (async () => {
   const { controlServer, capture, worker, bridge } = setup();
-  check(worker.sent[0]?.type === 'config' && worker.sent[0].lowHz === 1000 && worker.sent[0].highHz === 2000 && worker.sent[0].quality === 'economy', 'worker is configured with the default search band and economy effort');
+  check(worker.sent[0]?.type === 'config' && worker.sent[0].lowHz === 200 && worker.sent[0].highHz === 2900 && worker.sent[0].quality === 'economy', 'worker is configured with the default search band and economy effort');
   check(!bridge.attached && capture.listenerCount('data') === 0, 'idle until JTTY is selected');
 
   controlServer.emit('jtty-active', true);
