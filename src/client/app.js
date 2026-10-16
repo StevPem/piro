@@ -160,6 +160,29 @@ const JTTY_FREQUENCIES = {
   '6m': 50160000,
 };
 
+// Olivia 8/250 dial frequencies (USB), from the "suggested calling
+// frequencies" table in Wikipedia's Olivia MFSK article
+// (https://en.wikipedia.org/wiki/Olivia_MFSK): each centre frequency less
+// 1.5 kHz, so the signal sits on the default 1500 Hz audio centre. 160m uses
+// the Region 1/3 entry (1.8375 MHz dial); 6m has no entry, so its chip
+// keeps its ordinary quick-tune point. Calling frequencies only — move off
+// after making contact.
+const OLIVIA_FREQUENCIES = {
+  '160m': 1837500,
+  '80m': 3581500,
+  '40m': 7071500,
+  '30m': 10141500,
+  '20m': 14071500,
+  '17m': 18097500,
+  '15m': 21071500,
+  '12m': 24921500,
+  '10m': 28121500,
+};
+const OLIVIA_DEFAULT_CENTRE_HZ = 1500;
+const OLIVIA_MIN_CENTRE_HZ = 400; // same limits as the server (audio/olivia-dsp.js)
+const OLIVIA_MAX_CENTRE_HZ = 2600;
+const OLIVIA_HALF_SPAN_HZ = 109.375; // centre to outer tone, 8/250
+
 // Standard FT4 calling/dial frequencies — FT4 is a *different* protocol
 // from FT8 (same underlying ft8ts library, but a faster 7.5s slot and its
 // own waveform — see ft8-bridge.js), and per widely-used band-plan
@@ -334,6 +357,10 @@ const ttyFreqLabelEl = document.getElementById('tty-freq-label');
 const ttyFreqEl = document.getElementById('tty-freq');
 const jttyRxEl = document.getElementById('jtty-rx');
 const jttyTableBodyEl = document.getElementById('jtty-table-body');
+const oliviaRxEl = document.getElementById('olivia-rx');
+const oliviaRxTextEl = document.getElementById('olivia-rx-text');
+const oliviaSignalEl = document.getElementById('olivia-signal');
+const oliviaTuneBtn = document.getElementById('olivia-tune-btn');
 const cwPaddleEl = document.getElementById('cw-paddle');
 const cwDotBtn = document.getElementById('cw-dot-btn');
 const cwDashBtn = document.getElementById('cw-dash-btn');
@@ -410,6 +437,12 @@ let ft8SendInFlight = false;
 // an ordinary CI-V mode — see ttyMode().
 let jttyActive = false;
 let jttyUsbSeen = false; // true once the radio has confirmed USB after JTTY was entered; see updateModeButtons()
+// Olivia 8/250: the third TTY mode, app-level on USB + DATA MODE like JTTY.
+let oliviaActive = false;
+let oliviaUsbSeen = false;
+let oliviaLastOffsetHz = 0; // the latest decoded signal's offset from the centre (for "Tune to signal")
+// The frequency box is shared by JTTY (lowest tone) and Olivia (centre); each keeps its own value.
+const ttyFreqByMode = { JTTY: 1450, OLIVIA: OLIVIA_DEFAULT_CENTRE_HZ };
 let ttyTxInFlight = false;
 let ttyShownMode = null; // which TTY mode updateTtyUi() last laid the composer out for
 let ttyLastDefaultText = ''; // the CQ text updateTtyUi() last pre-filled, so a later mode switch only replaces text the operator never touched
@@ -623,6 +656,11 @@ const scopeDisplay = new ScopeDisplay({
       setJttyTxFreq(hz);
       return;
     }
+    if (oliviaActive && !ft8Active) {
+      // Olivia: the click sets the centre frequency the receiver listens on and the next transmission uses.
+      setOliviaCentre(hz);
+      return;
+    }
     currentQsoFreqHz = hz;
     // Also persists as the new session default (see ft8DefaultTxFreqHz's
     // doc comment) — a manual pick should stick around as "where my CQs
@@ -632,11 +670,11 @@ const scopeDisplay = new ScopeDisplay({
   },
 });
 link.addEventListener('scope-line', (event) => {
-  if (ft8Active || jttyActive) return; // audio-domain FFT spectrum takes over the display; see the 'ft8-spectrum' listener below
+  if (ft8Active || jttyActive || oliviaActive) return; // audio-domain FFT spectrum takes over the display; see the 'ft8-spectrum' listener below
   scopeDisplay.pushLine(event.detail);
 });
 link.addEventListener('ft8-spectrum', (event) => {
-  if (!ft8Active && !jttyActive) return;
+  if (!ft8Active && !jttyActive && !oliviaActive) return;
   scopeDisplay.pushAudioSpectrum(event.detail);
 });
 
@@ -802,6 +840,10 @@ link.addEventListener('connected', (event) => {
   // reconnect the server may have dropped it, so re-arm if we are in JTTY.
   if (data.jttyActive) reflectJttyActiveFromServer();
   else if (jttyActive) link.request('setJttyActive', { active: true }).catch(() => {});
+  // Olivia likewise, keeping the centre frequency the other client chose.
+  if (data.oliviaActive) reflectOliviaActiveFromServer(data.oliviaCentreHz);
+  else if (oliviaActive) link.request('setOliviaActive', { active: true, centreHz: ttyFreqByMode.OLIVIA }).catch(() => {});
+  else if (Number.isFinite(data.oliviaCentreHz)) ttyFreqByMode.OLIVIA = data.oliviaCentreHz;
 
   pttBtn.disabled = false;
   ttySendBtn.disabled = false;
@@ -1020,6 +1062,11 @@ for (const band of BANDS) {
       tuneJttyToBand(band.name);
       return;
     }
+    // And in Olivia: the band's Olivia calling frequency.
+    if (oliviaActive && OLIVIA_FREQUENCIES[band.name] != null) {
+      tuneOliviaToBand(band.name);
+      return;
+    }
     link
       .request('setFrequency', { value: band.hz })
       .then(() => {
@@ -1100,6 +1147,7 @@ for (const entry of MODE_CHIPS) {
       // comment.
       if (freeDvActive) exitFreeDvMode();
       if (jttyActive) exitJttyMode();
+      if (oliviaActive) exitOliviaMode();
       // First click enters FT8/FT4 mode (whichever variant was last
       // active, or 'FT8' the first time); a click while already active
       // toggles the protocol instead — see toggleFt8Variant()'s doc
@@ -1115,6 +1163,7 @@ for (const entry of MODE_CHIPS) {
       // comment above.
       if (ft8Active) exitFt8Mode();
       if (jttyActive) exitJttyMode();
+      if (oliviaActive) exitOliviaMode();
       // Unlike FT8, there's no second variant to toggle to any more (the
       // '700E' option was removed — see enterFreeDvMode()'s doc comment),
       // so a click while already active is simply a no-op.
@@ -1126,10 +1175,12 @@ for (const entry of MODE_CHIPS) {
       // Same mutual exclusivity as the other app-level modes.
       if (ft8Active) exitFt8Mode();
       if (freeDvActive) exitFreeDvMode();
-      // First click selects RTTY; after that the button toggles RTTY <->
-      // JTTY — a click in RTTY goes to JTTY, a click in JTTY goes back to
-      // RTTY — until a non-TTY mode is picked (which resets it to "TTY").
-      if (ttyMode() === 'RTTY') enterJttyMode();
+      // First click selects RTTY; after that the button cycles RTTY ->
+      // JTTY -> Olivia -> RTTY ... until a non-TTY mode is picked (which
+      // resets it to "TTY").
+      const now = ttyMode();
+      if (now === 'RTTY') enterJttyMode();
+      else if (now === 'JTTY') switchJttyToOlivia();
       else selectRttyMode();
     });
   } else if (entry === 'CW') {
@@ -1143,6 +1194,7 @@ for (const entry of MODE_CHIPS) {
       if (ft8Active) exitFt8Mode();
       if (freeDvActive) exitFreeDvMode();
       if (jttyActive) exitJttyMode();
+      if (oliviaActive) exitOliviaMode();
       // First click enters CW mode (using whichever decoder variant is
       // already selected); a click while CW mode is already active
       // cycles the variant (CW1 -> CW2 -> CW3 -> CW1) instead of
@@ -1173,6 +1225,7 @@ for (const entry of MODE_CHIPS) {
       if (ft8Active) exitFt8Mode();
       if (freeDvActive) exitFreeDvMode();
       if (jttyActive) exitJttyMode();
+      if (oliviaActive) exitOliviaMode();
       link
         .request('setMode', { mode })
         .then(() => updateModeButtons(mode))
@@ -1197,12 +1250,16 @@ function updateModeButtons(mode) {
     if (mode === 'USB') jttyUsbSeen = true;
     else if (jttyUsbSeen) leaveJtty();
   }
+  if (oliviaActive) {
+    if (mode === 'USB') oliviaUsbSeen = true;
+    else if (oliviaUsbSeen) leaveOlivia();
+  }
   setCwPaddleVisible(mode === 'CW' && !ft8Active && !freeDvActive);
   setRttyTickerVisible(ttyMode() === 'RTTY');
   updateTtyUi();
 }
 
-// --- TTY mode (RTTY / JTTY) ---
+// --- TTY mode (RTTY / JTTY / Olivia) ---
 
 /**
  * Which TTY mode is currently in effect: 'JTTY' (app-level, on USB + DATA
@@ -1212,6 +1269,7 @@ function updateModeButtons(mode) {
  */
 function ttyMode() {
   if (jttyActive) return 'JTTY';
+  if (oliviaActive) return 'OLIVIA';
   if (currentMode === 'RTTY' && !ft8Active && !freeDvActive) return 'RTTY';
   return null;
 }
@@ -1221,9 +1279,11 @@ function selectRttyMode() {
   link
     .request('setMode', { mode: 'RTTY' })
     .then(() => {
-      // Leaving JTTY turns DATA MODE back off (see leaveJtty()); done after
-      // the mode change is confirmed so the chip never flickers via "TTY".
+      // Leaving JTTY or Olivia turns DATA MODE back off (see leaveJtty() /
+      // leaveOlivia()); done after the mode change is confirmed so the chip
+      // never flickers via "TTY".
       leaveJtty();
+      leaveOlivia();
       updateModeButtons('RTTY');
     })
     .catch((err) => showError(err.message));
@@ -1293,20 +1353,99 @@ function exitJttyMode() {
   updateTtyUi();
 }
 
+/**
+ * TTY chip click while in JTTY: straight on to Olivia. Both run on USB with
+ * DATA MODE on, so the radio's mode is left alone; only the receivers swap.
+ */
+function switchJttyToOlivia() {
+  jttyActive = false;
+  jttyUsbSeen = false;
+  link.request('setJttyActive', { active: false }).catch(() => {});
+  enterOliviaMode({ radioReady: true });
+}
+
+/**
+ * Enters Olivia 8/250: USB + DATA MODE (unless already there, coming from
+ * JTTY), the band's Olivia calling frequency, and the receiver armed at
+ * the current centre frequency.
+ */
+function enterOliviaMode({ radioReady = false } = {}) {
+  oliviaActive = true;
+  oliviaUsbSeen = radioReady && currentMode === 'USB';
+  const bandName = currentFreqHz != null ? bandNameForFrequency(currentFreqHz) : null;
+  if (bandName) tuneOliviaToBand(bandName);
+  if (!radioReady) {
+    link
+      .request('setMode', { mode: 'USB' })
+      .then(() => updateModeButtons('USB'))
+      .catch((err) => showError(`Couldn't set USB for Olivia: ${err.message}`));
+    link
+      .request('setDataMode', { on: true })
+      .catch((err) => showError(`Couldn't enable DATA MODE for Olivia: ${err.message}`));
+  }
+  link
+    .request('setOliviaActive', { active: true, centreHz: ttyFreqByMode.OLIVIA })
+    .catch((err) => showError(`Couldn't start Olivia receive: ${err.message}`));
+  setRttyTickerVisible(false);
+  updateTtyUi();
+}
+
+/** Tunes to a band's Olivia calling frequency. */
+function tuneOliviaToBand(bandName) {
+  const hz = OLIVIA_FREQUENCIES[bandName];
+  if (hz == null) return;
+  link
+    .request('setFrequency', { value: hz })
+    .then(() => updateFrequencyDisplay(hz))
+    .catch((err) => showError(`Couldn't tune to ${bandName} Olivia frequency: ${err.message}`));
+}
+
+/** Ends Olivia locally and restores DATA MODE. Returns false if Olivia wasn't active. */
+function leaveOlivia() {
+  if (!oliviaActive) return false;
+  oliviaActive = false;
+  oliviaUsbSeen = false;
+  link.request('setDataMode', { on: false }).catch((err) => showError(`Couldn't disable DATA MODE: ${err.message}`));
+  link.request('setOliviaActive', { active: false }).catch(() => {});
+  return true;
+}
+
+/** Olivia was already selected when this page connected: reflect it without re-sending radio changes. */
+function reflectOliviaActiveFromServer(centreHz) {
+  if (Number.isFinite(centreHz)) ttyFreqByMode.OLIVIA = centreHz;
+  if (oliviaActive) return;
+  oliviaActive = true;
+  oliviaUsbSeen = false;
+  setRttyTickerVisible(false);
+  updateTtyUi();
+}
+
+/** Leaves Olivia because the operator picked some other mode. */
+function exitOliviaMode() {
+  if (!leaveOlivia()) return;
+  updateTtyUi();
+}
+
 const PTT_HINT_VOICE = 'Hold to transmit (or hold Space). First use will ask for microphone access.';
 const PTT_HINT_CW =
   'Hold Dot/Dash to key CW (iambic — hold both to alternate). CI-V round-trip latency may make timing less precise than a hardware keyer.';
 const TTY_HINT = {
   RTTY: 'Type your text and press Send (or Enter). Sent as AFSK RTTY, 45.45 baud / 170 Hz shift, on the same tones and Reverse setting as receive.',
   JTTY: 'Type your text and press Send (or Enter). Received JTTY appears above; tap a line to transmit on its frequency. The radio is on USB with DATA MODE on.',
+  OLIVIA:
+    'Type your text and press Send (or Enter). Olivia 8/250 sends about 1.5 characters a second. Received text appears above; click the spectrum to set the centre frequency (the receiver searches 125 Hz either side). The radio is on USB with DATA MODE on.',
 };
-const TTY_PLACEHOLDER = { RTTY: 'CQ CQ DE VK2IO K', JTTY: 'CQ VK2IO CQ' };
-const TTY_MAX_CHARS = { RTTY: 200, JTTY: 80 };
+const TTY_PLACEHOLDER = { RTTY: 'CQ CQ DE VK2IO K', JTTY: 'CQ VK2IO CQ', OLIVIA: 'CQ CQ CQ DE VK2IO VK2IO K' };
+const TTY_MAX_CHARS = { RTTY: 200, JTTY: 80, OLIVIA: 300 }; // Olivia: matches OLIVIA_MAX_CHARS in audio/tty-bridge.js
+const TTY_CHIP_LABEL = { RTTY: 'RTTY', JTTY: 'JTTY', OLIVIA: 'Olivia' };
+const TTY_FREQ_LABEL = { JTTY: 'TX audio', OLIVIA: 'Centre' };
 
 /** The CQ text the composer starts a TTY session with (empty if STATION_CALLSIGN isn't configured). */
 function ttyDefaultText(mode) {
   if (!stationCallsign) return '';
-  return mode === 'JTTY' ? `CQ ${stationCallsign} CQ` : `CQ CQ DE ${stationCallsign} ${stationCallsign} K`;
+  if (mode === 'JTTY') return `CQ ${stationCallsign} CQ`;
+  if (mode === 'OLIVIA') return `CQ CQ CQ DE ${stationCallsign} ${stationCallsign} K`;
+  return `CQ CQ DE ${stationCallsign} ${stationCallsign} K`;
 }
 
 /**
@@ -1320,16 +1459,27 @@ function ttyDefaultText(mode) {
 function updateTtyUi() {
   if (!ttyModeBtn) return;
   const mode = ttyMode();
-  ttyModeBtn.textContent = mode ?? 'TTY';
+  ttyModeBtn.textContent = mode ? TTY_CHIP_LABEL[mode] : 'TTY';
   ttyModeBtn.classList.toggle('chip--active', mode !== null);
   ttyComposerEl.hidden = mode === null;
-  ttyFreqLabelEl.hidden = mode !== 'JTTY';
+  const freqMode = mode === 'JTTY' || mode === 'OLIVIA';
+  ttyFreqLabelEl.hidden = !freqMode;
   jttyRxEl.hidden = mode !== 'JTTY';
-  // JTTY shows the 0-3 kHz audio spectrum (like FT8/FT4), so the RF span buttons don't apply.
-  scopeSpansEl.hidden = ft8Active || mode === 'JTTY';
-  if (mode === 'JTTY') scopeDisplay.setQsoFreq(Number(ttyFreqEl.value) || null);
-  else if (!ft8Active) scopeDisplay.setQsoFreq(null);
+  oliviaRxEl.hidden = mode !== 'OLIVIA';
+  // JTTY and Olivia show the 0-3 kHz audio spectrum (like FT8/FT4), so the RF span buttons don't apply.
+  scopeSpansEl.hidden = ft8Active || freqMode;
+  if (freqMode) {
+    ttyFreqLabelEl.firstChild.textContent = `${TTY_FREQ_LABEL[mode]} `;
+    ttyFreqEl.min = mode === 'OLIVIA' ? String(OLIVIA_MIN_CENTRE_HZ) : '200';
+    ttyFreqEl.max = mode === 'OLIVIA' ? String(OLIVIA_MAX_CENTRE_HZ) : '2800';
+    ttyFreqEl.setAttribute('aria-label', mode === 'OLIVIA' ? 'Olivia centre audio frequency in hertz' : 'JTTY transmit audio frequency in hertz');
+    if (mode !== ttyShownMode) ttyFreqEl.value = String(ttyFreqByMode[mode]);
+    scopeDisplay.setQsoFreq(Number(ttyFreqEl.value) || null);
+  } else if (!ft8Active) scopeDisplay.setQsoFreq(null);
 
+  // RTTY and JTTY only carry capitals, so the box shows text that way; Olivia
+  // sends exactly what is typed, so it must show the real case.
+  ttyInputEl.classList.toggle('tty-composer__input--as-typed', mode === 'OLIVIA');
   if (mode !== null) {
     pttBtn.hidden = true;
     pttHintEl.textContent = TTY_HINT[mode];
@@ -1357,13 +1507,43 @@ function updateTtyUi() {
 
 /** Sets the JTTY transmit frequency (box, status line and the marker on the audio spectrum). */
 function setJttyTxFreq(hz) {
+  ttyFreqByMode.JTTY = Math.round(hz);
   ttyFreqEl.value = String(Math.round(hz));
   scopeDisplay.setQsoFreq(Math.round(hz));
   ttyStatusEl.hidden = false;
   ttyStatusEl.textContent = `JTTY transmit frequency set to ${Math.round(hz)} Hz.`;
 }
+
+/** Sets the Olivia centre frequency: the box, the spectrum marker, and the receiver (which retunes). */
+function setOliviaCentre(hz, { quiet = false } = {}) {
+  const centre = Math.max(OLIVIA_MIN_CENTRE_HZ, Math.min(OLIVIA_MAX_CENTRE_HZ, Math.round(hz)));
+  ttyFreqByMode.OLIVIA = centre;
+  ttyFreqEl.value = String(centre);
+  scopeDisplay.setQsoFreq(centre);
+  oliviaLastOffsetHz = 0;
+  oliviaTuneBtn.hidden = true;
+  if (oliviaActive) link.request('setOliviaActive', { active: true, centreHz: centre }).catch((err) => showError(`Couldn't retune Olivia: ${err.message}`));
+  if (!quiet) {
+    ttyStatusEl.hidden = false;
+    ttyStatusEl.textContent = `Olivia centre set to ${centre} Hz (tones ${Math.round(centre - OLIVIA_HALF_SPAN_HZ)}–${Math.round(centre + OLIVIA_HALF_SPAN_HZ)} Hz; receiving ${centre - 125}–${centre + 125} Hz).`;
+  }
+}
+
+let oliviaRetuneTimer = null;
 ttyFreqEl.addEventListener('input', () => {
-  if (ttyMode() === 'JTTY') scopeDisplay.setQsoFreq(Number(ttyFreqEl.value) || null);
+  const mode = ttyMode();
+  const hz = Number(ttyFreqEl.value);
+  if (mode === 'JTTY') {
+    if (Number.isFinite(hz)) ttyFreqByMode.JTTY = hz;
+    scopeDisplay.setQsoFreq(hz || null);
+  } else if (mode === 'OLIVIA') {
+    scopeDisplay.setQsoFreq(hz || null);
+    // Retune the receiver once typing pauses, not on every keystroke.
+    clearTimeout(oliviaRetuneTimer);
+    if (Number.isFinite(hz) && hz >= OLIVIA_MIN_CENTRE_HZ && hz <= OLIVIA_MAX_CENTRE_HZ) {
+      oliviaRetuneTimer = setTimeout(() => setOliviaCentre(hz, { quiet: true }), 600);
+    }
+  }
 });
 
 /** Send button / Enter key: transmit the composer text, or cut a running transmission short. */
@@ -1377,7 +1557,7 @@ function sendTty() {
   const text = ttyInputEl.value.trim();
   if (!text) return;
   const request = { mode, text };
-  if (mode === 'JTTY') {
+  if (mode === 'JTTY' || mode === 'OLIVIA') {
     const freqHz = Number(ttyFreqEl.value);
     if (Number.isFinite(freqHz) && freqHz > 0) request.freqHz = freqHz;
   }
@@ -1435,6 +1615,51 @@ link.addEventListener('jtty-text', (event) => {
   if (stick) jttyTableBodyEl.parentElement.scrollTop = jttyTableBodyEl.parentElement.scrollHeight;
 });
 
+// --- Olivia receive ---
+// Decoded text arrives a block (up to 3 characters) at a time, every ~2 s.
+// It is shown as a running transcript, with this station's own
+// transmissions shown inline so the conversation reads in order.
+const OLIVIA_RX_MAX_CHARS = 4000;
+function appendOliviaText(text, { own = false } = {}) {
+  const box = oliviaRxTextEl;
+  const stick = box.scrollTop + box.clientHeight >= box.scrollHeight - 8;
+  const clean = text.replace(/\r\n?/g, '\n');
+  let last = box.lastElementChild;
+  if (!last || last.classList.contains('olivia-rx__own') !== own) {
+    if (own && box.textContent && !box.textContent.endsWith('\n')) box.appendChild(document.createTextNode('\n'));
+    last = document.createElement('span');
+    if (own) last.className = 'olivia-rx__own';
+    box.appendChild(last);
+  }
+  // Backspace (sent by some keyboard-to-keyboard operators) removes the last character.
+  for (const ch of clean) {
+    if (ch === '\b') last.textContent = last.textContent.slice(0, -1);
+    else last.textContent += ch;
+  }
+  while (box.textContent.length > OLIVIA_RX_MAX_CHARS && box.firstElementChild) {
+    const first = box.firstElementChild;
+    const excess = box.textContent.length - OLIVIA_RX_MAX_CHARS;
+    if (first.textContent.length <= excess) first.remove();
+    else first.textContent = first.textContent.slice(excess);
+  }
+  if (stick) box.scrollTop = box.scrollHeight;
+}
+
+link.addEventListener('olivia-text', (event) => {
+  const u = event.detail;
+  if (!u || typeof u.text !== 'string') return;
+  appendOliviaText(u.text);
+  oliviaLastOffsetHz = Number.isFinite(u.freqOffsetHz) ? u.freqOffsetHz : 0;
+  const off = Math.round(oliviaLastOffsetHz);
+  const offText = off === 0 ? 'on centre' : `${Math.abs(off)} Hz ${off > 0 ? 'above' : 'below'} centre`;
+  oliviaSignalEl.textContent = `${utcClock(u.time ?? Date.now())} · S/N ${Number(u.snr).toFixed(1)} · ${offText}`;
+  // The receiver copies anywhere within +/-125 Hz, but a reply should go out where the other station is.
+  oliviaTuneBtn.hidden = Math.abs(off) < 16;
+});
+oliviaTuneBtn.addEventListener('click', () => {
+  setOliviaCentre(ttyFreqByMode.OLIVIA + oliviaLastOffsetHz);
+});
+
 link.addEventListener('tty-tx-status', (event) => {
   const { status, mode, message, nframes, durationSec, error, note, freqHz } = event.detail || {};
   ttyTxInFlight = status === 'sending';
@@ -1448,17 +1673,19 @@ link.addEventListener('tty-tx-status', (event) => {
       if (nframes) detail.push(`${nframes} frame${nframes === 1 ? '' : 's'}`);
       if (durationSec) detail.push(`${durationSec.toFixed(1)} s`);
       if (mode === 'JTTY' && freqHz) detail.push(`${freqHz}–${Math.round(freqHz + 93.75)} Hz`);
-      ttyStatusEl.textContent = `Sending ${mode}: "${shown}"${detail.length ? ` (${detail.join(', ')})` : ''}…${note ? ` ${note}.` : ''}`;
+      if (mode === 'OLIVIA' && freqHz) detail.push(`centre ${freqHz} Hz`);
+      if (mode === 'OLIVIA') appendOliviaText(`${message || ''}\n`, { own: true });
+      ttyStatusEl.textContent = `Sending ${TTY_CHIP_LABEL[mode] ?? mode}: "${shown}"${detail.length ? ` (${detail.join(', ')})` : ''}…${note ? ` ${note}.` : ''}`;
       break;
     }
     case 'sent':
-      ttyStatusEl.textContent = `Sent ${mode}: "${shown}"`;
+      ttyStatusEl.textContent = `Sent ${TTY_CHIP_LABEL[mode] ?? mode}: "${shown}"`;
       break;
     case 'aborted':
-      ttyStatusEl.textContent = `Stopped ${mode} transmission.`;
+      ttyStatusEl.textContent = `Stopped ${TTY_CHIP_LABEL[mode] ?? mode} transmission.`;
       break;
     case 'error':
-      ttyStatusEl.textContent = `${mode || 'TTY'} TX failed: ${error || 'unknown error'}`;
+      ttyStatusEl.textContent = `${TTY_CHIP_LABEL[mode] ?? (mode || 'TTY')} TX failed: ${error || 'unknown error'}`;
       break;
     default:
       ttyStatusEl.hidden = true;

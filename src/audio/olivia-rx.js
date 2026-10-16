@@ -449,6 +449,9 @@ class OliviaReceiver {
     this.bestFreqOffset = 0;
     this.snr = 0;
     this.blockSnr = 0;
+    // S/N and offset as they were when the most recent block was output
+    // (the live figures move on, e.g. while flush() pushes silence through)
+    this.lastOutput = { snr: 0, blockSnr: 0, freqOffsetHz: 0 };
   }
 
   reset() {
@@ -577,6 +580,7 @@ class OliviaReceiver {
           const block = bp.data.subarray(at, at + this.bps);
           if (this.blockSnr >= this.blockSnrMin && !(this.dropControlBlocks && hasStrayControl(block))) {
             for (let b = 0; b < this.bps; b++) out.push(block[b]);
+            this.lastOutput = { snr: this.snr, blockSnr: this.blockSnr, freqOffsetHz: this.freqOffsetHz };
           }
         }
         if (this.snr > 100) this.snr = 0.0;

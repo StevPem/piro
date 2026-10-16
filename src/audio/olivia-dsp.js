@@ -13,6 +13,19 @@
 const OLIVIA_SAMPLE_RATE = 8000; // the modem's internal rate, as fldigi
 const CARRIER_SEPAR = 2; // FFT bins between neighbouring tones
 
+// Olivia 8/250's tones span +/-110 Hz around the centre; keep them well
+// inside the 3 kHz the modem's 1:1 rate converter passes.
+const OLIVIA_MIN_CENTRE_HZ = 400;
+const OLIVIA_MAX_CENTRE_HZ = 2600;
+const OLIVIA_DEFAULT_CENTRE_HZ = 1500;
+
+/** Rounds an audio centre frequency to whole Hz within the usable range (non-numbers give the default). */
+function clampOliviaCentre(hz) {
+  const n = Number(hz);
+  if (!Number.isFinite(n)) return OLIVIA_DEFAULT_CENTRE_HZ;
+  return Math.max(OLIVIA_MIN_CENTRE_HZ, Math.min(OLIVIA_MAX_CENTRE_HZ, Math.round(n)));
+}
+
 function log2(x) {
   let y = 0;
   for (let v = x >>> 0; v > 1; v >>>= 1) y++;
@@ -321,6 +334,10 @@ function lowPass3(arr, base, inp, weight, feedback = 0.1) {
 
 module.exports = {
   OLIVIA_SAMPLE_RATE,
+  OLIVIA_MIN_CENTRE_HZ,
+  OLIVIA_MAX_CENTRE_HZ,
+  OLIVIA_DEFAULT_CENTRE_HZ,
+  clampOliviaCentre,
   CARRIER_SEPAR,
   log2,
   oliviaParams,

@@ -7,6 +7,8 @@ const PKG = path.join(__dirname, '..');
 const { ControlServer } = require(PKG + '/src/server/ws-server');
 const { TtyBridge } = require(PKG + '/src/audio/tty-bridge');
 const { JttyDecoderBridge } = require(PKG + '/src/server/jtty-decoder-bridge');
+const { OliviaDecoderBridge } = require(PKG + '/src/server/olivia-decoder-bridge');
+const { encodeOlivia } = require(PKG + '/src/audio/olivia-tx');
 const { encodeJtty } = require(PKG + '/src/audio/jtty-tx');
 const { upsampleFloatToPcm } = require(PKG + '/src/audio/resample');
 let chromium;
@@ -48,6 +50,8 @@ class Civ extends EventEmitter {
   tty.start();
   const jttyRx = new JttyDecoderBridge({ controlServer: server, audioBridge });
   jttyRx.start();
+  const oliviaRx = new OliviaDecoderBridge({ controlServer: server, audioBridge });
+  oliviaRx.start();
 
   const browser = await chromium.launch({ executablePath: process.env.CHROMIUM_PATH || undefined, args: ['--no-sandbox'] });
   const page = await browser.newPage({ viewport: { width: 430, height: 1100 } });
@@ -131,18 +135,76 @@ class Civ extends EventEmitter {
   check(audioBridge.playback.restarted === 1, 'abort flushed the audio');
   check(civ.log.filter((e) => e[0] === 'setPtt').at(-1)[1] === false, 'PTT released after stop');
 
-  // Enter key sends too; RTTY text via Enter
-  // click -> back to RTTY
+  // click 3 -> Olivia
+  const modeCalls = civ.log.filter((e) => e[0] === 'setMode' || e[0] === 'setDataMode').length;
   await page.locator('#modes .chip', { hasText: /^JTTY$/ }).click();
+  await page.waitForFunction(() => [...document.querySelectorAll('#modes .chip')].some((c) => c.textContent === 'Olivia'));
+  await sleep(200);
+  check((await ttyLabel()).includes('Olivia'), 'third click: button relabelled "Olivia"');
+  check(civ.mode === 'USB' && civ.dataMode === true && civ.log.filter((e) => e[0] === 'setMode' || e[0] === 'setDataMode').length === modeCalls, 'JTTY -> Olivia leaves the radio alone (USB, DATA MODE on, no mode commands)');
+  check(server.state.jttyActive === false && !jttyRx.attached && server.state.oliviaActive === true && oliviaRx.attached, 'JTTY receiver disarmed, Olivia receiver armed');
+  check(civ.log.some((e) => e[0] === 'setFrequency' && e[1] === 14071500), 'entering Olivia on 20m tunes to the 14.0715 MHz calling frequency');
+  check(await vis('#olivia-rx') && !(await vis('#jtty-rx')) && await vis('#tty-freq'), 'Olivia: transcript panel shown, JTTY table hidden, frequency box kept');
+  check((await page.locator('#tty-freq-label').textContent()).trim().startsWith('Centre') && (await page.locator('#tty-freq').inputValue()) === '1500', 'frequency box is labelled "Centre" and holds 1500 Hz');
+  check((await page.locator('#tty-input').inputValue()) === 'cq vk2io cq', 'composer keeps the text the operator typed (moving on from JTTY)');
+  check((await page.locator('#ptt-hint').textContent()).includes('Olivia'), 'hint text describes Olivia');
+  check((await page.locator('#tty-input').evaluate((e) => getComputedStyle(e).textTransform)) === 'none', 'Olivia: the text box shows the real case (Olivia sends it as typed)');
+
+  // Olivia receive: a signal 31 Hz above the centre, fed through the capture
+  // stream. The receiver prints each block about 4 blocks (~8 s) after it
+  // arrives (it integrates before deciding, as fldigi does), so keep
+  // feeding the band for a while after the signal ends.
+  {
+    const enc = encodeOlivia('CQ CQ DE K1ABC K1ABC K\r\n', { centreHz: 1531, amplitude: 0.3 });
+    const pcm = upsampleFloatToPcm(enc.samples, 8000, 48000);
+    const all = Buffer.concat([Buffer.alloc(96000), pcm, Buffer.alloc(48000 * 2 * 12)]);
+    for (let i = 0; i < all.length; i += 9600) {
+      capture.emit('data', all.subarray(i, i + 9600));
+      while ((oliviaRx._sentSamples - oliviaRx._ackedSamples) / 8000 > 3) await sleep(5);
+    }
+    await page.waitForFunction(() => /CQ CQ DE K1ABC K1ABC K/.test(document.getElementById('olivia-rx-text').textContent), null, { timeout: 20000 });
+    check(true, 'received Olivia text appears in the transcript');
+    const sig = await page.locator('#olivia-signal').textContent();
+    check(/S\/N \d/.test(sig) && /31 Hz above centre/.test(sig), 'signal line shows S/N and the offset: ' + sig);
+    check(/ Hz$/.test(await page.locator('#scope-range-hi').textContent()) && !(await vis('#scope-spans')), 'Olivia: the scope shows the audio spectrum, RF spans hidden');
+    check(await vis('#olivia-tune-btn'), '"Tune to signal" offered for an off-centre signal');
+    await page.locator('#olivia-tune-btn').click();
+    await sleep(200);
+    check((await page.locator('#tty-freq').inputValue()) === '1531' && server.state.oliviaCentreHz === 1531 && oliviaRx.centreHz === 1531, 'Tune to signal moves the centre onto it (box, server, receiver)');
+    check(!(await vis('#olivia-tune-btn')), 'and the button goes away');
+  }
+
+  // Send an Olivia message (long: stop it once it is going)
+  {
+    const w = writes.length;
+    await page.locator('#tty-input').fill('VK2IO DE K1ABC TNX');
+    await page.locator('#tty-send-btn').click();
+    await page.waitForFunction(() => /Sending Olivia/.test(document.getElementById('tty-status').textContent), null, { timeout: 8000 });
+    const st = await page.locator('#tty-status').textContent();
+    check(/Sending Olivia: "VK2IO DE K1ABC TNX"/.test(st) && /centre 1531 Hz/.test(st) && /\d+\.\d s/.test(st), 'Olivia status line: ' + st);
+    check(writes.length === w + 1 && civ.log.some((e) => e[0] === 'setPtt' && e[1] === true), 'Olivia audio written and PTT keyed');
+    check(!oliviaRx.attached, 'Olivia receiver pauses while transmitting');
+    check(/VK2IO DE K1ABC TNX/.test(await page.locator('#olivia-rx-text .olivia-rx__own').last().textContent()), 'own transmission is shown in the transcript');
+    await page.locator('#tty-send-btn').click(); // Stop
+    await page.waitForFunction(() => /Stopped Olivia/.test(document.getElementById('tty-status').textContent), null, { timeout: 8000 });
+    await sleep(100);
+    check(civ.log.filter((e) => e[0] === 'setPtt').at(-1)[1] === false && oliviaRx.attached, 'Stop releases PTT and the receiver resumes');
+  }
+
+  // Enter key sends too; RTTY text via Enter
+  // click 4 -> back to RTTY
+  await page.locator('#modes .chip', { hasText: /^Olivia$/ }).click();
   await page.waitForFunction(() => [...document.querySelectorAll('#modes .chip')].some((c) => c.textContent === 'RTTY'));
   await sleep(150);
-  check(civ.mode === 'RTTY' && civ.dataMode === false, 'third click: back to RTTY, DATA MODE off');
-  check(server.state.jttyActive === false && !jttyRx.attached, 'leaving JTTY disarms the receiver');
+  check(civ.mode === 'RTTY' && civ.dataMode === false, 'fourth click: back to RTTY, DATA MODE off');
+  check(server.state.jttyActive === false && !jttyRx.attached && server.state.oliviaActive === false && !oliviaRx.attached, 'leaving Olivia disarms the receiver');
+  check(!(await vis('#olivia-rx')) && !(await vis('#tty-freq')), 'RTTY: no Olivia panel, no frequency box');
+  check((await page.locator('#tty-input').evaluate((e) => getComputedStyle(e).textTransform)) === 'uppercase', 'RTTY: the text box shows capitals again');
   await page.locator('#tty-input').fill('test 73');
   await page.locator('#tty-input').press('Enter');
   await page.waitForFunction(() => /Sent RTTY/.test(document.getElementById('tty-status').textContent), null, { timeout: 8000 });
   check(true, 'Enter sends; RTTY status "Sent RTTY"');
-  check(writes.length === 2, 'RTTY audio written');
+  check(writes.length === 3, 'RTTY audio written');
 
   // typed text survives mode toggling
   await page.locator('#modes .chip', { hasText: /^RTTY$/ }).click();
@@ -170,6 +232,17 @@ class Civ extends EventEmitter {
   await page.waitForFunction(() => [...document.querySelectorAll('#modes .chip')].some((c) => c.textContent === 'TTY'));
   check(!(await vis('#tty-composer')) && !(await vis('#ptt-btn')) && (await vis('#cw-paddle')), 'RTTY -> CW: composer gone, CW paddle shown, PTT hidden');
 
+  // Olivia -> LSB: leaves Olivia, DATA MODE off, PTT back
+  await page.locator('#modes .chip', { hasText: /^TTY$/ }).click();
+  await page.locator('#modes .chip', { hasText: /^RTTY$/ }).click();
+  await page.locator('#modes .chip', { hasText: /^JTTY$/ }).click();
+  await page.waitForFunction(() => [...document.querySelectorAll('#modes .chip')].some((c) => c.textContent === 'Olivia'));
+  check((await page.locator('#tty-freq').inputValue()) === '1531', 'Olivia remembers its centre between sessions');
+  await chip('LSB').click();
+  await page.waitForFunction(() => [...document.querySelectorAll('#modes .chip')].some((c) => c.textContent === 'TTY'));
+  await sleep(200);
+  check(civ.mode === 'LSB' && civ.dataMode === false && server.state.oliviaActive === false && (await vis('#ptt-btn')), 'Olivia -> LSB: Olivia off, DATA MODE off, PTT back');
+
   // JTTY -> FT8 and back
   await page.locator('#modes .chip', { hasText: /^TTY$/ }).click();
   await page.locator('#modes .chip', { hasText: /^RTTY$/ }).click();
@@ -184,6 +257,7 @@ class Civ extends EventEmitter {
   await browser.close();
   tty.stop();
   jttyRx.stop();
+  oliviaRx.stop();
   await server.close();
   console.log(failures ? `\n${failures} FAILED` : '\nAll UI checks passed');
   process.exit(failures ? 1 : 0);
