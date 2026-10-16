@@ -443,6 +443,15 @@ causes.
 
 ## Project layout
 
+[`docs/architecture.drawio`](docs/architecture.drawio) is a UML diagram of the
+main classes and how they connect: browser client, server, feature bridges,
+CI-V and audio. Its second page lists which events each server part listens to
+and sends. Open it in [draw.io](https://app.diagrams.net/) or the draw.io
+desktop app. [`docs/architecture.png`](docs/architecture.png) is a preview of the
+first page.
+
+[![PiRO class diagram](docs/architecture.png)](docs/architecture.png)
+
 ```
 src/
   civ/            CI-V driver: framing, BCD encoding, rig control,
@@ -645,6 +654,8 @@ docs/
   pwa-notes.md    PWA installability / HTTPS constraint notes
   ui-notes.md     client UI architecture, binary frame tagging, gesture/mic
                   lifecycle notes, testing boundary
+  architecture.drawio  UML class diagram and event-wiring table (draw.io)
+  architecture.png     preview of the class diagram
 ```
 
 
