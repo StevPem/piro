@@ -17,7 +17,6 @@ const {
   FUNCTION_SUBCMD,
   LEVEL_SUBCMD,
   OPTIONAL_SUBCMD,
-  DATA_MODE_PARAM_BYTES,
   AF_OUTPUT_LEVEL_USB_PARAM_BYTES,
   MOD_INPUT_LEVEL_USB_PARAM_BYTES,
   MODE,
@@ -878,72 +877,50 @@ async function testFunctionAndTunerGetters() {
 }
 
 async function testDataMode() {
-  console.log(
-    '\n-- setDataMode()/getDataMode() use the "1A 05 00 63" two-part-addressed command with a ' +
-      '2-byte value field (confirmed against real IC-7300 hardware — see docs/civ-notes.md) --'
-  );
+  console.log('\n-- setDataMode()/getDataMode() use 1A 06 [data, filter] (Icom CI-V reference; Hamlib S_MEM_DATA_MODE) --');
   const transport = new FakeTransport();
   const driver = new CivDriver({ path: '/fake', radioAddr: RADIO_ADDR, transport });
   await driver.open();
+  const tick = () => new Promise((resolve) => setImmediate(resolve));
+  const body = (f) => [...f].slice(4, -1); // after FE FE to from, before FD
 
-  async function expectSet(on) {
-    const promise = driver.setDataMode(on);
-    await new Promise((resolve) => setImmediate(resolve));
-    const lastFrame = [...transport.written[transport.written.length - 1]];
-    // FE FE <to> <from> 1A 05 00 63 00 <on> FD — a 2-byte value field
-    // ([0x00, on?1:0]), not a single byte: a real hardware read-back
-    // (test/manual-data-mode-diagnostics.js) showed the radio's own
-    // reply for this parameter is 4 data bytes wide, not 3.
-    const expected = [CMD.OPTIONAL, OPTIONAL_SUBCMD.DATA_MODE, ...DATA_MODE_PARAM_BYTES, 0x00, on ? 1 : 0];
-    const got = [lastFrame[4], lastFrame[5], lastFrame[6], lastFrame[7], lastFrame[8], lastFrame[9]];
-    check(
-      got.join(',') === expected.join(','),
-      `setDataMode(${on}) sends [${expected.join(',')}], got [${got.join(',')}]`
-    );
-    transport.sendFrame({ cmd: CMD.OK });
-    await promise;
-  }
+  // on, with an explicit filter: one frame, 1A 06 01 02
+  let p = driver.setDataMode(true, 2);
+  await tick();
+  check(body(transport.written.at(-1)).join(',') === [CMD.OPTIONAL, OPTIONAL_SUBCMD.DATA_MODE, 0x01, 0x02].join(','), `setDataMode(true, 2) sends 1A 06 01 02, got [${body(transport.written.at(-1)).join(',')}]`);
+  transport.sendFrame({ cmd: CMD.OK });
+  await p;
 
-  await expectSet(true);
-  await expectSet(false);
+  // on, no filter given: reads the mode first and keeps its filter
+  const before = transport.written.length;
+  p = driver.setDataMode(true);
+  await tick();
+  check(transport.written[before][4] === CMD.SEND_MODE, 'setDataMode(true) first reads the current mode, to keep its filter');
+  transport.sendFrame({ cmd: CMD.SEND_MODE, data: Buffer.from([0x01, 0x03]) }); // USB, FIL3
+  await tick();
+  await tick();
+  check(body(transport.written.at(-1)).join(',') === [CMD.OPTIONAL, OPTIONAL_SUBCMD.DATA_MODE, 0x01, 0x03].join(','), `then sends 1A 06 01 03, got [${body(transport.written.at(-1)).join(',')}]`);
+  transport.sendFrame({ cmd: CMD.OK });
+  await p;
 
-  const promise = driver.getDataMode();
-  await new Promise((resolve) => setImmediate(resolve));
-  const lastFrame = [...transport.written[transport.written.length - 1]];
-  // A bare read: just the 2-byte parameter number, no value bytes yet.
-  const isBareParamRead =
-    lastFrame.length === 9 &&
-    lastFrame[4] === CMD.OPTIONAL &&
-    lastFrame[5] === OPTIONAL_SUBCMD.DATA_MODE &&
-    lastFrame[6] === DATA_MODE_PARAM_BYTES[0] &&
-    lastFrame[7] === DATA_MODE_PARAM_BYTES[1];
-  check(isBareParamRead, `getDataMode() reads with just the 2-byte parameter number, got [${lastFrame.join(',')}]`);
-  transport.sendFrame({
-    cmd: CMD.OPTIONAL,
-    subCmd: OPTIONAL_SUBCMD.DATA_MODE,
-    data: Buffer.from([...DATA_MODE_PARAM_BYTES, 0x00, 1]),
-  });
-  const on = await promise;
-  check(on === true, `getDataMode() decodes the echoed [param, param, valueHi, valueLo] reply, got ${on}`);
+  // off: 1A 06 00 00
+  p = driver.setDataMode(false);
+  await tick();
+  check(body(transport.written.at(-1)).join(',') === [CMD.OPTIONAL, OPTIONAL_SUBCMD.DATA_MODE, 0x00, 0x00].join(','), `setDataMode(false) sends 1A 06 00 00, got [${body(transport.written.at(-1)).join(',')}]`);
+  transport.sendFrame({ cmd: CMD.OK });
+  await p;
+  check(!transport.written.some((f) => f[4] === CMD.OPTIONAL && f[5] === 0x05 && f[6] === 0x00 && f[7] === 0x63), 'nothing is ever sent to 1A 05 00 63 (the old, wrong address)');
 
-  // A 3-byte reply (the old, wrong assumption) is a clear error, not a
-  // silently-wrong answer — same "throw rather than misinterpret" rule
-  // this project applies to getScopeSpan()'s short-reply case.
-  const shortPromise = driver.getDataMode();
-  shortPromise.catch(() => {});
-  await new Promise((resolve) => setImmediate(resolve));
-  transport.sendFrame({
-    cmd: CMD.OPTIONAL,
-    subCmd: OPTIONAL_SUBCMD.DATA_MODE,
-    data: Buffer.from([...DATA_MODE_PARAM_BYTES, 1]),
-  });
-  let threwOnShortReply = false;
-  try {
-    await shortPromise;
-  } catch {
-    threwOnShortReply = true;
-  }
-  check(threwOnShortReply, 'getDataMode() throws on an unexpectedly short (3-byte) reply rather than misreading it');
+  // read: bare 1A 06, reply [data, filter]
+  p = driver.getDataMode();
+  await tick();
+  check(body(transport.written.at(-1)).join(',') === [CMD.OPTIONAL, OPTIONAL_SUBCMD.DATA_MODE].join(','), 'getDataMode() reads with a bare 1A 06');
+  transport.sendFrame({ cmd: CMD.OPTIONAL, subCmd: OPTIONAL_SUBCMD.DATA_MODE, data: Buffer.from([0x01, 0x01]) });
+  check((await p) === true, 'getDataMode() decodes [01, 01] as on');
+  p = driver.getDataMode();
+  await tick();
+  transport.sendFrame({ cmd: CMD.OPTIONAL, subCmd: OPTIONAL_SUBCMD.DATA_MODE, data: Buffer.from([0x00, 0x00]) });
+  check((await p) === false, 'and [00, 00] as off');
 
   await driver.close();
 }
@@ -963,7 +940,7 @@ async function testUsbAudioLevels() {
     await new Promise((resolve) => setImmediate(resolve));
     const lastFrame = [...transport.written[transport.written.length - 1]];
     // FE FE <to> <from> 1A 05 <param,param> <valueHi,valueLo> FD
-    const expected = [CMD.OPTIONAL, OPTIONAL_SUBCMD.DATA_MODE, ...paramBytes, ...expectedValueBytes];
+    const expected = [CMD.OPTIONAL, OPTIONAL_SUBCMD.PARAMS, ...paramBytes, ...expectedValueBytes];
     const got = lastFrame.slice(4, 10);
     check(
       got.join(',') === expected.join(','),
@@ -991,13 +968,13 @@ async function testUsbAudioLevels() {
     const isBareParamRead =
       lastFrame.length === 9 &&
       lastFrame[4] === CMD.OPTIONAL &&
-      lastFrame[5] === OPTIONAL_SUBCMD.DATA_MODE &&
+      lastFrame[5] === OPTIONAL_SUBCMD.PARAMS &&
       lastFrame[6] === paramBytes[0] &&
       lastFrame[7] === paramBytes[1];
     check(isBareParamRead, `${methodName}() reads with just the 2-byte parameter number, got [${lastFrame.join(',')}]`);
     transport.sendFrame({
       cmd: CMD.OPTIONAL,
-      subCmd: OPTIONAL_SUBCMD.DATA_MODE,
+      subCmd: OPTIONAL_SUBCMD.PARAMS,
       data: Buffer.from([...paramBytes, ...replyValueBytes]),
     });
     const value = await promise;
@@ -1013,7 +990,7 @@ async function testUsbAudioLevels() {
   await new Promise((resolve) => setImmediate(resolve));
   transport.sendFrame({
     cmd: CMD.OPTIONAL,
-    subCmd: OPTIONAL_SUBCMD.DATA_MODE,
+    subCmd: OPTIONAL_SUBCMD.PARAMS,
     data: Buffer.from([...AF_OUTPUT_LEVEL_USB_PARAM_BYTES, 0x02]),
   });
   let threwOnShortReply = false;

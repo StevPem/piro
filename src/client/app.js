@@ -2402,10 +2402,21 @@ sstvTxCanvas.addEventListener(
   { passive: false }
 );
 
-document.getElementById('sstv-tx-cancel').addEventListener('click', () => {
-  if (sstvTxBusy) return;
+// Cancel closes the editor; while a picture is going out it stops the
+// transmission first (and closes once the server confirms).
+let sstvCancelPending = false;
+function closeSstvTxEditor() {
   sstvTxImage = null;
   sstvTxEditor.hidden = true;
+}
+document.getElementById('sstv-tx-cancel').addEventListener('click', () => {
+  if (sstvTxBusy) {
+    sstvCancelPending = true;
+    sstvTxStatus.textContent = 'Stopping…';
+    link.request('abortSstv').catch((err) => showError(`Couldn't stop the picture: ${err.message}`));
+    return;
+  }
+  closeSstvTxEditor();
 });
 
 function sstvTxRgbBase64() {
@@ -2436,6 +2447,7 @@ sstvTxSendBtn.addEventListener('click', () => {
 link.addEventListener('sstv-tx-status', (event) => {
   const { status, name, durationSec, startTime, error } = event.detail || {};
   clearInterval(sstvTxTimer);
+  if (status !== 'encoding' && status !== 'sending' && status !== 'aborted') sstvCancelPending = false;
   sstvTxBusy = status === 'encoding' || status === 'sending';
   sstvTxSendBtn.classList.toggle('ptt--active', sstvTxBusy);
   if (sstvTxBusy) sstvTxSendBtn.textContent = 'Stop';
@@ -2459,6 +2471,8 @@ link.addEventListener('sstv-tx-status', (event) => {
       break;
     case 'aborted':
       sstvTxStatus.textContent = 'Stopped.';
+      if (sstvCancelPending) closeSstvTxEditor();
+      sstvCancelPending = false;
       break;
     case 'error':
       sstvTxStatus.textContent = `Couldn't send: ${error || 'unknown error'}`;
@@ -2577,7 +2591,7 @@ function enterFt8Mode() {
 
   // USB alone is only the *operating* mode — it doesn't by itself route
   // this app's TX audio to the transmitter. The IC-7300 keeps a separate
-  // "DATA MODE" toggle (CI-V 1A 05 00 63) with its own MOD-Input source
+  // "DATA MODE" toggle (CI-V 1A 06) with its own MOD-Input source
   // selection distinct from plain USB voice mode's — see
   // civ/driver.js#setDataMode's doc comment and docs/ui-notes.md for the
   // full story (including the one thing this CI-V command can't do: the

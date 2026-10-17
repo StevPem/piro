@@ -110,6 +110,28 @@ const statuses = (cs) => cs.broadcasts.filter((b) => b.type === EVENT.SSTV_TX_ST
     check(!controlServer.broadcasts.some((b) => b.type === EVENT.SSTV_PICTURE), 'a stopped picture is not added');
   }
   {
+    // the last browser going away stops the transmission
+    const { controlServer, bridge, civ } = setup({ mode: 'M1' });
+    controlServer.clients = new Set(['a']);
+    const p = bridge.send({ rgb: new Uint8Array(320 * 256 * 3).fill(50), width: 320, height: 256 });
+    while (statuses(controlServer).at(-1)?.status !== 'sending') await sleep(10);
+    controlServer.emit('client-disconnected', 'b');
+    check(bridge.transmitting, 'one browser of several leaving does not stop it');
+    controlServer.clients.clear();
+    controlServer.emit('client-disconnected', 'a');
+    await p;
+    check(statuses(controlServer).at(-1).status === 'aborted' && civ.log.at(-1) === 'data false' && civ.log.includes('ptt false'), 'the last browser leaving stops it: PTT off, DATA MODE off');
+  }
+  {
+    // Stop while still encoding: the radio is never keyed
+    const { controlServer, bridge, civ } = setup({ mode: 'M1' });
+    const p = bridge.send({ rgb: new Uint8Array(320 * 256 * 3).fill(50), width: 320, height: 256 });
+    while (statuses(controlServer).at(-1)?.status !== 'encoding') await sleep(1);
+    bridge.abort();
+    await p;
+    check(statuses(controlServer).at(-1).status === 'aborted' && !civ.log.some((e) => e.startsWith('ptt')), 'Stop while encoding: aborted without keying');
+  }
+  {
     const { controlServer, bridge } = setup({ mode: 'S1' });
     let e1 = null;
     await bridge.send({ rgb: new Uint8Array(160 * 128 * 3), width: 160, height: 128 }).catch((e) => (e1 = e));

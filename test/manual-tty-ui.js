@@ -460,6 +460,14 @@ class Civ extends EventEmitter {
     await page.waitForFunction(() => document.getElementById('sstv-tx-status').textContent === 'Stopped.', null, { timeout: 5000 });
     await sleep(200);
     check(civ.dataMode === false && civ.log.filter((e) => e[0] === 'setPtt').at(-1)[1] === false && (await page.locator('#sstv-tx-send').textContent()).startsWith('Send ('), 'Stop: PTT released, DATA MODE off, Send back');
+    // Cancel while sending stops the transmission too, and closes the editor
+    await page.locator('#sstv-tx-send').click();
+    await page.waitForFunction(() => /^Sending Scottie S1/.test(document.getElementById('sstv-tx-status').textContent), null, { timeout: 20000 });
+    check(civ.log.filter((e) => e[0] === 'setPtt').at(-1)[1] === true, 'sending again');
+    await page.locator('#sstv-tx-cancel').click();
+    await page.waitForFunction(() => document.getElementById('sstv-tx-editor').hidden, null, { timeout: 5000 });
+    await sleep(200);
+    check(civ.dataMode === false && civ.log.filter((e) => e[0] === 'setPtt').at(-1)[1] === false, 'Cancel while sending: transmission stopped (PTT off, DATA MODE off), editor closed');
   }
   await chip('SSB').click();
   await sleep(300);
