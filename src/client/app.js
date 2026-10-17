@@ -183,6 +183,31 @@ const OLIVIA_MIN_CENTRE_HZ = 400; // same limits as the server (audio/olivia-dsp
 const OLIVIA_MAX_CENTRE_HZ = 2600;
 const OLIVIA_HALF_SPAN_HZ = 109.375; // centre to outer tone, 8/250
 
+// RTTY: the centre of each band's digital-modes segment in the WIA
+// (Australian) band plan, as listed in the WIA Technical Advisory
+// Committee's "HF Digimodes" band-plan paper
+// (https://www.wia.org.au/members/bandplans/data/documents/TAC%20Band%20Plans%20-%20HF%20Digimodes%20170103.pdf).
+// RTTY has no calling frequencies; this just starts you in the middle of
+// where it is allowed, to tune around from. The radio's RTTY mode shows the
+// mark frequency, so these are mark frequencies. Segments (MHz):
+//   160m 1.800-1.810   80m 3.620-3.640   40m 7.040-7.060   30m 10.130-10.140
+//   20m 14.070-14.112  17m 18.100-18.110 15m 21.070-21.125 12m 24.920-24.930
+//   10m 28.050-28.150
+// The paper also proposes changes (e.g. 80m to 3.570-3.600, where most RTTY
+// is heard worldwide); update this table if the WIA adopts them. 6m has no
+// HF digimode segment, so its chip keeps its ordinary quick-tune point.
+const RTTY_FREQUENCIES = {
+  '160m': 1805000,
+  '80m': 3630000,
+  '40m': 7050000,
+  '30m': 10135000,
+  '20m': 14091000,
+  '17m': 18105000,
+  '15m': 21097500,
+  '12m': 24925000,
+  '10m': 28100000,
+};
+
 // Feld-Hell activity frequencies (signal frequency, USB), the bottom of each
 // range in the Feld Hell Club's list
 // (https://www.sites.google.com/site/feldhellclub/Home/frequencies), 20m
@@ -1110,6 +1135,11 @@ for (const band of BANDS) {
       tuneOliviaToBand(band.name);
       return;
     }
+    // In RTTY: the middle of the band's WIA digital segment.
+    if (ttyMode() === 'RTTY' && RTTY_FREQUENCIES[band.name] != null) {
+      tuneRttyToBand(band.name);
+      return;
+    }
     // And in Feld-Hell: the band's Feld-Hell activity frequency.
     if (hellActive && HELL_FREQUENCIES[band.name] != null) {
       tuneHellToBand(band.name);
@@ -1337,6 +1367,10 @@ function selectRttyMode() {
   link
     .request('setMode', { mode: 'RTTY' })
     .then(() => {
+      // Then the middle of the band's WIA digital segment (RTTY_FREQUENCIES),
+      // after the mode change so the radio shows it as the mark frequency.
+      const bandName = currentFreqHz != null ? bandNameForFrequency(currentFreqHz) : null;
+      if (bandName) tuneRttyToBand(bandName);
       // Leaving JTTY, Olivia or Feld-Hell turns DATA MODE back off (see
       // leaveJtty() / leaveOlivia() / leaveHell()); done after the mode
       // change is confirmed so the chip never flickers via "TTY".
@@ -1346,6 +1380,16 @@ function selectRttyMode() {
       updateModeButtons('RTTY');
     })
     .catch((err) => showError(err.message));
+}
+
+/** Tunes to the centre of a band's WIA digital-modes segment (RTTY mark frequency). */
+function tuneRttyToBand(bandName) {
+  const hz = RTTY_FREQUENCIES[bandName];
+  if (hz == null) return;
+  link
+    .request('setFrequency', { value: hz })
+    .then(() => updateFrequencyDisplay(hz))
+    .catch((err) => showError(`Couldn't tune to ${bandName} RTTY frequency: ${err.message}`));
 }
 
 /**
