@@ -1,5 +1,6 @@
 'use strict';
 
+const { clampOliviaCentre } = require('../audio/olivia-dsp');
 const http = require('http');
 const https = require('https');
 const { EventEmitter } = require('events');
@@ -145,6 +146,11 @@ class ControlServer extends EventEmitter {
       // ft8Active: JttyDecoderBridge acts on the 'jtty-active' event, and a
       // newly-connecting client's EVENT.CONNECTED snapshot needs the value.
       jttyActive: false,
+      // Whether the client has Olivia selected, and the audio centre
+      // frequency it listens on (see REQUEST.SET_OLIVIA_ACTIVE /
+      // server/olivia-decoder-bridge.js). Same reasons as jttyActive.
+      oliviaActive: false,
+      oliviaCentreHz: 1500,
       // Which variant the FreeDV mode button is currently in — '700E' or
       // 'RADE' (see REQUEST.SET_FREEDV_VARIANT / src/server/rade-bridge.js).
       // Defaults to 'RADE' — the only variant the client's FreeDV chip
@@ -298,9 +304,18 @@ class ControlServer extends EventEmitter {
     this.emit('jtty-active', active);
   }
 
-  /** JTTY decoding is CPU-heavy: don't leave it running for a browser that has gone away. */
+  _setOliviaActive(active, centreHz) {
+    this.state.oliviaActive = active;
+    if (centreHz !== undefined) this.state.oliviaCentreHz = centreHz;
+    // Handled by OliviaDecoderBridge (internal-only event, same pattern as 'jtty-active').
+    this.emit('olivia-active', { active, centreHz: this.state.oliviaCentreHz });
+  }
+
+  /** JTTY and Olivia decoding cost CPU: don't leave them running for a browser that has gone away. */
   _releaseJttyIfAlone() {
-    if (this.clients.size === 0 && this.state.jttyActive) this._setJttyActive(false);
+    if (this.clients.size !== 0) return;
+    if (this.state.jttyActive) this._setJttyActive(false);
+    if (this.state.oliviaActive) this._setOliviaActive(false);
   }
 
   async _handleMessage(ws, raw) {
@@ -409,6 +424,18 @@ class ControlServer extends EventEmitter {
           ws.send(makeResult(id, { active: msg.active }));
           break;
         }
+        case REQUEST.SET_OLIVIA_ACTIVE: {
+          if (typeof msg.active !== 'boolean') {
+            throw new Error('"active" must be a boolean');
+          }
+          if (msg.centreHz !== undefined && (typeof msg.centreHz !== 'number' || !Number.isFinite(msg.centreHz))) {
+            throw new Error('"centreHz" must be a number (Hz) if provided');
+          }
+          const centreHz = msg.centreHz === undefined ? undefined : clampOliviaCentre(msg.centreHz);
+          this._setOliviaActive(msg.active, centreHz);
+          ws.send(makeResult(id, { active: msg.active, centreHz: this.state.oliviaCentreHz }));
+          break;
+        }
         case REQUEST.SEND_FT8: {
           if (typeof msg.message !== 'string' || msg.message.trim() === '') {
             throw new Error('"message" must be a non-empty string');
@@ -433,8 +460,8 @@ class ControlServer extends EventEmitter {
           break;
         }
         case REQUEST.SEND_TTY: {
-          if (msg.mode !== 'RTTY' && msg.mode !== 'JTTY') {
-            throw new Error('"mode" must be "RTTY" or "JTTY"');
+          if (msg.mode !== 'RTTY' && msg.mode !== 'JTTY' && msg.mode !== 'OLIVIA') {
+            throw new Error('"mode" must be "RTTY", "JTTY" or "OLIVIA"');
           }
           if (typeof msg.text !== 'string' || msg.text.trim() === '') {
             throw new Error('"text" must be a non-empty string');

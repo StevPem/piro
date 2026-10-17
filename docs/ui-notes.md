@@ -3223,14 +3223,17 @@ manual verification in a real browser against real hardware — see the
 step-by-step testing guidance already given for earlier phases as a
 model for how to approach that.
 
-## TTY button and Send composer (RTTY / JTTY)
+## TTY button and Send composer (RTTY / JTTY / Olivia)
 
 - The mode row's old RTTY chip is now **TTY**. First click selects the
   radio's RTTY mode (label reads "RTTY"); the next click enters JTTY
-  (label "JTTY"); further clicks toggle between the two until any other
-  mode chip is chosen. JTTY is an app-level pseudo-mode like FT8/FreeDV:
-  the radio is put in USB with DATA MODE on, and DATA MODE is turned off
-  again when leaving.
+  (label "JTTY"); the next enters Olivia 8/250 (label "Olivia"); the next
+  goes back to RTTY, and so on round, until any other mode chip is chosen.
+  JTTY and Olivia are app-level pseudo-modes like FT8/FreeDV: the radio is
+  put in USB with DATA MODE on, and DATA MODE is turned off again when
+  leaving. Going from JTTY straight to Olivia (`switchJttyToOlivia()`)
+  sends no mode commands at all, since both want the same radio setup; only
+  the server-side receivers swap.
 - While RTTY or JTTY is active the PTT button is hidden and replaced by
   `#tty-composer`: a text field plus a **Send** button (Stop while
   sending; Enter also sends). JTTY text is limited to 80 characters and
@@ -3257,3 +3260,46 @@ model for how to approach that.
   -> `tty-tx-status` broadcasts (sending/sent/aborted/error).
 - Verified in headless Chromium with `test/manual-tty-ui.js` against a
   stub radio; not tested on air. Service-worker cache bumped to v71. The JTTY receive path is also driven end to end in `test/manual-tty-ui.js` (synthetic 48 kHz audio -> bridge -> worker -> table).
+- Real bug found while adding Olivia: `#tty-freq-label` (`.tty-composer__freq`)
+  sets `display: flex`, which beats the `hidden` attribute, so the JTTY
+  frequency box had been showing in RTTY too. Fixed with the usual
+  `.tty-composer__freq[hidden] { display: none; }` override (see "CW iambic
+  paddle" above for the pattern).
+
+### Olivia 8/250
+
+- `ttyMode()` returns `'OLIVIA'` while `oliviaActive`; the chip reads
+  "Olivia" (`TTY_CHIP_LABEL`). Entering it tunes to the band's
+  `OLIVIA_FREQUENCIES` entry (dial frequencies from Wikipedia's "suggested
+  calling frequencies" table, each centre less 1.5 kHz; 160m uses the
+  Region 1/3 entry; 6m has none), and band chips do the same while Olivia
+  is selected.
+- The frequency box is shared with JTTY but each mode keeps its own value
+  (`ttyFreqByMode`): JTTY's is the lowest tone, Olivia's is the **centre**
+  (label "Centre", 400-2600 Hz, default from `OLIVIA_FREQ_HZ` via the
+  connect snapshot's `oliviaCentreHz`). Olivia uses one frequency for both
+  sending and receiving, as fldigi does. `setOliviaCentre()` updates the
+  box, the amber spectrum marker and the server (`setOliviaActive {active:
+  true, centreHz}` retunes the receiver); typing in the box retunes after a
+  600 ms pause rather than on every keystroke. A spectrum click sets it.
+- `#olivia-rx` is a running transcript (`appendOliviaText()`), capped at
+  4000 characters, with this station's own transmissions inline in amber
+  (`.olivia-rx__own`, added on the `sending` status) so a QSO reads in
+  order. CR/LF become line breaks and a received backspace deletes the last
+  character, as keyboard-to-keyboard operators expect. The header line
+  shows the time, the S/N figure and the offset of the latest block from
+  the centre. When the offset is at least one FFT bin (15.6 Hz), **Tune to
+  signal** moves the centre onto it: the receiver copies anywhere within
+  +/-125 Hz, but a reply should go out where the other station is.
+- The composer box normally shows capitals (`text-transform: uppercase`,
+  purely visual: RTTY and JTTY only carry capitals anyway). Olivia sends
+  text exactly as typed, so in Olivia the box gets
+  `.tty-composer__input--as-typed` and shows the real case.
+- Server side: `OliviaDecoderBridge` (decimates capture to 8 kHz, feeds
+  `audio/olivia-decode-worker.js`, broadcasts `olivia-text` and the 0-3 kHz
+  spectrum, pauses during PTT and starts a fresh receiver after it);
+  `TtyBridge` mode `'OLIVIA'` (encodes at 8 kHz, upsamples to the capture
+  rate, up to 300 characters). Text arrives about four blocks (~8 s) after
+  it was sent: the synchroniser integrates over `syncIntegLen` = 4 blocks
+  before outputting, exactly like fldigi.
+- Service-worker cache bumped to v72.

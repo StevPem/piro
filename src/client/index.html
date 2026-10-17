@@ -170,6 +170,18 @@
         </div>
       </section>
 
+      <!-- Olivia 8/250 received text, shown while the TTY chip is on Olivia
+           (see updateTtyUi() and the 'olivia-text' listener in app.js): a
+           running transcript, with this station's own transmissions inline. -->
+      <section class="ft8-panel olivia-rx" id="olivia-rx" aria-label="Olivia received" hidden>
+        <div class="ft8-panel__header">
+          <span class="row-group__label">Olivia 8/250</span>
+          <span class="ft8-panel__slot" id="olivia-signal">listening…</span>
+          <button class="chip olivia-rx__tune" id="olivia-tune-btn" type="button" hidden title="Move the centre frequency onto the signal being received, so your reply goes out where that station is">Tune to signal</button>
+        </div>
+        <pre class="olivia-rx__text" id="olivia-rx-text" aria-live="polite" aria-label="Received Olivia text"></pre>
+      </section>
+
       <section class="ft8-panel" id="ft8-panel" aria-label="FT8" hidden>
         <div class="ft8-panel__header">
           <span class="row-group__label" id="ft8-panel-label">FT8 band activity</span>

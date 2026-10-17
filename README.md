@@ -12,7 +12,7 @@ Hamlib, no separate audio server and no extra apps.
 Written by VK3TR. Licensed AGPL-3.0-only (see
 [Licence](#licence)).
 
-**Current build: v71.** This is the version the app shows next to its title.
+**Current build: v72.** This is the version the app shows next to its title.
 It is the `CACHE_NAME` number in `src/client/sw.js`, which goes up with every
 change to the web app.
 
@@ -28,6 +28,7 @@ Several of the cooler features in this app are built on the work of others:
 - HamNoise denoiser = https://github.com/e04/HamNoise
 - RNnoise denoiser = https://jmvalin.ca/demo/rnnoise/
 - JTTY support = Ported to JS from https://wsjtx.github.io/wsjtx/index.html
+- Olivia support = Ported to JS from Pawel Jalocha's (SP9VRC) MFSK code in fldigi, https://github.com/w1hkj/fldigi
 
 ## Features
 
@@ -37,12 +38,12 @@ Several of the cooler features in this app are built on the work of others:
   codec through ALSA.
 - **Spectrum scope and waterfall** from the radio's CI-V scope data (opt-in).
 - **CW decoders**, including "CW 3" (DeepCW, a neural decoder) and an RTTY decoder.
-- **RTTY and JTTY**: one "TTY" button selects RTTY, then toggles
-  between RTTY and
-  [JTTY](https://wsjt.sourceforge.io/) (WSJT-X's new text mode, ported to
-  JavaScript here). In both, a text box and a Send button replace PTT.
-  JTTY is also decoded, in a table of messages as they arrive. See
-  [RTTY and JTTY](#rtty-and-jtty).
+- **RTTY, JTTY and Olivia**: one "TTY" button selects RTTY, then cycles
+  through [JTTY](https://wsjt.sourceforge.io/) (WSJT-X's new text mode) and
+  [Olivia 8/250](https://en.wikipedia.org/wiki/Olivia_MFSK) (the robust
+  MFSK keyboard mode, compatible with fldigi), both ported to JavaScript
+  here. In all three, a text box and a Send button replace PTT, and received
+  text is decoded as it arrives. See [RTTY, JTTY and Olivia](#rtty-jtty-and-olivia).
 - **FT8**: band-activity decoding, manual TX, and a guided QSO sequence that
   suggests each reply (you still send every message yourself). Optional PSK
   Reporter spotting.
@@ -368,6 +369,8 @@ All settings are environment variables. For the systemd service they go in
 | `JTTY_TX_FREQ_HZ` | `1450` | Audio frequency of JTTY's lowest tone, in Hz. The signal fills about 94 Hz above it. |
 | `JTTY_RX_LOW_HZ`, `JTTY_RX_HIGH_HZ` | `200`, `2900` | Audio range, in Hz, searched for JTTY signals. The default is the whole range the decoder supports. Two extra fixed channels at 1350 and 1650 Hz (±150 Hz) are always searched as well. A narrower range saves a little CPU. |
 | `JTTY_RX_QUALITY` | `economy` | JTTY decoder effort. `economy` uses about 40% of `full`'s CPU and decoded nearly as many weak signals in testing. `light` is in between, `full` matches WSJT-X's search exactly, and `auto` runs `full` but drops to `economy` when the Pi falls behind. |
+| `OLIVIA_FREQ_HZ` | `1500` | Olivia's default audio centre frequency, in Hz, for sending and receiving, until it is changed in the UI. The signal is 250 Hz wide; the receiver searches 125 Hz either side. |
+| `OLIVIA_SQUELCH` | on | `off` turns off PiRO's filtering of junk characters and decodes exactly as fldigi does with its squelch off. See [Olivia](#rtty-jtty-and-olivia). |
 | `STATION_CALLSIGN`, `STATION_GRID` | none | Your callsign and Maidenhead grid. They set the FT8 default message and guided QSO, and the FreeDV Reporter report. |
 | `TLS_CERT_PATH`, `TLS_KEY_PATH` | none | Set both to serve HTTPS and WSS. Needed for the microphone from other devices. |
 | `SOURCE_CODE_URL` | none | Link shown in the page footer. The AGPL asks you to offer the source to people who use your instance (see [Licence](#licence)). |
@@ -460,7 +463,9 @@ src/
                    also FT8 support: slot-clock (UTC 15s boundaries),
                    resampler (48k<->12k with anti-aliasing), the RX/TX
                    bridge, and its decode worker-thread — see docs/ui-notes.md;
-                   RTTY (rtty-decoder.js, rtty-encoder.js) and JTTY
+                   RTTY (rtty-decoder.js, rtty-encoder.js), Olivia
+                   (olivia-dsp.js, olivia-tx.js, olivia-rx.js,
+                   olivia-decode-worker.js) and JTTY
                    (jtty-codec.js, jtty-tx.js, jtty-rx.js, jtty-tbcc-decode.js,
                    decimator.js, jtty-decode-worker.js); transmit is played
                    out by tty-bridge.js and receive is fed by
@@ -579,11 +584,18 @@ test/
                            encoder: the spec's 34-bit vectors, 401 reference
                            messages (all exchange profiles), a reference
                            waveform; see third_party/jtty/README.md
-  tty-bridge.test.js      RTTY/JTTY transmit bridge: PTT, audio, status
+  tty-bridge.test.js      RTTY/JTTY/Olivia transmit bridge: PTT, audio, status
                            events, abort, refusals, stub radio and ALSA
   jtty-rx.test.js         JTTY receiver: list decoder, multi-frame messages,
                            two signals, noise, gaps, chunking, and WSJT-X's
                            own 10-frame sample recording
+  olivia.test.js          Olivia port checked against a reference program built
+                           from fldigi's own code (160 symbol sequences, a
+                           waveform, 7 receive cases), plus noise, weak
+                           signals, tuning range and the 48 kHz path; see
+                           third_party/olivia/README.md
+  olivia-decoder-bridge.test.js  Olivia receive bridge: arming, retuning, PTT,
+                           decimation, spectrum, and a real worker end to end
   jtty-decoder-bridge.test.js  JTTY receive bridge: arming, PTT, decimation,
                            backlog dropping, broadcasts
   manual-tty-ui.js        optional browser test of the TTY button, text box and
@@ -902,25 +914,28 @@ polarity from the decoder's assumption previously decoded nothing at all;
 see `docs/ui-notes.md`'s "Real bug found" writeup for the full story.
 Unchecked by default.
 
-### RTTY and JTTY
+### RTTY, JTTY and Olivia
 
 The mode row has one **TTY** button where the RTTY button used to be:
 
 1. The first click selects the radio's RTTY mode, and the button now reads **RTTY**.
 2. The next click switches to **JTTY**, and the button reads **JTTY**.
-3. Each later click toggles between RTTY and JTTY.
    Entering JTTY also tunes to the standard JTTY dial frequency for the current
    band (e.g. 14.090 MHz on 20 m; the list is the WSJT-X 3.3 beta's and is marked
    preliminary), and band buttons then go to each band's JTTY frequency.
-4. Picking any other mode (LSB, USB, AM, FM, CW, FT8, FreeDV) puts the button
+3. The next click switches to **Olivia** (Olivia 8/250), and the button reads
+   **Olivia**. Entering Olivia tunes to the band's Olivia calling frequency
+   (e.g. 14.0715 MHz dial on 20 m), and band buttons then go to each band's.
+4. The next click goes back to **RTTY**, and so on round.
+5. Picking any other mode (LSB, USB, AM, FM, CW, FT8, FreeDV) puts the button
    back to **TTY**.
 
-While RTTY or JTTY is selected, a text box and a **Send** button replace the
+While RTTY, JTTY or Olivia is selected, a text box and a **Send** button replace the
 PTT button. Enter in the text box also sends. While a message is going out,
 Send turns into **Stop**, which cuts the transmission short and releases PTT.
 The Space bar does not key the microphone in these modes. The text box starts
 with a CQ built from `STATION_CALLSIGN` (if set), and keeps whatever you
-type when you switch between the two modes.
+type when you switch between the modes.
 
 **RTTY** sends your text as audio-frequency-shift keying: 45.45 baud, 170 Hz
 shift, 2125 Hz mark and 2295 Hz space, using the same tones and the same
@@ -961,6 +976,44 @@ The encoder and decoder are JavaScript ports of WSJT-X's; see
 and how both were checked against WSJT-X's own programs. The receiver is not
 tested over the air, and, as with WSJT-X itself, noise can occasionally
 produce a false decode.
+
+**Olivia** is the 8-tone, 250 Hz-wide variant of
+[Olivia MFSK](https://en.wikipedia.org/wiki/Olivia_MFSK), the most common
+starting point on HF: 31.25 baud, each block of 64 symbols carrying three
+characters with strong error correction, so text goes at about 1.5
+characters a second and copies at around −14 dB S/N. It is compatible with
+fldigi's Olivia 8/250. Selecting Olivia puts the radio on USB with DATA MODE on,
+as JTTY does. The **Centre** box sets the audio centre frequency (1500 Hz by
+default, `OLIVIA_FREQ_HZ`) used both for sending and for receiving; click the
+spectrum to move it. Like fldigi, PiRO starts every transmission with the
+short start tones at the band edges and ends it with stop tones. A message
+can be up to 300 characters (about 3.5 minutes on air). Characters 128-255 are
+sent with fldigi's 8-bit escape, and characters beyond that as ".".
+
+**Olivia receive.** While Olivia is selected, the panel under the S-meter
+shows received text as a running transcript, with your own transmissions
+inline in amber, and a line giving the time, the S/N figure and how far the
+signal is from the centre. The receiver searches 125 Hz either side of the
+centre, so a station a little off frequency is still copied; **Tune to
+signal** moves the centre onto it, so your reply goes out where that station
+is. As with fldigi, text appears about four blocks (8 s) after it is sent,
+because the receiver averages over several blocks before deciding.
+Decoding runs on the Pi in a worker thread, only while Olivia is selected
+and you are not transmitting.
+
+PiRO filters out the junk characters fldigi prints with its squelch off, in
+two ways. A block is only shown if its own S/N is strong enough, as well as
+the averaged one, and blocks containing control codes that text never uses
+are dropped. In testing that removed every false character from 1,000 s of
+plain noise (fldigi printed 59 a minute) without losing any copy down to
+−14 dB. A strong neighbouring Olivia signal just outside the search window
+can still leave a stray character or two. Set `OLIVIA_SQUELCH=off` to get
+fldigi's exact behaviour.
+
+The Olivia modem is a JavaScript port of Pawel Jalocha's code in fldigi; see
+[`third_party/olivia/README.md`](third_party/olivia/README.md) for what was
+ported and how it was checked against a reference program built from
+fldigi's own source. It has not yet been tested over the air.
 
 Transmit is refused if the radio is already transmitting. The usual PTT
 watchdog (ten minutes) still applies.
@@ -1071,10 +1124,11 @@ shapes.
   `setNoiseReduction`, `getNoiseReduction`, `setNoiseBlanker`,
   `getNoiseBlanker`, `setNotch`, `getNotch`, `setFilter`, `getFilter`,
   `setTuner`, `getTuner`, `setTxPower`, `getTxPower`, `setRxGain`,
-  `getRxGain`, `setFt8Active`, `sendFt8`, `sendTty`, `abortTty`, `setJttyActive`)
+  `getRxGain`, `setFt8Active`, `sendFt8`, `sendTty`, `abortTty`, `setJttyActive`,
+  `setOliviaActive`)
   correlated by `id`; events (`connected`, `frequency`, `mode`, `data-mode`, `ptt`,
-  `ptt-timeout`, `cw-text`, `ft8-decodes`, `ft8-tx-status`, `tty-tx-status`, `rig-error`,
-  `audio-error`, `scope-error`)
+  `ptt-timeout`, `cw-text`, `ft8-decodes`, `ft8-tx-status`, `tty-tx-status`,
+  `jtty-text`, `olivia-text`, `rig-error`, `audio-error`, `scope-error`)
   broadcast without an `id`. `setFt8Active` arms/disarms RX decoding
   (sent when the client opens/closes the FT8 panel); `sendFt8`
   (`{message, freqHz?}`) queues a message for transmission at the next
@@ -1087,13 +1141,17 @@ shapes.
   listening on, rather than always this app's one fixed calling
   frequency. See `src/server/protocol.js` for the exact
   `ft8-decodes`/`ft8-tx-status` payload shapes. `sendTty`
-  (`{mode: 'RTTY'|'JTTY', text, freqHz?}`) encodes and transmits straight
-  away (neither mode is slotted); progress arrives as `tty-tx-status`
+  (`{mode: 'RTTY'|'JTTY'|'OLIVIA', text, freqHz?}`) encodes and transmits straight
+  away (none of these modes is slotted); progress arrives as `tty-tx-status`
   broadcasts (`sending` → `sent`/`aborted`/`error`), and `abortTty` cuts a
   running transmission short. `setJttyActive` (`{active}`) starts and stops
   JTTY decoding; decoded messages arrive as `jtty-text` broadcasts
   (`{id, freqHz, snr, text, status: 'growing'|'complete'|'expired', time,
   startTime}`, times in epoch ms), re-sent with the same `id` as a message grows.
+  `setOliviaActive` (`{active, centreHz?}`) starts and stops Olivia decoding
+  and sets the centre frequency (sending it again retunes); decoded text
+  arrives as `olivia-text` broadcasts (`{text, snr, freqOffsetHz, centreHz,
+  time}`, a block of up to three characters at a time).
 - **Audio (binary frames, tagged `BINARY_TYPE.AUDIO`)**: by default
   (`AUDIO_CODEC=pcm`), raw 16-bit PCM in both directions — no
   framing/codec requirement, chunk sizes are whatever arrives. With

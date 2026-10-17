@@ -1083,6 +1083,36 @@ async function run() {
     await jServer.close();
   }
 
+  // Olivia receive arming (setOliviaActive), retuning, and release when the last client leaves.
+  {
+    const oServer = new ControlServer({ civ: new StubCivDriver(), port: 0 });
+    const oPort = await oServer.listen();
+    const events = [];
+    const sends = [];
+    oServer.on('olivia-active', (e) => events.push(e));
+    oServer.on('tty-send', (e) => sends.push(e));
+    const c = await connect(oPort);
+    const hello = await nextMessage(c);
+    check(hello.data.oliviaActive === false && hello.data.oliviaCentreHz === 1500, 'connected snapshot reports oliviaActive=false and the 1500 Hz centre');
+    c.send(JSON.stringify({ id: 'o1', type: 'setOliviaActive', active: 1 }));
+    const bad = await nextMessage(c);
+    check(bad.type === 'error' || bad.error !== undefined, 'setOliviaActive rejects a non-boolean');
+    c.send(JSON.stringify({ id: 'o2', type: 'setOliviaActive', active: true, centreHz: 1720.4 }));
+    const ok = await nextMessage(c);
+    check(ok.data.active === true && ok.data.centreHz === 1720, 'setOliviaActive replies with the (rounded) centre');
+    c.send(JSON.stringify({ id: 'o3', type: 'setOliviaActive', active: true, centreHz: 99 }));
+    const low = await nextMessage(c);
+    check(low.data.centreHz === 400 && oServer.state.oliviaCentreHz === 400, 'a centre below the usable range is clamped to 400 Hz');
+    check(events.length === 2 && events[0].active === true && events[0].centreHz === 1720 && events[1].centreHz === 400, 'olivia-active events carry the state and centre');
+    c.send(JSON.stringify({ id: 'o4', type: 'sendTty', mode: 'OLIVIA', text: 'CQ', freqHz: 1500 }));
+    const sent = await nextMessage(c);
+    check(sent.data.accepted === true && sends[0]?.mode === 'OLIVIA' && sends[0].freqHz === 1500, 'sendTty accepts OLIVIA and passes it on');
+    c.close();
+    await new Promise((r) => setTimeout(r, 100));
+    check(oServer.state.oliviaActive === false && events.at(-1).active === false, 'last client disconnecting disarms Olivia');
+    await oServer.close();
+  }
+
   // PTT fail-safe watchdog (10-minute cutoff in production; a short
   // override here so the test doesn't take 10 real minutes — see
   // docs/civ-notes.md for why this lives server-side).

@@ -9,6 +9,8 @@ const { ScopeBridge } = require('./scope-bridge');
 const { CwDecoderBridge } = require('./cw-decoder-bridge');
 const { RttyDecoderBridge } = require('./rtty-decoder-bridge');
 const { JttyDecoderBridge } = require('./jtty-decoder-bridge');
+const { OliviaDecoderBridge } = require('./olivia-decoder-bridge');
+const { clampOliviaCentre } = require('../audio/olivia-dsp');
 const { Ft8Bridge } = require('../audio/ft8-bridge');
 const { TtyBridge } = require('../audio/tty-bridge');
 const { RadeBridge } = require('./rade-bridge');
@@ -256,6 +258,7 @@ let rttyDecoderBridge;
 let ft8Bridge;
 let ttyBridge;
 let jttyDecoderBridge;
+let oliviaDecoderBridge;
 let radeBridge;
 let freeDvReporterBridge;
 
@@ -450,13 +453,18 @@ async function main() {
     // as soon as it is requested. JTTY_TX_FREQ_HZ optionally moves JTTY's
     // lowest-tone audio frequency (default 1450 Hz); a client request can
     // override it per message. See audio/tty-bridge.js.
+    // OLIVIA_FREQ_HZ sets Olivia's default audio centre frequency (1500 Hz),
+    // for both transmit and receive, until a client picks another.
+    const oliviaFreqHz = clampOliviaCentre(process.env.OLIVIA_FREQ_HZ ?? 1500);
+    controlServer.state.oliviaCentreHz = oliviaFreqHz;
     ttyBridge = new TtyBridge({
       controlServer,
       audioBridge,
       jttyFreqHz: process.env.JTTY_TX_FREQ_HZ ? Number(process.env.JTTY_TX_FREQ_HZ) : undefined,
+      oliviaFreqHz,
     });
     ttyBridge.start();
-    console.log('RTTY/JTTY transmit ready (Send button in RTTY and JTTY modes).');
+    console.log('RTTY/JTTY/Olivia transmit ready (Send button in those modes).');
 
     // JTTY receive: decodes in a worker thread while the client has JTTY
     // selected. JTTY_RX_LOW_HZ / JTTY_RX_HIGH_HZ set the audio band searched
@@ -470,6 +478,18 @@ async function main() {
     });
     jttyDecoderBridge.start();
     console.log('JTTY receive ready (decodes while JTTY is selected).');
+
+    // Olivia 8/250 receive: decodes in a worker thread while the client has
+    // Olivia selected, +/-125 Hz around the chosen centre frequency.
+    // OLIVIA_SQUELCH=off turns off PiRO's junk filtering and behaves exactly
+    // like fldigi with its squelch off. See server/olivia-decoder-bridge.js.
+    oliviaDecoderBridge = new OliviaDecoderBridge({
+      controlServer,
+      audioBridge,
+      squelch: !/^(0|false|off|no)$/i.test(process.env.OLIVIA_SQUELCH || 'on'),
+    });
+    oliviaDecoderBridge.start();
+    console.log('Olivia receive ready (decodes while Olivia is selected).');
 
     // RADE (FreeDV's neural-vocoder mode) is likewise a hard dependency
     // on AudioBridge — same reasoning as FT8 immediately above, since
@@ -530,6 +550,7 @@ async function shutdown(signal) {
     if (ft8Bridge) ft8Bridge.stop();
     if (ttyBridge) ttyBridge.stop();
     if (jttyDecoderBridge) jttyDecoderBridge.stop();
+    if (oliviaDecoderBridge) oliviaDecoderBridge.stop();
     if (radeBridge) radeBridge.stop();
     if (freeDvReporterBridge) freeDvReporterBridge.stop();
     if (audioBridge) audioBridge.stop();

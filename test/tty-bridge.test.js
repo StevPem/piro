@@ -5,6 +5,9 @@ const { EventEmitter } = require('events');
 const { TtyBridge, DEFAULT_JTTY_TX_FREQ_HZ } = require('../src/audio/tty-bridge');
 const { EVENT } = require('../src/server/protocol');
 const { encodeJtty } = require('../src/audio/jtty-tx');
+const { OLIVIA_MAX_CHARS } = require('../src/audio/tty-bridge');
+const { OliviaReceiver, OliviaTextDecoder } = require('../src/audio/olivia-rx');
+const { StreamDecimator } = require('../src/audio/decimator');
 
 let failures = 0;
 function check(cond, msg) {
@@ -165,6 +168,58 @@ const statuses = (cs) => cs.broadcasts.filter((b) => b.type === EVENT.TTY_TX_STA
     const st = statuses(controlServer);
     check(st.filter((s) => s.status === 'error').length >= 6, 'refusals are broadcast as error status events');
     check(playback.writes.length === writes, 'refused requests write no audio');
+  }
+
+  // --- Olivia ---
+  {
+    // A one-character message is the shortest Olivia transmission: start
+    // tones, one block, stop tones (about 4 s), played out in real time here.
+    const { controlServer, playback, bridge } = setup();
+    controlServer.emit('tty-send', { mode: 'OLIVIA', text: 'K' });
+    await sleep(10);
+    check(bridge.transmitting, 'Olivia: transmitting while the audio plays');
+    while (bridge.transmitting) await sleep(50);
+    const st = statuses(controlServer);
+    check(st[0].status === 'sending' && st[0].mode === 'OLIVIA' && st[0].freqHz === 1500, 'Olivia: sending status, at the default 1500 Hz centre');
+    check(Math.abs(st[0].durationSec - 4.192) < 0.05, `Olivia: one block plus start/stop tones (${st[0].durationSec.toFixed(2)} s)`);
+    check(st.at(-1).status === 'sent' && controlServer.pttCalls.join() === 'true,false', 'Olivia: sent, PTT keyed on then off');
+    const i16 = new Int16Array(playback.writes[0].buffer, playback.writes[0].byteOffset, playback.writes[0].length / 2);
+    const x8 = new StreamDecimator(48000, 8000, { cutoffHz: 3000 }).process(Int16Array.from(i16));
+    const rx = new OliviaReceiver({ centreHz: 1500 });
+    const td = new OliviaTextDecoder();
+    const text = td.push(rx.process(x8)) + td.push(rx.flush());
+    check(text === 'K', `Olivia: the 48 kHz audio written to the radio decodes back to the text (${JSON.stringify(text)})`);
+  }
+  {
+    const { controlServer, playback, bridge } = setup();
+    const p = bridge.send({ mode: 'OLIVIA', text: 'CQ CQ DE VK3TR VK3TR K', freqHz: 99999 });
+    await sleep(10);
+    const st = statuses(controlServer)[0];
+    check(st.freqHz === 2600, 'Olivia: requested centre is clamped to the usable range');
+    check(Math.abs(st.durationSec - 18.53) < 0.05 && playback.writes[0].length === Math.round(st.durationSec * 48000) * 2, `Olivia: 22 characters take ${st.durationSec.toFixed(1)} s, written as one 48 kHz buffer`);
+    bridge.abort();
+    await p;
+    check(statuses(controlServer).at(-1).status === 'aborted' && playback.restarts === 1, 'Olivia: Stop aborts the transmission and drops the queued audio');
+  }
+  {
+    const { controlServer, bridge } = setup();
+    const p = bridge.send({ mode: 'OLIVIA', text: 'Ω OK' });
+    await sleep(10);
+    check(/Ω/.test(statuses(controlServer)[0].note || ''), 'Olivia: characters it cannot carry are reported in a note');
+    bridge.abort();
+    await p;
+    let err = null;
+    await bridge.send({ mode: 'OLIVIA', text: 'X'.repeat(OLIVIA_MAX_CHARS + 1) }).catch((e) => (err = e));
+    check(err && /too long/i.test(err.message), `Olivia: more than ${OLIVIA_MAX_CHARS} characters is refused`);
+  }
+  {
+    const { controlServer, playback, bridge } = setup({ sampleRate: 44100 });
+    const p = bridge.send({ mode: 'OLIVIA', text: 'HI' });
+    await sleep(10);
+    check(playback.writes.length === 1 && playback.writes[0].length > 0, 'Olivia: works at 44.1 kHz too (resampled)');
+    bridge.abort();
+    await p;
+    check(controlServer.pttCalls.join() === 'true,false', 'Olivia: PTT released after abort');
   }
 
   if (failures > 0) {
