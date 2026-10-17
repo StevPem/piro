@@ -16,11 +16,12 @@ decoder for Linux. No slowrx binaries are involved.
 |---|---|
 | `src/audio/sstv-modes.js` | `modespec.c` (the 25 mode specifications and the VIS code map) and the channel layout, pixel timing and colour conversion in `GetVideo()` (`video.c`) |
 | `src/audio/sstv-rx.js` | `GetVIS()` (`vis.c`): header detection and frequency shift; `GetVideo()` (`video.c`): sync detection, S/N estimate, adaptive-window frequency estimate, pixel read-out; `FindSync()` (`sync.c`): Hough-transform slant correction and sync-edge phase; the sequence in `Listen()` (`slowrx.c`) |
-| `src/audio/sstv-tx.js` | not from slowrx: PiRO's own encoder, used by the tests (and the start of a later transmit feature) |
+| `src/audio/sstv-tx.js` | not from slowrx: PiRO's own encoder (pictures, FSK ID, CW ID), used for transmitting and by the tests; timings from N7CXI's specification |
+| FSK ID in `src/audio/sstv-rx.js` | `GetFSK()` (`fsk.c`): the callsign burst after a picture |
 | `src/audio/sstv-decode-worker.js`, `src/server/sstv-decoder-bridge.js`, `src/server/png.js` | PiRO's own glue: 48 kHz to 12 kHz decimation, a worker thread, line frames and PNG pictures to the browser |
 
-slowrx's GTK interface, sound-card code, FSK ID decoding (`fsk.c`) and
-manual re-sync controls are not ported.
+slowrx's GTK interface, sound-card code and manual re-sync controls are
+not ported.
 
 ## Differences from slowrx
 
@@ -45,6 +46,15 @@ manual re-sync controls are not ported.
   is exact for every mode. slowrx also builds its slant image over all
   picture lines for the PD modes, which send two lines per sync pulse; PiRO
   uses the number of sync periods.
+* **Scottie 1 and Scottie DX timing.** slowrx has a 428.38 ms Scottie 1
+  line and a 1.08053 ms Scottie DX pixel; N7CXI's specification (and
+  MMSSTV, and PySSTV) have 428.22 ms and 1.08 ms, which PiRO uses for
+  sending and receiving. The Scottie modes also start with an extra 9 ms
+  sync pulse after the header (N7CXI); the encoder sends it and the
+  receiver skips it, so the live picture lines up.
+* **Listening during the FSK ID search.** After a picture slowrx spends up
+  to about 2 s looking for an FSK ID and hears nothing else; PiRO also keeps
+  listening for the next picture's header meanwhile.
 * **A picture can end early.** slowrx always receives a picture's full
   length. PiRO ends it when no sync pulse has been seen for 12 lines (the
   transmission has stopped), when you transmit, or when you press Stop, and
@@ -80,13 +90,22 @@ manual re-sync controls are not ported.
   transmission that stops ends the picture early; two pictures in a row are
   both received.
 
-`test/sstv-decoder-bridge.test.js` runs the real worker through the 48 kHz
+The encoder: for Martin 1, Robot 36 and PD-120, the instantaneous
+frequency of its output and of PySSTV's for the same picture agree to a
+median of 0.1-1.3 Hz (95% within 4-13 Hz) over the whole transmission, and
+the lengths are identical. Scottie 1 has the same length apart from the
+starting sync pulse PySSTV leaves out. The FSK ID is read by the receiver
+whatever the gap after the picture (and PySSTV's FSK ID reads correctly
+too); the CW ID is read by PiRO's CW decoder.
+
+`test/sstv-tx-bridge.test.js` decodes the transmitter's 48 kHz audio back to
+the picture and its FSK ID. `test/sstv-decoder-bridge.test.js` runs the real worker through the 48 kHz
 audio path and checks the line frames, the PNG (decoded back) and saving.
 
 ## Caveats
 
-Not yet tested over the air. The picture drawn while it arrives is not yet
-slant-corrected. Robot 72 follows the published specification rather than
+Not yet tested over the air (receiving or sending). The picture drawn while
+it arrives is not yet slant-corrected. Robot 72 follows the published specification rather than
 slowrx, and has only been checked against PiRO's own encoder.
 
 ## slowrx licence

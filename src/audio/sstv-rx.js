@@ -48,6 +48,15 @@ const SYNC_STEP = 4; // slowrx: every 13 samples
 const SYNC_WIN = HANN_LENS[1];
 const SNR_STEP = Math.round(256 * R44);
 const LOOKAHEAD = VIDEO_DFT_LEN; // samples needed beyond the one being processed
+// FSK ID (slowrx GetFSK()): 22 ms bits, tested every half bit until synced
+const FSK_WIN = Math.round(970 * R44); // 264: 22 ms
+const FSK_HALF = Math.round(485 * R44);
+const FSK_MAX_TESTS = 200;
+const FSK_BITREV = Uint8Array.from({ length: 64 }, (_, v) => {
+  let r = 0;
+  for (let b = 0; b < 6; b++) if (v & (1 << b)) r |= 1 << (5 - b);
+  return r;
+});
 const MIN_SLANT = 30;
 const MAX_SLANT = 150;
 
@@ -132,6 +141,7 @@ class SstvReceiver {
 
   _listen() {
     this.pic = null;
+    this.fsk = null;
     this.hedr = new Float64Array(45);
     this.hedrPtr = 0;
     this.nextHop = Math.max(this.pos, VIS_WIN);
@@ -151,7 +161,11 @@ class SstvReceiver {
       for (let i = from; i < to; i++) this.ring[(this.written + i - from) & MASK] = samples[i];
       this.written += to - from;
       while (this.pos + LOOKAHEAD < this.written) {
-        if (this.pic) this._videoSample(events);
+        if (this.fsk) {
+          // while looking for an FSK ID, still listen for the next picture's header
+          this._fskSample(events);
+          if (!this.fsk?.inSync) this._visSample(events);
+        } else if (this.pic) this._videoSample(events);
         else this._visSample(events);
         this.pos++;
       }
@@ -229,9 +243,12 @@ class SstvReceiver {
   // ---- video --------------------------------------------------------
 
   _start(id, shiftHz, events) {
+    this.fsk = null;
     const m = MODES[id];
-    // slowrx: skip the rest of the stop bit (20 ms) before the video
-    const video0 = this.pos + Math.round(0.02 * SSTV_SAMPLE_RATE);
+    // slowrx: skip the rest of the stop bit (20 ms) before the video; PiRO
+    // also skips the Scottie modes' extra starting sync pulse, so the live
+    // picture lines up (the final one is placed by findSync() either way)
+    const video0 = this.pos + Math.round((0.02 + (isScottie(id) ? MODES[id].sync : 0)) * SSTV_SAMPLE_RATE);
     const length = Math.floor(m.line * linePeriods(id) * SSTV_SAMPLE_RATE);
     const grid = pixelGrid(id, SSTV_SAMPLE_RATE, 0);
     // the last grid entry that writes each row, so rows go out when complete
@@ -380,6 +397,52 @@ class SstvReceiver {
     const linesReceived = Math.min(P.m.lines, Math.ceil((recorded / (P.m.line * SSTV_SAMPLE_RATE)) * (isPd(P.id) ? 2 : 1)));
     events.push({ type: 'end', mode: P.id, name: P.m.name, width: W, lines: P.m.lines, lineHeight: P.m.lineHeight, rgb, rate, skip, slantDeg, complete, linesReceived, shiftHz: P.shiftHz });
     this._listen();
+    // slowrx: after a whole picture, look for an FSK ID (the sender's callsign) before listening again
+    if (complete) this.fsk = { next: this.pos + 1, inSync: false, bits: new Uint8Array(24), tests: 0, byte: 0, bitPtr: 0, text: '', shiftHz: P.shiftHz, hann: hann(FSK_WIN) };
+  }
+
+  /** slowrx GetFSK(): 6-bit characters, LSB first, 1900 Hz = 1, 2100 Hz = 0, after the sync bytes 0x20 0x2A, up to 0x01. */
+  _fskSample(events) {
+    const F = this.fsk;
+    if (this.pos < F.next) return;
+    const d = this.visDft;
+    d.load(this.ring, this.pos, FSK_WIN, F.hann);
+    const lo = getBin(1900 + F.shiftHz, VIS_DFT_LEN) - 1;
+    const mid = getBin(2000 + F.shiftHz, VIS_DFT_LEN);
+    const hi = getBin(2100 + F.shiftHz, VIS_DFT_LEN) + 1;
+    let loP = 0;
+    let hiP = 0;
+    for (let k = lo; k <= hi; k++) {
+      if (k < mid) loP += d.power(k);
+      else hiP += d.power(k);
+    }
+    const bit = loP > hiP ? 1 : 0;
+    const done = () => {
+      if (F.text) events.push({ type: 'fskid', text: F.text });
+      this.fsk = null;
+    };
+    if (!F.inSync) {
+      F.next += FSK_HALF;
+      F.bits[F.tests % 24] = bit;
+      let n = 0;
+      for (let i = 0; i < 12; i++) n |= F.bits[(((F.tests - (23 - i * 2)) % 24) + 24) % 24] << (11 - i);
+      if (FSK_BITREV[(n >> 6) & 0x3f] === 0x20 && FSK_BITREV[n & 0x3f] === 0x2a) {
+        // slowrx reads the first character bit half a bit after this test
+        // (this test is the one after the last sync bit's centre)
+        F.inSync = true;
+        F.next = this.pos + FSK_HALF;
+      }
+      if (++F.tests > FSK_MAX_TESTS) done();
+      return;
+    }
+    F.next += FSK_WIN;
+    F.byte |= bit << F.bitPtr;
+    if (++F.bitPtr === 6) {
+      if (F.byte < 0x0d || F.text.length > 9) return done();
+      F.text += String.fromCharCode(F.byte + 0x20);
+      F.bitPtr = 0;
+      F.byte = 0;
+    }
   }
 }
 
