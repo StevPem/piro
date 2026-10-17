@@ -886,6 +886,11 @@ link.addEventListener('connected', (event) => {
   stationGrid = data.stationGrid || null;
   ft8Qso.configure({ myCall: stationCallsign, myGrid: stationGrid });
   if (data.frequency != null) updateFrequencyDisplay(data.frequency);
+  if (data.ft8Variant) ft8Variant = data.ft8Variant;
+  // The app-level modes before the radio's mode, so a mode another browser
+  // has left since this page last saw the server is dropped quietly rather
+  // than "left" (which would turn DATA MODE off under whatever replaced it).
+  syncAppModesOnConnect(data);
   if (data.mode) updateModeButtons(data.mode.mode);
   if (data.ptt != null) updatePttVisual(data.ptt);
   if (data.pskSpotEnabled != null) pskSpotCheckbox.checked = data.pskSpotEnabled;
@@ -913,39 +918,9 @@ link.addEventListener('connected', (event) => {
   }
   // FreeDV no longer has a variant to reflect from the snapshot — it's
   // always RADE V1 now (see enterFreeDvMode()'s doc comment for why the
-  // earlier '700E'/'RADE' toggle was removed).
-  //
-  // FT8/FreeDV "armed" state is a server-side setting, not anything the
-  // radio itself reports over CI-V (see ws-server.js's own doc comments
-  // on state.ft8Active/state.freeDvActive) — so unlike frequency/mode
-  // above, a newly-connecting client only finds out about it from this
-  // snapshot, not from any radio-driven event. Reflected here (after
-  // frequency/variant are already applied above, since both reflect
-  // functions read currentFreqHz/ft8Variant) rather than
-  // re-armed from scratch — see reflectFt8ActiveFromServer()'s/
-  // reflectFreeDvActiveFromServer()'s own doc comments for why calling
-  // enterFt8Mode()/enterFreeDvMode() here instead would be wrong (it
-  // would retune the radio and re-send requests for something already
-  // active). Only ever set true here — never false, since ft8Active/
-  // freeDvActive already start false and nothing above could have
-  // changed that yet on this fresh page load.
-  if (data.ft8Active) reflectFt8ActiveFromServer();
-  if (data.freeDvActive) reflectFreeDvActiveFromServer();
-  // JTTY receive is armed server-side only while a client says so; after a
-  // reconnect the server may have dropped it, so re-arm if we are in JTTY.
-  if (data.jttyActive) reflectJttyActiveFromServer();
-  else if (jttyActive) link.request('setJttyActive', { active: true }).catch(() => {});
-  // Olivia likewise, keeping the centre frequency the other client chose.
-  if (data.oliviaActive) reflectOliviaActiveFromServer(data.oliviaCentreHz);
-  else if (oliviaActive) link.request('setOliviaActive', { active: true, centreHz: ttyFreqByMode.OLIVIA }).catch(() => {});
-  else if (Number.isFinite(data.oliviaCentreHz)) ttyFreqByMode.OLIVIA = data.oliviaCentreHz;
-  // SSTV likewise.
-  if (data.sstvActive) reflectSstvActiveFromServer();
-  else if (sstvActive) link.request('setSstvActive', { active: true }).catch(() => {});
-  // And Feld-Hell, keeping the tone.
-  if (data.hellActive) reflectHellActiveFromServer(data.hellToneHz);
-  else if (hellActive) link.request('setHellActive', { active: true, toneHz: ttyFreqByMode.HELL }).catch(() => {});
-  else if (Number.isFinite(data.hellToneHz)) ttyFreqByMode.HELL = data.hellToneHz;
+  // earlier '700E'/'RADE' toggle was removed). The app-level modes (FT8,
+  // FreeDV, JTTY, Olivia, Feld-Hell, SSTV) were applied above, by
+  // syncAppModesOnConnect().
 
   pttBtn.disabled = false;
   ttySendBtn.disabled = false;
@@ -1410,6 +1385,70 @@ function exitAppModes() {
   if (sstvActive) exitSstvMode();
 }
 
+/**
+ * Follows the app-level modes as the server has them (EVENT.APP_MODES, sent
+ * when another browser changes one, or the connect snapshot), so every
+ * browser shows the same mode. Only this page's display changes: the
+ * browser that made the change has already set the radio and the server,
+ * so nothing is sent back.
+ */
+function applyAppModes(s) {
+  if (!s) return;
+  // The audio frequencies first, so a mode entered below shows them.
+  if (Number.isFinite(s.jttyTxHz)) ttyFreqByMode.JTTY = s.jttyTxHz;
+  if (Number.isFinite(s.oliviaCentreHz)) ttyFreqByMode.OLIVIA = s.oliviaCentreHz;
+  if (Number.isFinite(s.hellToneHz)) ttyFreqByMode.HELL = s.hellToneHz;
+  // Whatever was switched off...
+  if (!s.ft8Active) exitFt8Mode({ local: true });
+  if (!s.freeDvActive) exitFreeDvMode({ local: true });
+  if (!s.jttyActive) exitJttyMode({ local: true });
+  if (!s.oliviaActive) exitOliviaMode({ local: true });
+  if (!s.hellActive) exitHellMode({ local: true });
+  if (!s.sstvActive) exitSstvMode({ local: true });
+  // ...then whatever was switched on.
+  if (s.ft8Active) reflectFt8ActiveFromServer();
+  if (s.freeDvActive) reflectFreeDvActiveFromServer();
+  if (s.jttyActive) reflectJttyActiveFromServer();
+  if (s.oliviaActive) reflectOliviaActiveFromServer(s.oliviaCentreHz);
+  if (s.hellActive) reflectHellActiveFromServer(s.hellToneHz);
+  if (s.sstvActive) reflectSstvActiveFromServer();
+  // A new audio frequency in the mode already shown (unless it's being typed here).
+  const mode = ttyMode();
+  if ((mode === 'JTTY' || mode === 'OLIVIA' || mode === 'HELL') && document.activeElement !== ttyFreqEl) {
+    const hz = ttyFreqByMode[mode];
+    if (Number(ttyFreqEl.value) !== hz) {
+      ttyFreqEl.value = String(hz);
+      scopeDisplay.setQsoFreq(hz);
+    }
+  }
+}
+
+link.addEventListener('app-modes', (event) => applyAppModes(event.detail));
+
+/**
+ * The app-level modes on (re)connecting. Normally the server's say goes
+ * (another browser may have changed mode while this one was away). But if
+ * the server has none at all while this page is still in one, and the radio
+ * is still on that mode's sideband, the server has forgotten (it was
+ * restarted, or every browser had gone, which stops the receivers): this
+ * page carries on and re-arms it.
+ */
+function syncAppModesOnConnect(data) {
+  const serverAny = data.ft8Active || data.freeDvActive || data.jttyActive || data.oliviaActive || data.hellActive || data.sstvActive;
+  const radio = data.mode?.mode;
+  const fits = sstvActive || freeDvActive ? radio === 'LSB' || radio === 'USB' : radio === 'USB';
+  if (!serverAny && appModeActive() && fits) {
+    if (ft8Active) link.request('setFt8Active', { active: true }).catch(() => {});
+    if (freeDvActive) link.request('setFreeDvActive', { active: true }).catch(() => {});
+    if (jttyActive) link.request('setJttyActive', { active: true, txHz: ttyFreqByMode.JTTY }).catch(() => {});
+    if (oliviaActive) link.request('setOliviaActive', { active: true, centreHz: ttyFreqByMode.OLIVIA }).catch(() => {});
+    if (hellActive) link.request('setHellActive', { active: true, toneHz: ttyFreqByMode.HELL }).catch(() => {});
+    if (sstvActive) link.request('setSstvActive', { active: true }).catch(() => {});
+    return;
+  }
+  applyAppModes(data);
+}
+
 /** The SSB chip reads "LSB"/"USB" and lights while the radio is on plain SSB, else "SSB". */
 function updateSsbChip() {
   if (!ssbModeBtn) return;
@@ -1518,7 +1557,9 @@ function enterJttyMode() {
   link
     .request('setDataMode', { on: true })
     .catch((err) => showError(`Couldn't enable DATA MODE for JTTY: ${err.message}`));
-  link.request('setJttyActive', { active: true }).catch((err) => showError(`Couldn't start JTTY receive: ${err.message}`));
+  link
+    .request('setJttyActive', { active: true, txHz: ttyFreqByMode.JTTY })
+    .catch((err) => showError(`Couldn't start JTTY receive: ${err.message}`));
   setRttyTickerVisible(false);
   updateTtyUi();
 }
@@ -1533,20 +1574,26 @@ function tuneJttyToBand(bandName) {
     .catch((err) => showError(`Couldn't tune to ${bandName} JTTY frequency: ${err.message}`));
 }
 
-/** Ends JTTY locally and restores DATA MODE. Returns false if JTTY wasn't active. */
-function leaveJtty() {
+/**
+ * Ends JTTY locally and restores DATA MODE. Returns false if JTTY wasn't
+ * active. With `local`, only this page's display changes: another browser
+ * left JTTY and has already put the radio and server right (see
+ * applyAppModes()).
+ */
+function leaveJtty({ local = false } = {}) {
   if (!jttyActive) return false;
   jttyActive = false;
   jttyUsbSeen = false;
+  if (local) return true;
   link.request('setDataMode', { on: false }).catch((err) => showError(`Couldn't disable DATA MODE: ${err.message}`));
   link.request('setJttyActive', { active: false }).catch(() => {});
   return true;
 }
 
 /**
- * JTTY was already selected when this page connected (another browser has
- * it open, or this one reconnected after the server forgot): reflect it
- * locally without re-sending the radio changes enterJttyMode() makes.
+ * JTTY was selected by another browser (or before this one connected, or
+ * this one reconnected after the server forgot): reflect it locally without
+ * re-sending the radio changes enterJttyMode() makes.
  */
 function reflectJttyActiveFromServer() {
   if (jttyActive) return;
@@ -1556,9 +1603,9 @@ function reflectJttyActiveFromServer() {
   updateTtyUi();
 }
 
-/** Leaves JTTY because the operator picked some other mode. */
-function exitJttyMode() {
-  if (!leaveJtty()) return;
+/** Leaves JTTY because the operator (or, with `local`, another browser) picked some other mode. */
+function exitJttyMode(opts) {
+  if (!leaveJtty(opts)) return;
   updateTtyUi();
 }
 
@@ -1609,11 +1656,12 @@ function tuneOliviaToBand(bandName) {
     .catch((err) => showError(`Couldn't tune to ${bandName} Olivia frequency: ${err.message}`));
 }
 
-/** Ends Olivia locally and restores DATA MODE. Returns false if Olivia wasn't active. */
-function leaveOlivia() {
+/** Ends Olivia locally and restores DATA MODE (not with `local`; see leaveJtty()). Returns false if Olivia wasn't active. */
+function leaveOlivia({ local = false } = {}) {
   if (!oliviaActive) return false;
   oliviaActive = false;
   oliviaUsbSeen = false;
+  if (local) return true;
   link.request('setDataMode', { on: false }).catch((err) => showError(`Couldn't disable DATA MODE: ${err.message}`));
   link.request('setOliviaActive', { active: false }).catch(() => {});
   return true;
@@ -1629,9 +1677,9 @@ function reflectOliviaActiveFromServer(centreHz) {
   updateTtyUi();
 }
 
-/** Leaves Olivia because the operator picked some other mode. */
-function exitOliviaMode() {
-  if (!leaveOlivia()) return;
+/** Leaves Olivia because the operator (or, with `local`, another browser) picked some other mode. */
+function exitOliviaMode(opts) {
+  if (!leaveOlivia(opts)) return;
   updateTtyUi();
 }
 
@@ -1684,11 +1732,12 @@ function tuneHellToBand(bandName) {
     .catch((err) => showError(`Couldn't tune to ${bandName} Feld-Hell frequency: ${err.message}`));
 }
 
-/** Ends Feld-Hell locally and restores DATA MODE. Returns false if Feld-Hell wasn't active. */
-function leaveHell() {
+/** Ends Feld-Hell locally and restores DATA MODE (not with `local`; see leaveJtty()). Returns false if Feld-Hell wasn't active. */
+function leaveHell({ local = false } = {}) {
   if (!hellActive) return false;
   hellActive = false;
   hellUsbSeen = false;
+  if (local) return true;
   link.request('setDataMode', { on: false }).catch((err) => showError(`Couldn't disable DATA MODE: ${err.message}`));
   link.request('setHellActive', { active: false }).catch(() => {});
   return true;
@@ -1704,9 +1753,9 @@ function reflectHellActiveFromServer(toneHz) {
   updateTtyUi();
 }
 
-/** Leaves Feld-Hell because the operator picked some other mode. */
-function exitHellMode() {
-  if (!leaveHell()) return;
+/** Leaves Feld-Hell because the operator (or, with `local`, another browser) picked some other mode. */
+function exitHellMode(opts) {
+  if (!leaveHell(opts)) return;
   updateTtyUi();
 }
 
@@ -1748,12 +1797,12 @@ function tuneSstvTo(hz, bandName) {
     .catch((err) => showError(`Couldn't tune to ${bandName ?? ''} SSTV frequency: ${err.message}`));
 }
 
-/** Ends SSTV locally. Returns false if SSTV wasn't active. */
-function leaveSstv() {
+/** Ends SSTV locally (and, unless `local`, tells the server). Returns false if SSTV wasn't active. */
+function leaveSstv({ local = false } = {}) {
   if (!sstvActive) return false;
   sstvActive = false;
   sstvSidebandSeen = false;
-  link.request('setSstvActive', { active: false }).catch(() => {});
+  if (!local) link.request('setSstvActive', { active: false }).catch(() => {});
   updateTtyUi();
   return true;
 }
@@ -1767,9 +1816,9 @@ function reflectSstvActiveFromServer() {
   updateTtyUi();
 }
 
-/** Leaves SSTV because the operator picked some other mode. */
-function exitSstvMode() {
-  leaveSstv();
+/** Leaves SSTV because the operator (or, with `local`, another browser) picked some other mode. */
+function exitSstvMode(opts) {
+  leaveSstv(opts);
 }
 
 const PTT_HINT_VOICE = 'Hold to transmit (or hold Space). First use will ask for microphone access.';
@@ -1876,6 +1925,12 @@ function setJttyTxFreq(hz) {
   scopeDisplay.setQsoFreq(Math.round(hz));
   ttyStatusEl.hidden = false;
   ttyStatusEl.textContent = `JTTY transmit frequency set to ${Math.round(hz)} Hz.`;
+  shareJttyTxFreq();
+}
+
+/** Tells the server (and so the other browsers) the JTTY transmit frequency. */
+function shareJttyTxFreq() {
+  if (jttyActive) link.request('setJttyActive', { active: true, txHz: ttyFreqByMode.JTTY }).catch(() => {});
 }
 
 /** Sets the Olivia centre frequency: the box, the spectrum marker, and the receiver (which retunes). */
@@ -1908,12 +1963,15 @@ function setHellTone(hz, { quiet = false } = {}) {
 
 let oliviaRetuneTimer = null;
 let hellRetuneTimer = null;
+let jttyShareTimer = null;
 ttyFreqEl.addEventListener('input', () => {
   const mode = ttyMode();
   const hz = Number(ttyFreqEl.value);
   if (mode === 'JTTY') {
     if (Number.isFinite(hz)) ttyFreqByMode.JTTY = hz;
     scopeDisplay.setQsoFreq(hz || null);
+    clearTimeout(jttyShareTimer);
+    if (Number.isFinite(hz) && hz >= TTY_FREQ_RANGE.JTTY[0] && hz <= TTY_FREQ_RANGE.JTTY[1]) jttyShareTimer = setTimeout(shareJttyTxFreq, 600);
   } else if (mode === 'OLIVIA') {
     scopeDisplay.setQsoFreq(hz || null);
     // Retune the receiver once typing pauses, not on every keystroke.
@@ -2074,7 +2132,8 @@ function sstvPictureLine(p) {
 function showSstvPicture(p) {
   const img = new Image();
   img.onload = () => {
-    if (sstvCurrent) return; // a new picture started meanwhile
+    // a new picture started meanwhile, or ours is going out (it has the screen until it ends)
+    if (sstvCurrent || sstvTxProgress) return;
     sstvSize(p.width, p.lines, p.lineHeight);
     sstvCtx.imageSmoothingEnabled = false;
     sstvCtx.drawImage(img, 0, 0, sstvCanvas.width, sstvCanvas.height);
@@ -2082,7 +2141,7 @@ function showSstvPicture(p) {
   img.src = `data:image/png;base64,${p.png}`;
   sstvShown = p;
   sstvSaveBtn.hidden = false;
-  if (!sstvCurrent) sstvStatusEl.textContent = sstvPictureLine(p);
+  if (!sstvCurrent && !sstvTxProgress) sstvStatusEl.textContent = sstvPictureLine(p);
   for (const t of sstvStripEl.children) t.classList.toggle('sstv-rx__thumb--shown', Number(t.dataset.id) === p.id && Number(t.dataset.time) === p.time);
 }
 
@@ -2186,7 +2245,8 @@ sstvViewer.addEventListener('click', () => {
   sstvViewer.hidden = true;
 });
 sstvCanvas.addEventListener('click', () => {
-  sstvViewerImg.src = !sstvCurrent && sstvShown ? `data:image/png;base64,${sstvShown.png}` : sstvCanvas.toDataURL('image/png');
+  const png = sstvCurrent ? null : sstvTxProgress?.png ?? sstvShown?.png;
+  sstvViewerImg.src = png ? `data:image/png;base64,${png}` : sstvCanvas.toDataURL('image/png');
   sstvViewer.hidden = false;
 });
 
@@ -2215,7 +2275,10 @@ const sstvCrop = { cx: 0, cy: 0, zoom: 1 };
 let sstvTxBusy = false;
 let sstvTxTimer = null;
 
-const mmss = (sec) => `${Math.floor(sec / 60)}:${String(Math.round(sec % 60)).padStart(2, '0')}`;
+const mmss = (sec) => {
+  const s = Math.max(0, Math.round(sec));
+  return `${Math.floor(s / 60)}:${String(s % 60).padStart(2, '0')}`;
+};
 
 function sstvTxSize() {
   return { W: sstvTxInfo.width, H: sstvTxInfo.lines * (sstvTxInfo.lineHeight || 1) };
@@ -2444,9 +2507,140 @@ sstvTxSendBtn.addEventListener('click', () => {
   link.request('sendSstv', { rgb: sstvTxRgbBase64(), width: W, height: H }).catch((err) => showError(`Couldn't send: ${err.message}`));
 });
 
-link.addEventListener('sstv-tx-status', (event) => {
-  const { status, name, durationSec, startTime, error } = event.detail || {};
+// --- SSTV transmit progress ---
+// Shown in every browser while a picture is being prepared or sent: a bar
+// with elapsed / total time, marked where the picture ends and the FSK ID
+// and CW ID begin, what is going out now (header, picture line n of N, the
+// IDs) and the time left, and a Stop button. The picture fills in on the
+// SSTV screen above as it goes out, the rest of it dimmed. Times are counted
+// on this device from when the status arrived (elapsedSec), so the Pi's and
+// the phone's clocks needn't agree.
+const sstvTxProgressEl = document.getElementById('sstv-tx-progress');
+const sstvTxProgressLabel = document.getElementById('sstv-tx-progress-label');
+const sstvTxProgressTime = document.getElementById('sstv-tx-progress-time');
+const sstvTxProgressDetail = document.getElementById('sstv-tx-progress-detail');
+const sstvTxBar = document.getElementById('sstv-tx-bar');
+const sstvTxBarFill = document.getElementById('sstv-tx-bar-fill');
+let sstvTxProgress = null; // while sending: {name, t0, durationSec, timeline, lines, img, width, height, lastRow}
+
+/** What is going out `t` seconds in: {label, line?, pictureFrac} */
+function sstvTxPhase(t, p) {
+  const tl = p.timeline;
+  if (!tl) return { label: 'Sending', pictureFrac: Math.min(1, t / p.durationSec) };
+  let a = tl.headerSec;
+  if (t < a) return { label: 'VIS header', pictureFrac: 0 };
+  if (t < a + tl.pictureSec) {
+    const frac = (t - a) / tl.pictureSec;
+    return { label: 'Picture', line: Math.min(p.lines, Math.floor(frac * p.lines) + 1), pictureFrac: frac };
+  }
+  a += tl.pictureSec;
+  if (tl.fskSec && t < a + tl.fskSec) return { label: 'FSK ID', pictureFrac: 1 };
+  a += tl.fskSec;
+  if (tl.cwSec && t < a + tl.gapSec + tl.cwSec) return { label: 'CW ID', pictureFrac: 1 };
+  return { label: 'Finishing', pictureFrac: 1 };
+}
+
+/** The bar's marks where the picture starts and ends (the IDs follow). */
+function setSstvTxBarMarks(p) {
+  for (const m of sstvTxBar.querySelectorAll('.sstv-tx__bar-mark')) m.remove();
+  const tl = p?.timeline;
+  if (!tl || !(p.durationSec > 0)) return;
+  for (const s of [tl.headerSec, tl.headerSec + tl.pictureSec]) {
+    if (s <= 0 || s >= p.durationSec - 0.05) continue;
+    const mark = document.createElement('div');
+    mark.className = 'sstv-tx__bar-mark';
+    mark.style.left = `${(100 * s) / p.durationSec}%`;
+    sstvTxBar.appendChild(mark);
+  }
+}
+
+/** The picture on the SSTV screen, sent rows shown and the rest dimmed, with a line where it has got to. */
+function drawSstvTxReveal(p, frac) {
+  if (!p.img) return;
+  const W = sstvCanvas.width;
+  const H = sstvCanvas.height;
+  const row = Math.round(Math.max(0, Math.min(1, frac)) * H);
+  if (row === p.lastRow) return;
+  p.lastRow = row;
+  sstvCtx.imageSmoothingEnabled = false;
+  sstvCtx.drawImage(p.img, 0, 0, W, H);
+  if (row < H) {
+    sstvCtx.fillStyle = 'rgba(0, 0, 0, 0.72)';
+    sstvCtx.fillRect(0, row, W, H - row);
+    sstvCtx.fillStyle = getComputedStyle(document.documentElement).getPropertyValue('--led-green').trim() || '#4fd67a';
+    sstvCtx.fillRect(0, Math.min(row, H - 2), W, Math.max(2, Math.round(H / 128)));
+  }
+}
+
+function tickSstvTxProgress() {
+  const p = sstvTxProgress;
+  if (!p) return;
+  const t = Math.max(0, Math.min(p.durationSec, (Date.now() - p.t0) / 1000));
+  const pct = p.durationSec > 0 ? (100 * t) / p.durationSec : 0;
+  const phase = sstvTxPhase(t, p);
+  sstvTxBarFill.style.width = `${pct.toFixed(1)}%`;
+  sstvTxBar.setAttribute('aria-valuenow', String(Math.round(pct)));
+  sstvTxProgressTime.textContent = `${mmss(t)} / ${mmss(p.durationSec)}`;
+  const what = phase.line ? `Picture · line ${phase.line} of ${p.lines}` : phase.label;
+  sstvTxProgressDetail.textContent = `${what} · ${mmss(p.durationSec - t)} left`;
+  drawSstvTxReveal(p, phase.pictureFrac);
+  if (!sstvCurrent) sstvStatusEl.textContent = `Sending ${p.name} · ${Math.round(pct)}%`;
+}
+
+function startSstvTxProgress({ name, durationSec, elapsedSec, startTime, timeline, lines, png }) {
+  const elapsed = Number.isFinite(elapsedSec) ? elapsedSec : startTime ? Math.max(0, (Date.now() - startTime) / 1000) : 0;
+  const p = { name, t0: Date.now() - elapsed * 1000, durationSec: durationSec || timeline?.totalSec || 0, timeline, lines: lines || 0, img: null, lastRow: -1 };
+  sstvTxProgress = p;
+  sstvSaveBtn.hidden = true; // it would save the last picture shown, not this one; back once ours is in the strip
+  sstvTxBar.classList.remove('sstv-tx__bar--preparing');
+  sstvTxProgressLabel.textContent = `Sending ${name}`;
+  setSstvTxBarMarks(p);
+  sstvTxProgressEl.hidden = false;
+  if (png) {
+    const img = new Image();
+    img.onload = () => {
+      if (sstvTxProgress !== p) return;
+      p.img = img;
+      sstvSize(img.width, img.height, 1);
+      tickSstvTxProgress();
+    };
+    img.src = `data:image/png;base64,${png}`;
+    p.png = png;
+  }
+  tickSstvTxProgress();
+  sstvTxTimer = setInterval(tickSstvTxProgress, 250);
+}
+
+/** Ends the progress display; puts the picture that was on the SSTV screen back unless `keepScreen`. */
+function stopSstvTxProgress({ keepScreen = false } = {}) {
+  const had = sstvTxProgress;
+  sstvTxProgress = null;
   clearInterval(sstvTxTimer);
+  sstvTxTimer = null;
+  sstvTxProgressEl.hidden = true;
+  sstvTxProgressLabel.textContent = '';
+  sstvTxProgressTime.textContent = '';
+  sstvTxProgressDetail.textContent = '';
+  sstvTxBar.classList.remove('sstv-tx__bar--preparing');
+  sstvTxBarFill.style.width = '0%';
+  setSstvTxBarMarks(null);
+  if (!had || keepScreen || sstvCurrent) return;
+  if (sstvShown) showSstvPicture(sstvShown);
+  else {
+    sstvCtx.fillStyle = '#000';
+    sstvCtx.fillRect(0, 0, sstvCanvas.width, sstvCanvas.height);
+    sstvStatusEl.textContent = 'listening for a picture…';
+  }
+}
+
+document.getElementById('sstv-tx-progress-stop').addEventListener('click', () => {
+  sstvTxProgressDetail.textContent = 'Stopping…';
+  link.request('abortSstv').catch((err) => showError(`Couldn't stop the picture: ${err.message}`));
+});
+
+link.addEventListener('sstv-tx-status', (event) => {
+  const detail = event.detail || {};
+  const { status, name, durationSec, error } = detail;
   if (status !== 'encoding' && status !== 'sending' && status !== 'aborted') sstvCancelPending = false;
   sstvTxBusy = status === 'encoding' || status === 'sending';
   sstvTxSendBtn.classList.toggle('ptt--active', sstvTxBusy);
@@ -2454,27 +2648,32 @@ link.addEventListener('sstv-tx-status', (event) => {
   else updateSstvTxSendLabel();
   switch (status) {
     case 'encoding':
-      sstvTxStatus.textContent = `Preparing ${name}…`;
+      stopSstvTxProgress({ keepScreen: true });
+      sstvTxProgressLabel.textContent = `Preparing ${name}…`;
+      sstvTxProgressTime.textContent = durationSec ? mmss(durationSec) : '';
+      sstvTxProgressDetail.textContent = 'Encoding the picture; the radio transmits once it is ready.';
+      sstvTxBar.classList.add('sstv-tx__bar--preparing');
+      sstvTxProgressEl.hidden = false;
+      sstvTxStatus.textContent = '';
       break;
-    case 'sending': {
-      const t0 = startTime ?? Date.now();
-      const tick = () => {
-        const el = Math.min(durationSec, (Date.now() - t0) / 1000);
-        sstvTxStatus.textContent = `Sending ${name} · ${mmss(el)} of ${mmss(durationSec)}${sstvTxInfo?.fskId ? ' (then FSK ID and CW ID)' : ''}`;
-      };
-      tick();
-      sstvTxTimer = setInterval(tick, 1000);
+    case 'sending':
+      clearInterval(sstvTxTimer);
+      startSstvTxProgress(detail);
+      sstvTxStatus.textContent = '';
       break;
-    }
     case 'sent':
+      // The sent picture follows as an sstv-picture event and takes the screen.
+      stopSstvTxProgress({ keepScreen: true });
       sstvTxStatus.textContent = `Sent ${name} (${mmss(durationSec)}).`;
       break;
     case 'aborted':
+      stopSstvTxProgress();
       sstvTxStatus.textContent = 'Stopped.';
       if (sstvCancelPending) closeSstvTxEditor();
       sstvCancelPending = false;
       break;
     case 'error':
+      stopSstvTxProgress();
       sstvTxStatus.textContent = `Couldn't send: ${error || 'unknown error'}`;
       break;
     default:
@@ -2624,6 +2823,7 @@ function enterFt8Mode() {
  * order.
  */
 function reflectFt8ActiveFromServer() {
+  if (ft8Active) return;
   ft8Active = true;
   ft8ModeBtn.classList.add('chip--active');
   setCwPaddleVisible(false);
@@ -2631,11 +2831,18 @@ function reflectFt8ActiveFromServer() {
   updateTtyUi();
   setFt8UiVisible(true);
   updateFt8VariantUi();
+  if (!ft8ComposerInput.value) ft8ComposerInput.value = defaultCqMessage(stationCallsign, stationGrid);
+  currentQsoFreqHz = ft8DefaultTxFreqHz;
+  scopeDisplay.setQsoFreq(currentQsoFreqHz);
   ft8LastBandName = currentFreqHz != null ? bandNameForFrequency(currentFreqHz) : null;
 }
 
-/** Leaves FT8 mode — called when the operator picks any real hardware mode. */
-function exitFt8Mode() {
+/**
+ * Leaves FT8 mode — called when the operator picks any real hardware mode.
+ * With `local`, another browser left it and has already told the server and
+ * the radio, so only this page's display changes (see applyAppModes()).
+ */
+function exitFt8Mode({ local = false } = {}) {
   if (!ft8Active) return;
   ft8Active = false;
   ft8ModeBtn.classList.remove('chip--active');
@@ -2644,6 +2851,7 @@ function exitFt8Mode() {
   // updateFt8VariantUi()'s doc comment.
   updateFt8VariantUi();
   setFt8UiVisible(false);
+  if (local) return;
   link.request('setFt8Active', { active: false }).catch((err) => showError(`Couldn't stop FT8 decoding: ${err.message}`));
   // Restore whatever MOD Input source the picked hardware mode expects
   // (typically the front-panel mic) — see enterFt8Mode()'s DATA MODE
@@ -2759,6 +2967,7 @@ function enterFreeDvMode() {
  * bookkeeping.
  */
 function reflectFreeDvActiveFromServer() {
+  if (freeDvActive) return;
   freeDvActive = true;
   freeDvModeBtn.classList.add('chip--active');
   freeDvSpotLabel.hidden = false;
@@ -2768,8 +2977,8 @@ function reflectFreeDvActiveFromServer() {
   updateTtyUi();
 }
 
-/** Leaves FreeDV mode — called when the operator picks any real hardware mode, or FT8. */
-function exitFreeDvMode() {
+/** Leaves FreeDV mode — called when the operator picks any real hardware mode, or FT8 (with `local`: see exitFt8Mode()). */
+function exitFreeDvMode({ local = false } = {}) {
   if (!freeDvActive) return;
   freeDvActive = false;
   freeDvModeBtn.classList.remove('chip--active');
@@ -2779,6 +2988,7 @@ function exitFreeDvMode() {
   // Reverts the chip's label back to the neutral "FreeDV" — see
   // updateFreeDvVariantUi()'s doc comment.
   updateFreeDvVariantUi();
+  if (local) return;
   // Restore whatever MOD Input source the picked hardware mode expects
   // (typically the front-panel mic) — see enterFreeDvMode()'s DATA MODE
   // comment for why this was turned on in the first place.

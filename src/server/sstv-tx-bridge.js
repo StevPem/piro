@@ -3,24 +3,35 @@
 const path = require('path');
 const { Worker } = require('worker_threads');
 const { EVENT } = require('./protocol');
-const { MODES, videoSeconds } = require('../audio/sstv-modes');
+const { MODES, videoSeconds, isScottie } = require('../audio/sstv-modes');
 const { encodePng } = require('./png');
 
 const DEFAULT_SSTV_TX_MODE = 'S1';
 const PTT_RELEASE_MARGIN_MS = 300; // as tty-bridge.js: let the last of the audio leave the pipe
 const DEFAULT_TX_AMPLITUDE = 1.0;
 
-/** Seconds an SSTV transmission takes: VIS header, picture, FSK ID, pause and CW ID. */
-function sstvTxSeconds(mode, callsign, { fskId = true, cwId = true, cwWpm = 20 } = {}) {
-  let s = 0.91 + videoSeconds(mode);
+/**
+ * The parts of an SSTV transmission in order, in seconds: the VIS header
+ * (plus Scottie's starting sync), the picture, the FSK ID, the pause before
+ * the CW ID, and the CW ID. Matches what audio/sstv-tx.js's
+ * encodeSstvTransmission() produces; the client draws its progress from it.
+ */
+function sstvTxTimeline(mode, callsign, { fskId = true, cwId = true, cwWpm = 20 } = {}) {
+  const { visSegments, fskIdSegments, cwSegments } = require('../audio/sstv-tx');
+  const sum = (segs) => segs.reduce((n, sg) => n + sg[1], 0);
+  const headerSec = sum(visSegments(mode)) + (isScottie(mode) ? MODES[mode].sync : 0);
+  const pictureSec = videoSeconds(mode);
   const call = String(callsign || '').trim().toUpperCase();
-  if (call && fskId) s += (Math.min(10, call.length) + 3) * 6 * 0.022;
-  if (call && cwId) {
-    // "DE <call>" at PARIS timing: count dot units
-    const { cwSegments } = require('../audio/sstv-tx');
-    s += 0.3 + cwSegments(`DE ${call}`, { wpm: cwWpm }).reduce((n, sg) => n + sg[2], 0);
-  }
-  return s;
+  const fskSec = call && fskId ? sum(fskIdSegments(call)) : 0;
+  const gapSec = call && cwId ? 0.3 : 0;
+  // CW segments are [amplitude, freq, seconds]
+  const cwSec = call && cwId ? cwSegments(`DE ${call}`, { wpm: cwWpm }).reduce((n, sg) => n + sg[2], 0) : 0;
+  return { headerSec, pictureSec, fskSec, gapSec, cwSec, totalSec: headerSec + pictureSec + fskSec + gapSec + cwSec };
+}
+
+/** Seconds an SSTV transmission takes: VIS header, picture, FSK ID, pause and CW ID. */
+function sstvTxSeconds(mode, callsign, opts) {
+  return sstvTxTimeline(mode, callsign, opts).totalSec;
 }
 
 /** Runs the encoder in a worker thread; resolves with { pcm: Buffer, durationSec }. */
@@ -48,6 +59,11 @@ function encodeInWorker(job) {
  *
  * Status is broadcast as EVENT.SSTV_TX_STATUS:
  *   {status: 'encoding' | 'sending' | 'sent' | 'aborted' | 'error', mode, name, durationSec?, error?}
+ * 'sending' also carries what the client needs to show progress: startTime,
+ * elapsedSec, the timeline of the parts (sstvTxTimeline()), the picture's
+ * line count and the picture itself as a PNG. A page that connects while a
+ * picture is being prepared or sent is sent the current status, with
+ * elapsedSec how far in it is.
  */
 class SstvTxBridge {
   /**
@@ -99,18 +115,29 @@ class SstvTxBridge {
     this._onClientGone = () => {
       if (this._tx && this.controlServer.clients && this.controlServer.clients.size === 0) this.abort();
     };
+    // A page that opens during a transmission is shown how far it has got.
+    this._onClientJoined = (ws) => {
+      const s = this._current;
+      if (!s || typeof this.controlServer.sendJsonEvent !== 'function') return;
+      const data = { ...s.data };
+      if (s.startedAt != null) data.elapsedSec = (this.now() - s.startedAt) / 1000;
+      this.controlServer.sendJsonEvent(ws, EVENT.SSTV_TX_STATUS, data);
+    };
+    this._current = null; // the in-progress status: {data, startedAt}
   }
 
   start() {
     this.controlServer.on('sstv-send', this._onSend);
     this.controlServer.on('sstv-abort', this._onAbort);
     this.controlServer.on('client-disconnected', this._onClientGone);
+    this.controlServer.on('client-connected', this._onClientJoined);
   }
 
   stop() {
     this.controlServer.off('sstv-send', this._onSend);
     this.controlServer.off('sstv-abort', this._onAbort);
     this.controlServer.off('client-disconnected', this._onClientGone);
+    this.controlServer.off('client-connected', this._onClientJoined);
     if (this._tx) this.abort();
   }
 
@@ -120,7 +147,10 @@ class SstvTxBridge {
 
   _status(data) {
     const m = MODES[this.mode];
-    this.controlServer.broadcastJsonEvent(EVENT.SSTV_TX_STATUS, { mode: this.mode, name: m.name, ...data });
+    const full = { mode: this.mode, name: m.name, ...data };
+    const busy = data.status === 'encoding' || data.status === 'sending';
+    this._current = busy ? { data: full, startedAt: data.status === 'sending' ? this.now() : null } : null;
+    this.controlServer.broadcastJsonEvent(EVENT.SSTV_TX_STATUS, full);
   }
 
   /**
@@ -177,7 +207,15 @@ class SstvTxBridge {
       if (!tx.aborted) {
         keyed = true;
         await this.controlServer.setPttFromServer(true);
-        this._status({ status: 'sending', durationSec, startTime: this.now() });
+        this._status({
+          status: 'sending',
+          durationSec,
+          startTime: this.now(),
+          elapsedSec: 0,
+          timeline: sstvTxTimeline(this.mode, this.callsign, { fskId: this.fskId, cwId: this.cwId }),
+          lines: m.lines,
+          png: encodePng(Uint8Array.from(rgb), width, height).toString('base64'),
+        });
       }
       if (!tx.aborted) {
         this.audioBridge.playback.write(pcm);
@@ -257,4 +295,4 @@ class SstvTxBridge {
   }
 }
 
-module.exports = { SstvTxBridge, sstvTxSeconds, encodeInWorker, DEFAULT_SSTV_TX_MODE };
+module.exports = { SstvTxBridge, sstvTxSeconds, sstvTxTimeline, encodeInWorker, DEFAULT_SSTV_TX_MODE };

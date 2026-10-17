@@ -73,6 +73,26 @@ class Civ extends EventEmitter {
   await page.goto(`http://localhost:${port}/`);
   await page.waitForFunction(() => !document.getElementById('tty-send-btn').disabled, null, { timeout: 8000 });
 
+  // A second browser on the same server (another phone, say): it follows
+  // every mode the first one picks, without sending any radio commands itself.
+  const pageB = await browser.newPage({ viewport: { width: 430, height: 1100 } });
+  pageB.on('pageerror', (e) => errors.push('B: ' + e.message));
+  pageB.on('console', (m) => { if (m.type() === 'error') errors.push('B: ' + m.text()); });
+  const bRequests = [];
+  {
+    const known = new Set(server.clients);
+    await pageB.goto(`http://localhost:${port}/`);
+    await pageB.waitForFunction(() => !document.getElementById('tty-send-btn').disabled, null, { timeout: 8000 });
+    const wsB = [...server.clients].find((w) => !known.has(w));
+    const orig = server._handleMessage.bind(server);
+    server._handleMessage = (ws, raw) => {
+      if (ws === wsB) bRequests.push(JSON.parse(raw.toString()));
+      return orig(ws, raw);
+    };
+  }
+  const bFollows = (fn, arg) => pageB.waitForFunction(fn, arg, { timeout: 4000 }).then(() => true, () => false);
+  const bChips = () => pageB.locator('#modes .chip').allTextContents();
+
   const chip = (label) => page.locator('#modes .chip', { hasText: new RegExp(`^${label}$`) });
   const ttyLabel = async () => (await page.locator('#modes .chip').allTextContents());
   const vis = async (sel) => page.locator(sel).isVisible();
@@ -116,6 +136,10 @@ class Civ extends EventEmitter {
   check(!(await vis('#rtty-ticker-section')), 'RTTY ticker hidden in JTTY');
   check((await page.locator('#tty-input').inputValue()) === 'CQ VK2IO CQ', 'composer text switched to a JTTY CQ (it was untouched)');
   check((await page.locator('#ptt-hint').textContent()).includes('JTTY'), 'hint text describes JTTY');
+  check(
+    await bFollows(() => [...document.querySelectorAll('#modes .chip')].some((c) => c.textContent === 'JTTY' && c.classList.contains('chip--active')) && !document.getElementById('tty-composer').hidden && !document.getElementById('jtty-rx').hidden),
+    'the second browser follows into JTTY (chip, composer and received-messages table): ' + (await bChips()).join(' ')
+  );
 
   // Space must not key PTT in TTY modes
   const before = civ.log.filter((e) => e[0] === 'setPtt').length;
@@ -139,6 +163,7 @@ class Civ extends EventEmitter {
     check(/^\d\d:\d\d:\d\d$/.test(cells[0]), 'received row has a UTC time: ' + cells[0]);
     await page.locator('#jtty-table-body .ft8-table__row').first().click();
     check((await page.locator('#tty-freq').inputValue()) === '1300', 'tapping a received line sets the TX frequency');
+    check(await bFollows(() => document.getElementById('tty-freq').value === '1300'), 'and the second browser shows the same JTTY transmit frequency (1300 Hz)');
     check(/ Hz$/.test(await page.locator('#scope-range-hi').textContent()), 'JTTY: the scope shows the audio spectrum (Hz axis): ' + (await page.locator('#scope-range-hi').textContent()));
     check(!(await vis('#scope-spans')), 'JTTY: RF span buttons hidden');
   }
@@ -197,6 +222,10 @@ class Civ extends EventEmitter {
     await sleep(200);
     check((await page.locator('#tty-freq').inputValue()) === '1531' && server.state.oliviaCentreHz === 1531 && oliviaRx.centreHz === 1531, 'Tune to signal moves the centre onto it (box, server, receiver)');
     check(!(await vis('#olivia-tune-btn')), 'and the button goes away');
+    check(
+      await bFollows(() => [...document.querySelectorAll('#modes .chip')].some((c) => c.textContent === 'Olivia') && document.getElementById('tty-freq').value === '1531' && !document.getElementById('olivia-rx').hidden),
+      'the second browser is in Olivia too, with the new centre (1531 Hz)'
+    );
   }
 
   // Send an Olivia message (long: stop it once it is going)
@@ -267,6 +296,10 @@ class Civ extends EventEmitter {
     await page.mouse.click(wf.x + wf.width * 0.2, wf.y + wf.height / 2);
     await sleep(200);
     check(Number(await page.locator('#tty-freq').inputValue()) === tone, 'clicking the picture does not change the tone');
+    check(
+      await bFollows((t) => [...document.querySelectorAll('#modes .chip')].some((c) => c.textContent === 'Feld-Hell') && document.getElementById('tty-freq').value === String(t), tone),
+      `the second browser is in Feld-Hell with the same tone (${tone} Hz)`
+    );
 
     // send
     const w = writes.length;
@@ -374,6 +407,10 @@ class Civ extends EventEmitter {
   check(civ.dataMode === true, 'JTTY -> FT8 leaves DATA MODE on (FT8 needs it)');
   check(!(await vis('#tty-composer')) && !(await vis('#ptt-btn')), 'FT8: neither PTT nor TTY composer (FT8 panel instead)');
   check((await ttyLabel()).includes('FT8'), 'the DIGI chip reads FT8 while FT8 is selected');
+  check(
+    await bFollows(() => [...document.querySelectorAll('#modes .chip')].some((c) => c.textContent === 'FT8' && c.classList.contains('chip--active')) && !document.getElementById('ft8-panel').hidden && document.getElementById('tty-composer').hidden),
+    'the second browser leaves JTTY for FT8 too (FT8 panel shown): ' + (await bChips()).join(' ')
+  );
 
   // SSTV: FT8 -> SSTV on 40 m, a picture comes in, band change, then SSB
   await chip('SSTV').click();
@@ -381,6 +418,10 @@ class Civ extends EventEmitter {
   check(civ.freq === 7171000 && civ.mode === 'LSB' && server.state.sstvActive && sstvRx.attached && !server.state.ft8Active, 'SSTV on 40 m: 7.171 MHz LSB, receiver armed, FT8 off');
   check((await vis('#sstv-rx')) && (await vis('#ptt-btn')) && !(await vis('#ft8-panel')), 'SSTV panel shown, voice PTT back, FT8 panel gone');
   check((await ttyLabel()).includes('DIGI') && (await ttyLabel()).includes('SSB') && (await page.locator('#modes .chip', { hasText: /^SSTV$/ }).evaluate((e) => e.classList.contains('chip--active'))), 'SSTV chip lit; DIGI and SSB back to their plain labels');
+  check(
+    await bFollows(() => [...document.querySelectorAll('#modes .chip')].some((c) => c.textContent === 'SSTV' && c.classList.contains('chip--active')) && !document.getElementById('sstv-rx').hidden && document.getElementById('ft8-panel').hidden),
+    'the second browser follows into SSTV (its picture panel shown, FT8 panel gone): ' + (await bChips()).join(' ')
+  );
   {
     const w = 320;
     const h = 120;
@@ -453,16 +494,53 @@ class Civ extends EventEmitter {
     check(br.corner && br.topLeft, 'the tag moves to the corner chosen');
     const w0 = writes.length;
     await page.locator('#sstv-tx-send').click();
-    await page.waitForFunction(() => /^Sending Scottie S1 · 0:0\d of 1:5\d/.test(document.getElementById('sstv-tx-status').textContent), null, { timeout: 20000 });
-    check((await page.locator('#sstv-tx-send').textContent()) === 'Stop' && writes.length === w0 + 1 && civ.dataMode === true && civ.log.filter((e) => e[0] === 'setPtt').at(-1)[1] === true, 'sending: DATA MODE on, PTT keyed, audio written, Send became Stop: ' + (await page.locator('#sstv-tx-status').textContent()));
+    await page.waitForFunction(() => !document.getElementById('sstv-tx-progress').hidden && document.getElementById('sstv-tx-progress-label').textContent === 'Sending Scottie S1', null, { timeout: 20000 });
+    check((await page.locator('#sstv-tx-send').textContent()) === 'Stop' && writes.length === w0 + 1 && civ.dataMode === true && civ.log.filter((e) => e[0] === 'setPtt').at(-1)[1] === true, 'sending: DATA MODE on, PTT keyed, audio written, Send became Stop');
+    // progress: elapsed / total, what is going out, time left, the bar; the picture fills in on the SSTV screen
+    await sleep(3000);
+    const prog = async (p) =>
+      p.evaluate(() => ({
+        shown: !document.getElementById('sstv-tx-progress').hidden,
+        label: document.getElementById('sstv-tx-progress-label').textContent,
+        time: document.getElementById('sstv-tx-progress-time').textContent,
+        detail: document.getElementById('sstv-tx-progress-detail').textContent,
+        pct: Number(document.getElementById('sstv-tx-bar').getAttribute('aria-valuenow')),
+        width: parseFloat(document.getElementById('sstv-tx-bar-fill').style.width),
+        marks: document.querySelectorAll('#sstv-tx-bar .sstv-tx__bar-mark').length,
+        status: document.getElementById('sstv-status').textContent,
+      }));
+    const pa = await prog(page);
+    check(pa.shown && /^0:0[2-4] \/ 1:5\d$/.test(pa.time) && /^Picture · line \d+ of 256 · 1:5\d left$/.test(pa.detail) && pa.width > 0.5 && pa.width < 4 && pa.marks === 2, `progress shown: "${pa.label}", ${pa.time}, "${pa.detail}", bar ${pa.width}% with the picture's start and end marked`);
+    check(/^Sending Scottie S1 · \d+%$/.test(pa.status), 'the SSTV screen says it is sending: ' + pa.status);
+    const shot = await page.locator('#sstv-canvas').evaluate((c) => {
+      const d = c.getContext('2d').getImageData(0, 0, c.width, c.height).data;
+      const at = (x, y) => d[(y * c.width + x) * 4];
+      return { w: c.width, h: c.height, top: at(40, 1), bottom: at(40, 250) };
+    });
+    check(shot.w === 320 && shot.h === 256 && shot.top > 200 && shot.bottom < 100, `the outgoing picture fills in on the SSTV screen: sent rows bright (${shot.top}), the rest dimmed (${shot.bottom})`);
+    const pb = await prog(pageB);
+    check(pb.shown && pb.label === 'Sending Scottie S1' && /^Picture · line \d+ of 256/.test(pb.detail), `the second browser shows the same progress: ${pb.time}, "${pb.detail}"`);
+    // a page opened part-way through is told how far in it is
+    const pageC = await browser.newPage({ viewport: { width: 430, height: 1100 } });
+    pageC.on('pageerror', (e) => errors.push('C: ' + e.message));
+    await pageC.goto(`http://localhost:${port}/`);
+    await pageC.waitForFunction(() => !document.getElementById('sstv-tx-progress').hidden && document.getElementById('sstv-tx-progress-label').textContent === 'Sending Scottie S1', null, { timeout: 8000 }).catch(() => {});
+    const pc = await prog(pageC);
+    check(pc.shown && /^0:0[3-9] \/ 1:5\d$/.test(pc.time) && pc.width > 1, `a browser opened during the transmission joins SSTV and picks up the progress part-way (${pc.time}, bar ${pc.width}%)`);
+    await pageC.close();
     check(Math.abs(writes.at(-1).length / 2 / 48000 - server.state.sstvTx.durationSec) < 0.2, `the audio is the whole transmission (${(writes.at(-1).length / 96000).toFixed(1)} s with FSK ID and CW ID)`);
     await page.locator('#sstv-tx-send').click();
     await page.waitForFunction(() => document.getElementById('sstv-tx-status').textContent === 'Stopped.', null, { timeout: 5000 });
     await sleep(200);
     check(civ.dataMode === false && civ.log.filter((e) => e[0] === 'setPtt').at(-1)[1] === false && (await page.locator('#sstv-tx-send').textContent()).startsWith('Send ('), 'Stop: PTT released, DATA MODE off, Send back');
+    check(!(await vis('#sstv-tx-progress')) && !(await pageB.locator('#sstv-tx-progress').isVisible()), 'the progress goes away in both browsers');
+    {
+      const st = await page.locator('#sstv-status').textContent();
+      check(/^Robot 8 B\/W · 320 × 120/.test(st), 'and the SSTV screen goes back to the last picture: ' + st);
+    }
     // Cancel while sending stops the transmission too, and closes the editor
     await page.locator('#sstv-tx-send').click();
-    await page.waitForFunction(() => /^Sending Scottie S1/.test(document.getElementById('sstv-tx-status').textContent), null, { timeout: 20000 });
+    await page.waitForFunction(() => !document.getElementById('sstv-tx-progress').hidden && document.getElementById('sstv-tx-progress-label').textContent === 'Sending Scottie S1', null, { timeout: 20000 });
     check(civ.log.filter((e) => e[0] === 'setPtt').at(-1)[1] === true, 'sending again');
     await page.locator('#sstv-tx-cancel').click();
     await page.waitForFunction(() => document.getElementById('sstv-tx-editor').hidden, null, { timeout: 5000 });
@@ -472,8 +550,19 @@ class Civ extends EventEmitter {
   await chip('SSB').click();
   await sleep(300);
   check(!server.state.sstvActive && !sstvRx.attached && !(await vis('#sstv-rx')) && civ.mode === 'USB' && (await ttyLabel()).includes('USB'), 'SSB leaves SSTV (USB on 20 m), panel hidden');
+  check(
+    await bFollows(() => [...document.querySelectorAll('#modes .chip')].some((c) => c.textContent === 'USB' && c.classList.contains('chip--active')) && document.getElementById('sstv-rx').hidden),
+    'the second browser leaves SSTV for USB too: ' + (await bChips()).join(' ')
+  );
+  {
+    // Following must never drive the radio. (Seeing the radio leave a TTY
+    // mode's sideband, it may repeat a "leave" the first browser also sent.)
+    const bad = bRequests.filter((r) => /^(set(Mode|Frequency|Ptt|Ft8Variant|CwDecoderVariant)|send|abort)/.test(r.type) || (r.type === 'setDataMode' && r.on) || (/Active$/.test(r.type) && r.active));
+    check(bad.length === 0, 'the second browser sent no radio or mode commands of its own' + (bad.length ? ': ' + bad.map((r) => JSON.stringify(r)).join(' ') : ''));
+  }
 
   check(errors.length === 0, 'no page errors' + (errors.length ? ': ' + errors.join(' | ') : ''));
+  await pageB.close();
   await browser.close();
   tty.stop();
   jttyRx.stop();

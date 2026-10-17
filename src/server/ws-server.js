@@ -136,17 +136,18 @@ class ControlServer extends EventEmitter {
       // a copy kept here only so a newly-connecting client's initial
       // EVENT.CONNECTED snapshot can reflect it (see _wireWsConnections()
       // below), the same reason ft8Variant/freeDvVariant are cached here.
-      // Not broadcast to already-connected clients on change (unlike
-      // ft8Variant) — this mirrors an earlier, deliberate choice to keep
-      // "armed" state purely per-request-confirmation rather than
-      // multi-client-synced; only the new-connection snapshot gap this was
-      // originally missing has been filled in.
+      // Every change is also broadcast to the other connected clients as
+      // part of EVENT.APP_MODES (see appModes()), as are all the app-level
+      // modes below, so every browser shows the same mode.
       ft8Active: false,
       // Whether the client has JTTY selected (see REQUEST.SET_JTTY_ACTIVE /
       // server/jtty-decoder-bridge.js). Cached here for the same reason as
       // ft8Active: JttyDecoderBridge acts on the 'jtty-active' event, and a
       // newly-connecting client's EVENT.CONNECTED snapshot needs the value.
       jttyActive: false,
+      // The JTTY transmit audio frequency (lowest tone), shared so every
+      // browser shows the same one (REQUEST.SET_JTTY_ACTIVE's txHz).
+      jttyTxHz: 1450,
       // Whether the client has Olivia selected, and the audio centre
       // frequency it listens on (see REQUEST.SET_OLIVIA_ACTIVE /
       // server/olivia-decoder-bridge.js). Same reasons as jttyActive.
@@ -173,9 +174,9 @@ class ControlServer extends EventEmitter {
       freeDvVariant: 'RADE',
       // Whether FreeDV mode is currently armed (see
       // REQUEST.SET_FREEDV_ACTIVE / src/server/rade-bridge.js) — same
-      // reasoning as ft8Active above: a server-side setting cached here
-      // purely so a newly-connecting client's initial snapshot can reflect
-      // it, not broadcast on change.
+      // reasoning as ft8Active above: a server-side setting cached here so
+      // a newly-connecting client's initial snapshot can reflect it, and
+      // broadcast in EVENT.APP_MODES on change.
       freeDvActive: false,
       // The "FreeDV spot" checkbox — whether this station gets reported
       // to qso.freedv.org (see REQUEST.SET_FREEDV_SPOT_ENABLED and
@@ -305,6 +306,31 @@ class ControlServer extends EventEmitter {
         this._releaseJttyIfAlone();
       });
     });
+  }
+
+  /**
+   * The app-level modes (layered on the radio's own LSB/USB, so CI-V can't
+   * report them) and their settings. Broadcast as EVENT.APP_MODES whenever
+   * one changes, so every connected browser shows the same mode.
+   */
+  appModes() {
+    const s = this.state;
+    return {
+      ft8Active: s.ft8Active,
+      freeDvActive: s.freeDvActive,
+      jttyActive: s.jttyActive,
+      jttyTxHz: s.jttyTxHz,
+      oliviaActive: s.oliviaActive,
+      oliviaCentreHz: s.oliviaCentreHz,
+      hellActive: s.hellActive,
+      hellToneHz: s.hellToneHz,
+      sstvActive: s.sstvActive,
+    };
+  }
+
+  /** Tells every browser except `except` (which has its own reply) about the app modes now. */
+  _broadcastAppModes(except) {
+    this._broadcast(makeEvent(EVENT.APP_MODES, this.appModes()), except);
   }
 
   _setJttyActive(active) {
@@ -438,14 +464,20 @@ class ControlServer extends EventEmitter {
           // has no reference to it — see src/audio/ft8-bridge.js.
           this.emit('ft8-active', msg.active);
           ws.send(makeResult(id, { active: msg.active }));
+          this._broadcastAppModes(ws);
           break;
         }
         case REQUEST.SET_JTTY_ACTIVE: {
           if (typeof msg.active !== 'boolean') {
             throw new Error('"active" must be a boolean');
           }
+          if (msg.txHz !== undefined && (typeof msg.txHz !== 'number' || !Number.isFinite(msg.txHz))) {
+            throw new Error('"txHz" must be a number (Hz) if provided');
+          }
+          if (msg.txHz !== undefined) this.state.jttyTxHz = Math.round(Math.max(200, Math.min(2800, msg.txHz)));
           this._setJttyActive(msg.active);
-          ws.send(makeResult(id, { active: msg.active }));
+          ws.send(makeResult(id, { active: msg.active, txHz: this.state.jttyTxHz }));
+          this._broadcastAppModes(ws);
           break;
         }
         case REQUEST.SET_OLIVIA_ACTIVE: {
@@ -458,6 +490,7 @@ class ControlServer extends EventEmitter {
           const centreHz = msg.centreHz === undefined ? undefined : clampOliviaCentre(msg.centreHz);
           this._setOliviaActive(msg.active, centreHz);
           ws.send(makeResult(id, { active: msg.active, centreHz: this.state.oliviaCentreHz }));
+          this._broadcastAppModes(ws);
           break;
         }
         case REQUEST.SET_HELL_ACTIVE: {
@@ -470,6 +503,7 @@ class ControlServer extends EventEmitter {
           const toneHz = msg.toneHz === undefined ? undefined : clampHellTone(msg.toneHz);
           this._setHellActive(msg.active, toneHz);
           ws.send(makeResult(id, { active: msg.active, toneHz: this.state.hellToneHz }));
+          this._broadcastAppModes(ws);
           break;
         }
         case REQUEST.SET_SSTV_ACTIVE: {
@@ -478,6 +512,7 @@ class ControlServer extends EventEmitter {
           }
           this._setSstvActive(msg.active);
           ws.send(makeResult(id, { active: msg.active }));
+          this._broadcastAppModes(ws);
           break;
         }
         case REQUEST.END_SSTV_PICTURE: {
@@ -593,8 +628,7 @@ class ControlServer extends EventEmitter {
           // EVENT.CONNECTED snapshot reflects it — see
           // this.state.freeDvActive's own doc comment above. RadeBridge
           // keeps the actual authoritative `_active` flag it acts on; this
-          // is just a mirror of it, same pattern as ft8Active above (not
-          // broadcast to other already-connected clients on change).
+          // is just a mirror of it, same pattern as ft8Active above.
           this.state.freeDvActive = msg.active;
           // Handled by RadeBridge (internal-only event, same pattern as
           // 'ft8-active' above) rather than called directly, since
@@ -602,6 +636,7 @@ class ControlServer extends EventEmitter {
           // src/server/rade-bridge.js.
           this.emit('freedv-active', msg.active);
           ws.send(makeResult(id, { active: msg.active }));
+          this._broadcastAppModes(ws);
           break;
         }
         case REQUEST.SET_FREEDV_VARIANT: {

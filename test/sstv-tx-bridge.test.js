@@ -110,6 +110,30 @@ const statuses = (cs) => cs.broadcasts.filter((b) => b.type === EVENT.SSTV_TX_ST
     check(!controlServer.broadcasts.some((b) => b.type === EVENT.SSTV_PICTURE), 'a stopped picture is not added');
   }
   {
+    // progress: what 'sending' carries, and a page that connects part-way is told how far in it is
+    const { controlServer, bridge } = setup({ mode: 'M1' });
+    const late = [];
+    controlServer.sendJsonEvent = (ws, type, data) => late.push({ ws, type, data });
+    const p = bridge.send({ rgb: new Uint8Array(320 * 256 * 3).fill(80), width: 320, height: 256 });
+    while (statuses(controlServer).at(-1)?.status !== 'encoding') await sleep(1);
+    controlServer.emit('client-connected', 'early');
+    check(late[0]?.ws === 'early' && late[0].data.status === 'encoding' && late[0].data.elapsedSec === undefined, 'a page opened while the picture is prepared is told so');
+    while (statuses(controlServer).at(-1)?.status !== 'sending') await sleep(5);
+    const s = statuses(controlServer).at(-1);
+    const tl = s.timeline;
+    check(s.elapsedSec === 0 && s.lines === 256 && Number.isFinite(s.startTime), "'sending' carries elapsedSec 0, the line count and the start time");
+    check(tl && Math.abs(tl.totalSec - s.durationSec) < 0.01 && tl.headerSec > 0.9 && tl.headerSec < 0.92 && tl.fskSec > 1 && tl.cwSec > 3, `the timeline adds up to the audio sent (${tl?.totalSec.toFixed(2)} vs ${s.durationSec.toFixed(2)} s)`);
+    check(Buffer.from(s.png || '', 'base64').subarray(1, 4).toString() === 'PNG', "'sending' carries the picture going out as a PNG");
+    await sleep(120);
+    controlServer.emit('client-connected', 'late');
+    const lj = late.find((l) => l.ws === 'late');
+    check(lj?.data.status === 'sending' && lj.data.elapsedSec >= 0.1 && lj.data.elapsedSec < 5 && lj.data.png === s.png, `a page opened during the transmission is told how far in it is (${lj?.data.elapsedSec?.toFixed(2)} s)`);
+    bridge.abort();
+    await p;
+    controlServer.emit('client-connected', 'after');
+    check(!late.some((l) => l.ws === 'after'), 'nothing is sent to a page opened after it ended');
+  }
+  {
     // the last browser going away stops the transmission
     const { controlServer, bridge, civ } = setup({ mode: 'M1' });
     controlServer.clients = new Set(['a']);

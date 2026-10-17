@@ -12,7 +12,7 @@ Hamlib, no separate audio server and no extra apps.
 Written by VK3TR. Licensed AGPL-3.0-only (see
 [Licence](#licence)).
 
-**Current build: v78.** This is the version the app shows next to its title.
+**Current build: v79.** This is the version the app shows next to its title.
 It is the `CACHE_NAME` number in `src/client/sw.js`, which goes up with every
 change to the web app.
 
@@ -1228,7 +1228,17 @@ puts everything back afterwards, including if you press **Stop**. After the
 picture come the **FSK ID** (the callsign as the short 1900/2100 Hz burst
 that MMSSTV, slowrx and similar programs show as the sender's call) and a
 **CW ID** ("DE" and the callsign at 20 WPM, 800 Hz). The sent picture joins
-the strip, marked as sent. The status line shows the time sent and left.
+the strip, marked as sent.
+
+While a picture is being prepared and sent, a progress box under **Send a
+picture** shows the time sent and the total (for example `0:42 / 1:57`), a
+bar marked where the picture ends and the IDs begin, what is going out now
+(`VIS header`, `Picture · line 112 of 256`, `FSK ID`, `CW ID`) and the time
+left, with a **Stop** button. The picture also fills in on the SSTV screen
+above as it goes out, the part not yet sent dimmed, with a green line where
+it has got to. Every browser connected to PiRO shows this, including one
+opened part-way through, so a transmission started on one phone can be
+watched or stopped from another.
 
 The mode is set on the Pi with `SSTV_TX_MODE` (Scottie 1, `S1`, by
 default; any of the receiver's mode ids, e.g. `M1`, `R36`, `PD120`).
@@ -1371,8 +1381,9 @@ shapes.
   (`{mode: 'RTTY'|'JTTY'|'OLIVIA'|'HELL', text, freqHz?}`) encodes and transmits straight
   away (none of these modes is slotted); progress arrives as `tty-tx-status`
   broadcasts (`sending` → `sent`/`aborted`/`error`), and `abortTty` cuts a
-  running transmission short. `setJttyActive` (`{active}`) starts and stops
-  JTTY decoding; decoded messages arrive as `jtty-text` broadcasts
+  running transmission short. `setJttyActive` (`{active, txHz?}`) starts and stops
+  JTTY decoding and sets the transmit audio frequency (lowest tone) every
+  browser shows; decoded messages arrive as `jtty-text` broadcasts
   (`{id, freqHz, snr, text, status: 'growing'|'complete'|'expired', time,
   startTime}`, times in epoch ms), re-sent with the same `id` as a message grows.
   `setOliviaActive` (`{active, centreHz?}`) starts and stops Olivia decoding
@@ -1393,7 +1404,16 @@ shapes.
   picture. `sendSstv` (`{rgb, width, height}`: base64 RGB at the size in the
   connect snapshot's `sstvTx`) transmits a picture in `SSTV_TX_MODE` with
   the IDs; progress arrives as `sstv-tx-status` broadcasts (`encoding` →
-  `sending` → `sent`/`aborted`/`error`), and `abortSstv` stops it.
+  `sending` → `sent`/`aborted`/`error`), and `abortSstv` stops it. `sending`
+  also carries `elapsedSec`, a `timeline` of the parts (`headerSec,
+  pictureSec, fskSec, gapSec, cwSec, totalSec`), the picture's `lines` and
+  the picture itself (`png`); a page that connects during a transmission is
+  sent the current status, with `elapsedSec` how far in it is.
+  An `app-modes` broadcast (`{ft8Active, freeDvActive, jttyActive, jttyTxHz,
+  oliviaActive, oliviaCentreHz, hellActive, hellToneHz, sstvActive}`) goes
+  to the other browsers after any `setFt8Active`, `setFreeDvActive`,
+  `setJttyActive`, `setOliviaActive`, `setHellActive` or `setSstvActive`, so
+  they show the same mode; the connect snapshot has the same fields.
 - **Audio (binary frames, tagged `BINARY_TYPE.AUDIO`)**: by default
   (`AUDIO_CODEC=pcm`), raw 16-bit PCM in both directions — no
   framing/codec requirement, chunk sizes are whatever arrives. With
@@ -1411,6 +1431,16 @@ shapes.
   server→client only)**: received columns, about ten frames a second —
   rows per column, column count, tone, then the columns' ink values; see
   `src/server/protocol.js`.
+
+All connected browsers show the same thing: the radio's frequency, mode,
+filter and other settings, and also the modes PiRO runs itself on top of
+LSB/USB, which the radio can't report (FT8/FT4, FreeDV, JTTY, Olivia,
+Feld-Hell and SSTV), with JTTY's transmit frequency, Olivia's centre and
+Feld-Hell's tone. Pick SSTV on one phone and the others switch to SSTV too;
+a browser opened later starts in the same mode. What stays with each
+browser is work in progress there: text typed but not sent, the FT8 QSO
+being worked and its transmit frequency, and a picture being cropped for
+SSTV.
 
 Note: every connected client currently has equal, unrestricted control,
 including sending TX audio — there's no access arbitration (e.g. locking
