@@ -29,6 +29,43 @@ const MAX_JTTY_TX_FREQ_HZ = 2800;
 // frame) would be cut off.
 const PTT_RELEASE_MARGIN_MS = 300;
 
+// RTTY as AFSK. The radio's own RTTY mode keys FSK from its keying line
+// and does not transmit USB audio, so for each RTTY transmission the radio
+// is switched to LSB or USB with DATA MODE on (LSB below 10 MHz, USB from
+// 10 MHz up, the usual sideband convention), the tones are played, and RTTY
+// mode is restored. RTTY convention puts mark 170 Hz *above* space on RF.
+// On LSB an audio tone f lands at dial - f, so mark takes the lower tone;
+// on USB it lands at dial + f, so mark takes the higher one. The dial is
+// offset so the mark lands exactly on the frequency the radio showed in
+// RTTY mode (Icom radios display the mark frequency in RTTY mode).
+const RTTY_LOW_TONE_HZ = 2125;
+const RTTY_HIGH_TONE_HZ = 2295;
+const RTTY_USB_FROM_HZ = 10e6;
+
+/**
+ * How to send RTTY as AFSK given the radio's state.
+ * @param {{radioMode?: string, freqHz?: number, filter?: number}} radio
+ * @returns {{sideband: 'LSB'|'USB', markHz: number, spaceHz: number, invert: boolean,
+ *   switchMode: boolean, markRfHz?: number, dialHz?: number, restoreMode?: string, restoreFilter?: number}}
+ */
+function rttyAfskPlan({ radioMode, freqHz, filter } = {}) {
+  const inRtty = radioMode === 'RTTY' || radioMode === 'RTTY_R';
+  let sideband;
+  if (inRtty) sideband = Number.isFinite(freqHz) && freqHz >= RTTY_USB_FROM_HZ ? 'USB' : 'LSB';
+  else sideband = radioMode === 'USB' ? 'USB' : 'LSB'; // already on a sideband: use it as it is
+  const markHz = sideband === 'LSB' ? RTTY_LOW_TONE_HZ : RTTY_HIGH_TONE_HZ;
+  const spaceHz = sideband === 'LSB' ? RTTY_HIGH_TONE_HZ : RTTY_LOW_TONE_HZ;
+  // RTTY-R is the radio's reversed-polarity RTTY mode: keep that reversal on air.
+  const plan = { sideband, markHz, spaceHz, invert: radioMode === 'RTTY_R', switchMode: inRtty && Number.isFinite(freqHz) };
+  if (plan.switchMode) {
+    plan.markRfHz = freqHz;
+    plan.dialHz = sideband === 'LSB' ? freqHz + markHz : freqHz - markHz;
+    plan.restoreMode = radioMode;
+    plan.restoreFilter = filter ?? 1;
+  }
+  return plan;
+}
+
 // Matches the full-scale level ft8-bridge.js sends, so the operator's
 // existing audio drive/ALC setting works unchanged across modes.
 const DEFAULT_TX_AMPLITUDE = 1.0;
@@ -97,13 +134,40 @@ class TtyBridge {
     this.controlServer.broadcastJsonEvent(EVENT.TTY_TX_STATUS, data);
   }
 
+  /** Reads the radio's mode and frequency and works out how to send RTTY (see rttyAfskPlan()). */
+  async _rttyPlan() {
+    const civ = this.controlServer.civ;
+    if (!civ) return rttyAfskPlan({});
+    const [{ mode: radioMode, filter }, freqHz] = await Promise.all([civ.getMode(), civ.getFrequency()]);
+    return rttyAfskPlan({ radioMode, freqHz, filter });
+  }
+
+  /** RTTY mode -> LSB/USB + DATA MODE, dial offset so the mark lands on the RTTY-mode frequency. */
+  async _enterRttyAfsk(plan) {
+    const civ = this.controlServer.civ;
+    await civ.setMode(plan.sideband, 1); // FIL1: the widest SSB filter, so both tones pass
+    await civ.setDataMode(true);
+    await civ.setFrequency(plan.dialHz);
+  }
+
+  /** Back to the radio's RTTY mode on the mark frequency. */
+  async _leaveRttyAfsk(plan) {
+    const civ = this.controlServer.civ;
+    await civ.setDataMode(false);
+    await civ.setMode(plan.restoreMode, plan.restoreFilter);
+    await civ.setFrequency(plan.markRfHz);
+  }
+
   /** Builds the PCM (S16LE mono at the audio bridge's rate) for a request, or returns {error}. */
-  _synthesize({ mode, text, freqHz }) {
+  _synthesize({ mode, text, freqHz, rttyPlan }) {
     const rate = this.audioBridge.sampleRate;
     if (mode === 'RTTY') {
+      const plan = rttyPlan ?? rttyAfskPlan({});
       const enc = encodeRtty(text, {
         sampleRate: rate,
-        reversed: !!this.controlServer.state?.rttyReversed,
+        markHz: plan.markHz,
+        spaceHz: plan.spaceHz,
+        reversed: !!this.controlServer.state?.rttyReversed !== plan.invert,
         amplitude: this.amplitude,
       });
       if (enc.samples.length === 0) return { error: 'Nothing to send: none of that text can be sent as RTTY.' };
@@ -179,23 +243,45 @@ class TtyBridge {
     if (this._tx) return fail('Already transmitting.');
     if (this.controlServer.state?.ptt) return fail('The radio is already transmitting.');
 
+    this._tx = { aborted: false, timer: null, wake: null }; // claimed now: reading the radio below is async
+    let rttyPlan = null;
+    if (mode === 'RTTY') {
+      try {
+        rttyPlan = await this._rttyPlan();
+      } catch (err) {
+        this._tx = null;
+        return fail(`Couldn't read the radio's mode and frequency: ${err.message}`);
+      }
+    }
     let built;
     try {
-      built = this._synthesize({ mode, text, freqHz });
+      built = this._synthesize({ mode, text, freqHz, rttyPlan });
     } catch (err) {
+      this._tx = null;
       return fail(`Couldn't encode that: ${err.message}`);
     }
-    if (built.error) return fail(built.error);
+    if (built.error) {
+      this._tx = null;
+      return fail(built.error);
+    }
 
-    const tx = { aborted: false, timer: null, wake: null };
-    this._tx = tx;
+    const tx = this._tx;
     const info = { mode, text, message: built.message, durationSec: built.durationSec };
+    if (rttyPlan) {
+      info.afsk = { sideband: rttyPlan.sideband, markHz: rttyPlan.markHz, spaceHz: rttyPlan.spaceHz };
+      if (rttyPlan.switchMode) Object.assign(info.afsk, { markRfHz: rttyPlan.markRfHz, dialHz: rttyPlan.dialHz });
+    }
     if (built.nframes !== undefined) info.nframes = built.nframes;
     if (built.freqHz !== undefined) info.freqHz = built.freqHz;
     if (built.note) info.note = built.note;
+    let switched = false;
     try {
       this._status({ status: 'sending', ...info });
-      await this.controlServer.setPttFromServer(true);
+      if (rttyPlan?.switchMode && !tx.aborted) {
+        switched = true;
+        await this._enterRttyAfsk(rttyPlan);
+      }
+      if (!tx.aborted) await this.controlServer.setPttFromServer(true);
       if (!tx.aborted) {
         this.audioBridge.playback.write(built.pcm);
         const durationMs = (built.pcm.length / 2 / this.audioBridge.sampleRate) * 1000;
@@ -206,12 +292,23 @@ class TtyBridge {
       }
       tx.timer = null;
       await this.controlServer.setPttFromServer(false);
+      if (switched) {
+        switched = false;
+        await this._leaveRttyAfsk(rttyPlan);
+      }
       this._status({ status: tx.aborted ? 'aborted' : 'sent', ...info });
     } catch (err) {
       try {
         await this.controlServer.setPttFromServer(false);
       } catch {
         // best effort — the PTT watchdog is still armed from setPttFromServer(true)
+      }
+      if (switched) {
+        try {
+          await this._leaveRttyAfsk(rttyPlan);
+        } catch {
+          // best effort; the error below tells the operator something went wrong
+        }
       }
       this._tx = null;
       this._status({ status: 'error', mode, error: err.message });
@@ -257,4 +354,6 @@ module.exports = {
   JTTY_BAUD,
   OLIVIA_MAX_CHARS,
   HELL_MAX_CHARS,
+  rttyAfskPlan,
+  RTTY_USB_FROM_HZ,
 };

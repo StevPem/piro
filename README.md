@@ -12,7 +12,7 @@ Hamlib, no separate audio server and no extra apps.
 Written by VK3TR. Licensed AGPL-3.0-only (see
 [Licence](#licence)).
 
-**Current build: v74.** This is the version the app shows next to its title.
+**Current build: v75.** This is the version the app shows next to its title.
 It is the `CACHE_NAME` number in `src/client/sw.js`, which goes up with every
 change to the web app.
 
@@ -591,7 +591,8 @@ test/
                            encoder: the spec's 34-bit vectors, 401 reference
                            messages (all exchange profiles), a reference
                            waveform; see third_party/jtty/README.md
-  tty-bridge.test.js      RTTY/JTTY/Olivia/Feld-Hell transmit bridge: PTT, audio, status
+  tty-bridge.test.js      RTTY/JTTY/Olivia/Feld-Hell transmit bridge (incl. the
+                           RTTY LSB-D/USB-D AFSK switching): PTT, audio, status
                            events, abort, refusals, stub radio and ALSA
   jtty-rx.test.js         JTTY receiver: list decoder, multi-frame messages,
                            two signals, noise, gaps, chunking, and WSJT-X's
@@ -983,17 +984,27 @@ paper proposes moving 80 m to 3.570–3.600 MHz (where most of the world's
 often elsewhere in the segment (on 20 m, 14.080–14.099), and keep clear of
 the beacons at 14.100, 18.110, 21.150 and 24.930 MHz.
 
-**RTTY** sends your text as audio-frequency-shift keying: 45.45 baud, 170 Hz
-shift, 2125 Hz mark and 2295 Hz space, using the same tones and the same
-"Reverse" tick-box as the decoder, so what you transmit and what you copy
-agree. The audio goes out through the same ALSA path as FT8 and voice. This is
-**AFSK, not the radio's own FSK keying**: the radio must accept audio on its
-modulation input. On an IC-7300 that means the audio must reach a mode that
-takes the USB MOD input (USB or LSB with DATA MODE on); the radio's own RTTY
-mode normally takes its keying from the RTTY key line instead. PiRO does not
-change modes for you when you press Send. If the radio does not transmit the
-tones, switch it to a mode that accepts USB audio, or use the radio's built-in
-RTTY keyer. This has been tested against PiRO's own decoder, not on air.
+**RTTY** sends your text as audio-frequency-shift keying (AFSK): 45.45 baud,
+170 Hz shift, with mark always the **higher** of the two RF frequencies, as
+RTTY convention requires. The radio's own RTTY mode does not transmit audio
+from USB (it keys FSK from its RTTY keying line, so on its own it would just
+send a steady carrier). So when you press Send in RTTY, PiRO:
+
+1. reads the frequency the radio shows in RTTY mode, which is the mark frequency;
+2. switches to **LSB** with DATA MODE on below 10 MHz, or **USB** with DATA
+   MODE on from 10 MHz up, and moves the dial so the mark lands exactly on
+   that frequency;
+3. keys PTT and plays the tones (on LSB, mark 2125 Hz and space 2295 Hz audio,
+   dial 2125 Hz above the mark; on USB, mark 2295 Hz and space 2125 Hz audio,
+   dial 2295 Hz below the mark; either way space ends up 170 Hz below mark);
+4. puts the radio back in RTTY mode, with its filter, on the mark frequency.
+   This also happens if you press Stop or something goes wrong.
+
+The page keeps showing RTTY and the mark frequency throughout, and the status
+line says which sideband was used. The "Reverse" tick-box swaps mark and space
+for transmit as well as receive, and the radio's RTTY-R mode is kept reversed.
+As with FT8, the IC-7300's DATA MOD setting must be USB for the audio to reach
+the transmitter. Tested against PiRO's own decoder and a stub radio, not on air.
 
 **JTTY** is a mode from WSJT-X 3.3 (beta): 4-tone Gaussian FSK at 31.25 baud,
 no time slots, one to sixteen 1.9-second frames per message, with strong

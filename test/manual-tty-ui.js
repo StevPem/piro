@@ -290,8 +290,18 @@ class Civ extends EventEmitter {
   check((await page.locator('#tty-input').evaluate((e) => getComputedStyle(e).textTransform)) === 'uppercase', 'RTTY: the text box shows capitals again');
   await page.locator('#tty-input').fill('test 73');
   await page.locator('#tty-input').press('Enter');
+  await page.waitForFunction(() => /Sending RTTY/.test(document.getElementById('tty-status').textContent), null, { timeout: 8000 });
+  await sleep(150);
+  {
+    const st = await page.locator('#tty-status').textContent();
+    check(/AFSK on LSB-D, mark 2125 Hz \/ space 2295 Hz/.test(st), 'RTTY on 40m goes out as AFSK on LSB-D: ' + st);
+    check(civ.mode === 'LSB' && civ.dataMode === true && civ.freq === 7052125, 'radio on LSB-D with the dial 2125 Hz above the mark while sending');
+    check((await ttyLabel()).includes('RTTY') && (await vis('#tty-composer')), 'the TTY panel stays in RTTY during the AFSK detour');
+  }
   await page.waitForFunction(() => /Sent RTTY/.test(document.getElementById('tty-status').textContent), null, { timeout: 8000 });
+  await sleep(200);
   check(true, 'Enter sends; RTTY status "Sent RTTY"');
+  check(civ.mode === 'RTTY' && civ.dataMode === false && civ.freq === 7050000 && (await ttyLabel()).includes('RTTY'), 'afterwards: back in RTTY on 7.050 MHz, DATA MODE off');
   check(writes.length === 4, 'RTTY audio written');
 
   // typed text survives mode toggling

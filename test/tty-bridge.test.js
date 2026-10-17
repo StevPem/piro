@@ -5,7 +5,8 @@ const { EventEmitter } = require('events');
 const { TtyBridge, DEFAULT_JTTY_TX_FREQ_HZ } = require('../src/audio/tty-bridge');
 const { EVENT } = require('../src/server/protocol');
 const { encodeJtty } = require('../src/audio/jtty-tx');
-const { OLIVIA_MAX_CHARS, HELL_MAX_CHARS } = require('../src/audio/tty-bridge');
+const { OLIVIA_MAX_CHARS, HELL_MAX_CHARS, rttyAfskPlan } = require('../src/audio/tty-bridge');
+const { RttyDecoder } = require('../src/audio/rtty-decoder');
 const { encodeFeldHell, hellDurationSec } = require('../src/audio/hell-tx');
 const { OliviaReceiver, OliviaTextDecoder } = require('../src/audio/olivia-rx');
 const { StreamDecimator } = require('../src/audio/decimator');
@@ -47,8 +48,37 @@ class StubPlayback {
     this.restarts++;
   }
 }
+class StubCiv {
+  constructor(mode, freq, filter = 2) {
+    this.mode = mode;
+    this.freq = freq;
+    this.filter = filter;
+    this.dataMode = false;
+    this.log = [];
+  }
+  async getMode() {
+    return { mode: this.mode, filter: this.filter };
+  }
+  async getFrequency() {
+    return this.freq;
+  }
+  async setMode(mode, filter) {
+    this.log.push(`mode ${mode}/${filter}`);
+    this.mode = mode;
+    this.filter = filter;
+  }
+  async setDataMode(on) {
+    this.log.push(`data ${on}`);
+    this.dataMode = on;
+  }
+  async setFrequency(hz) {
+    this.log.push(`freq ${hz}`);
+    this.freq = hz;
+  }
+}
 function setup(opts = {}) {
   const controlServer = new StubControlServer();
+  if (opts.civ) controlServer.civ = opts.civ;
   const playback = new StubPlayback();
   const audioBridge = { sampleRate: opts.sampleRate ?? 48000, playback };
   const bridge = new TtyBridge({ controlServer, audioBridge, pttReleaseMarginMs: 20 });
@@ -169,6 +199,95 @@ const statuses = (cs) => cs.broadcasts.filter((b) => b.type === EVENT.TTY_TX_STA
     const st = statuses(controlServer);
     check(st.filter((s) => s.status === 'error').length >= 6, 'refusals are broadcast as error status events');
     check(playback.writes.length === writes, 'refused requests write no audio');
+  }
+
+  // --- RTTY as AFSK: radio RTTY mode -> LSB-D below 10 MHz, USB-D above, mark always the higher RF ---
+  {
+    const p = rttyAfskPlan({ radioMode: 'RTTY', freqHz: 7050000, filter: 2 });
+    check(p.sideband === 'LSB' && p.markHz === 2125 && p.spaceHz === 2295 && p.dialHz === 7052125, 'plan: 40m RTTY -> LSB, mark tone 2125, dial 7.052125 (mark lands on 7.050000)');
+    check(p.dialHz - p.markHz === 7050000 && p.dialHz - p.spaceHz === 7050000 - 170, 'plan: on LSB, space RF is 170 Hz below mark');
+    const u = rttyAfskPlan({ radioMode: 'RTTY', freqHz: 14091000 });
+    check(u.sideband === 'USB' && u.markHz === 2295 && u.spaceHz === 2125 && u.dialHz === 14088705, 'plan: 20m RTTY -> USB, mark tone 2295, dial 14.088705 (mark lands on 14.091000)');
+    check(u.dialHz + u.markHz === 14091000 && u.dialHz + u.spaceHz === 14091000 - 170, 'plan: on USB, space RF is 170 Hz below mark');
+    check(rttyAfskPlan({ radioMode: 'RTTY', freqHz: 10135000 }).sideband === 'USB' && rttyAfskPlan({ radioMode: 'RTTY', freqHz: 9999999 }).sideband === 'LSB', 'plan: USB from 10 MHz up');
+    check(rttyAfskPlan({ radioMode: 'RTTY_R', freqHz: 7050000 }).invert === true, 'plan: RTTY-R keeps its reversed polarity');
+    const s = rttyAfskPlan({ radioMode: 'USB', freqHz: 14090000 });
+    check(!s.switchMode && s.markHz === 2295, 'plan: already on USB: no mode switching, mark still the higher RF');
+  }
+  {
+    const civ = new StubCiv('RTTY', 14091000, 2);
+    const { controlServer, playback, bridge } = setup({ civ });
+    const order = [];
+    controlServer.setPttFromServer = async (on) => {
+      order.push(`ptt ${on}`);
+      controlServer.pttCalls.push(on);
+    };
+    const origLog = civ.log;
+    civ.log = { push: (e) => { origLog.push(e); order.push(e); } };
+    await bridge.send({ mode: 'RTTY', text: 'RYRY' });
+    check(order.join(' | ') === 'mode USB/1 | data true | freq 14088705 | ptt true | ptt false | data false | mode RTTY/2 | freq 14091000',
+      'RTTY on 20m: USB-D, dial offset, PTT, then back to RTTY (same filter) on the mark frequency: ' + order.join(' | '));
+    const st = statuses(controlServer);
+    check(st[0].afsk?.sideband === 'USB' && st[0].afsk.markRfHz === 14091000 && st.at(-1).status === 'sent', 'RTTY: status reports the AFSK sideband and mark frequency');
+    // The audio: idle mark at 2295 Hz, and the app's decoder (mark 2295 / space 2125 on USB) reads it
+    const pcm = new Int16Array(playback.writes[0].buffer, playback.writes[0].byteOffset, playback.writes[0].length / 2);
+    const tone = (hz, from, n) => {
+      let re = 0;
+      let im = 0;
+      for (let i = from; i < from + n; i++) {
+        re += pcm[i] * Math.cos((2 * Math.PI * hz * i) / 48000);
+        im += pcm[i] * Math.sin((2 * Math.PI * hz * i) / 48000);
+      }
+      return Math.hypot(re, im);
+    };
+    check(tone(2295, 2400, 4800) > 10 * tone(2125, 2400, 4800), 'RTTY on USB: the idle (mark) tone is 2295 Hz');
+    const dec = new RttyDecoder({ sampleRate: 48000, markHz: 2295, spaceHz: 2125 });
+    let got = '';
+    dec.on('char', (c) => (got += c));
+    dec.pushSamples(Int16Array.from(pcm));
+    dec.pushSamples(new Int16Array(24000));
+    check(got.includes('RYRY'), `RTTY on USB: decodes with mark 2295 / space 2125 (${JSON.stringify(got)})`);
+  }
+  {
+    const civ = new StubCiv('RTTY', 7050000, 1);
+    const { controlServer, playback, bridge } = setup({ civ });
+    await bridge.send({ mode: 'RTTY', text: 'E' });
+    check(civ.log.join(' | ') === 'mode LSB/1 | data true | freq 7052125 | data false | mode RTTY/1 | freq 7050000', 'RTTY on 40m: LSB-D at dial + 2125, then back: ' + civ.log.join(' | '));
+    const pcm = new Int16Array(playback.writes[0].buffer, playback.writes[0].byteOffset, playback.writes[0].length / 2);
+    const mag = (hz) => {
+      let re = 0;
+      let im = 0;
+      for (let i = 2400; i < 7200; i++) {
+        re += pcm[i] * Math.cos((2 * Math.PI * hz * i) / 48000);
+        im += pcm[i] * Math.sin((2 * Math.PI * hz * i) / 48000);
+      }
+      return Math.hypot(re, im);
+    };
+    check(mag(2125) > 10 * mag(2295), 'RTTY on LSB: the idle (mark) tone is 2125 Hz');
+    check(civ.mode === 'RTTY' && civ.freq === 7050000 && statuses(controlServer).at(-1).status === 'sent', 'RTTY on 40m: radio back in RTTY on 7.050 MHz');
+  }
+  {
+    // Stop part-way: the radio still goes back to RTTY on the mark frequency
+    const civ = new StubCiv('RTTY', 21097500, 1);
+    const { controlServer, bridge } = setup({ civ });
+    const p = bridge.send({ mode: 'RTTY', text: 'CQ CQ CQ DE VK3TR VK3TR K' });
+    await sleep(30);
+    bridge.abort();
+    await p;
+    check(statuses(controlServer).at(-1).status === 'aborted' && civ.mode === 'RTTY' && civ.freq === 21097500 && civ.dataMode === false, 'RTTY: Stop restores RTTY mode, DATA MODE off and the mark frequency');
+    check(controlServer.pttCalls.at(-1) === false, 'RTTY: PTT released after Stop');
+  }
+  {
+    // A CI-V failure while switching still releases PTT and tries to put the radio back
+    const civ = new StubCiv('RTTY', 7050000, 1);
+    civ.setDataMode = async (on) => {
+      civ.log.push(`data ${on}`);
+      if (on) throw new Error('NG');
+    };
+    const { controlServer, bridge } = setup({ civ });
+    let err = null;
+    await bridge.send({ mode: 'RTTY', text: 'E' }).catch((e) => (err = e));
+    check(err && statuses(controlServer).at(-1).status === 'error' && civ.mode === 'RTTY' && civ.freq === 7050000 && !bridge.transmitting, 'RTTY: a CI-V error is reported and the radio is put back in RTTY');
   }
 
   // --- Olivia ---
