@@ -13,6 +13,8 @@ const { OliviaDecoderBridge } = require('./olivia-decoder-bridge');
 const { clampOliviaCentre } = require('../audio/olivia-dsp');
 const { HellDecoderBridge } = require('./hell-decoder-bridge');
 const { SstvDecoderBridge } = require('./sstv-decoder-bridge');
+const { SstvTxBridge, DEFAULT_SSTV_TX_MODE } = require('./sstv-tx-bridge');
+const { MODES: SSTV_MODES } = require('../audio/sstv-modes');
 const { clampHellTone } = require('../audio/hell-rx');
 const { Ft8Bridge } = require('../audio/ft8-bridge');
 const { TtyBridge } = require('../audio/tty-bridge');
@@ -264,6 +266,7 @@ let jttyDecoderBridge;
 let oliviaDecoderBridge;
 let hellDecoderBridge;
 let sstvDecoderBridge;
+let sstvTxBridge;
 let radeBridge;
 let freeDvReporterBridge;
 
@@ -514,6 +517,29 @@ async function main() {
     // SSTV_SAVE_DIR, if set, also saves every picture there as a PNG.
     sstvDecoderBridge = new SstvDecoderBridge({ controlServer, audioBridge, saveDir: process.env.SSTV_SAVE_DIR || undefined });
     sstvDecoderBridge.start();
+
+    // SSTV transmit: SSTV_TX_MODE picks the mode (a mode id from
+    // audio/sstv-modes.js, Scottie 1 "S1" by default); the FSK ID and CW ID
+    // use STATION_CALLSIGN (SSTV_FSK_ID=off / SSTV_CW_ID=off leave them
+    // out); SSTV_TX_POWER_W, if set, is the TX power while sending (put back
+    // afterwards). See server/sstv-tx-bridge.js.
+    let sstvTxMode = (process.env.SSTV_TX_MODE || DEFAULT_SSTV_TX_MODE).trim().toUpperCase();
+    if (!SSTV_MODES[sstvTxMode]) {
+      console.warn(`SSTV_TX_MODE "${process.env.SSTV_TX_MODE}" is not a known mode (${Object.keys(SSTV_MODES).join(', ')}); using ${DEFAULT_SSTV_TX_MODE}.`);
+      sstvTxMode = DEFAULT_SSTV_TX_MODE;
+    }
+    const off = (v) => /^(0|false|off|no)$/i.test(v || '');
+    sstvTxBridge = new SstvTxBridge({
+      controlServer,
+      audioBridge,
+      mode: sstvTxMode,
+      callsign: STATION_CALLSIGN || '',
+      fskId: !off(process.env.SSTV_FSK_ID),
+      cwId: !off(process.env.SSTV_CW_ID),
+      txPowerW: process.env.SSTV_TX_POWER_W ? Number(process.env.SSTV_TX_POWER_W) : undefined,
+    });
+    sstvTxBridge.start();
+    console.log(`SSTV transmit ready (${SSTV_MODES[sstvTxMode].name}).`);
     console.log(`SSTV receive ready (decodes while SSTV is selected${process.env.SSTV_SAVE_DIR ? `; saving pictures to ${process.env.SSTV_SAVE_DIR}` : ''}).`);
 
     // RADE (FreeDV's neural-vocoder mode) is likewise a hard dependency
@@ -578,6 +604,7 @@ async function shutdown(signal) {
     if (oliviaDecoderBridge) oliviaDecoderBridge.stop();
     if (hellDecoderBridge) hellDecoderBridge.stop();
     if (sstvDecoderBridge) sstvDecoderBridge.stop();
+    if (sstvTxBridge) sstvTxBridge.stop();
     if (radeBridge) radeBridge.stop();
     if (freeDvReporterBridge) freeDvReporterBridge.stop();
     if (audioBridge) audioBridge.stop();

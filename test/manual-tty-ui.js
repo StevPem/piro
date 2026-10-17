@@ -13,6 +13,8 @@ const { HellDecoderBridge } = require(PKG + '/src/server/hell-decoder-bridge');
 const { encodeFeldHell } = require(PKG + '/src/audio/hell-tx');
 const { SstvDecoderBridge } = require(PKG + '/src/server/sstv-decoder-bridge');
 const { encodeSstv } = require(PKG + '/src/audio/sstv-tx');
+const { SstvTxBridge } = require(PKG + '/src/server/sstv-tx-bridge');
+const { encodePng } = require(PKG + '/src/server/png');
 const { encodeJtty } = require(PKG + '/src/audio/jtty-tx');
 const { upsampleFloatToPcm } = require(PKG + '/src/audio/resample');
 let chromium;
@@ -60,6 +62,8 @@ class Civ extends EventEmitter {
   hellRx.start();
   const sstvRx = new SstvDecoderBridge({ controlServer: server, audioBridge });
   sstvRx.start();
+  const sstvTx = new SstvTxBridge({ controlServer: server, audioBridge, callsign: 'VK2IO', pttReleaseMarginMs: 20 });
+  sstvTx.start();
 
   const browser = await chromium.launch({ executablePath: process.env.CHROMIUM_PATH || undefined, args: ['--no-sandbox'] });
   const page = await browser.newPage({ viewport: { width: 430, height: 1100 } });
@@ -406,6 +410,57 @@ class Civ extends EventEmitter {
   await page.locator('#bands .chip', { hasText: /^20m$/ }).click();
   await sleep(300);
   check(civ.freq === 14230000 && civ.mode === 'USB' && server.state.sstvActive, 'in SSTV, the 20m band chip goes to 14.230 MHz USB');
+  // SSTV transmit: choose an image, crop and tag, send, stop
+  {
+    check((await vis('#sstv-tx')) && !(await vis('#sstv-tx-editor')), 'SSTV: "Send a picture" offers Camera and Choose image');
+    check((await page.locator('#sstv-camera-input').getAttribute('capture')) === 'environment' && (await page.locator('#sstv-camera-input').getAttribute('accept')) === 'image/*', 'the Camera button opens the camera (capture=environment)');
+    // a white 1200 x 900 "photo" with a red square in the middle
+    const pw = 1200;
+    const ph = 900;
+    const photo = new Uint8Array(pw * ph * 3).fill(255);
+    for (let y = 400; y < 500; y++) for (let x = 550; x < 650; x++) photo.set([255, 0, 0], (y * pw + x) * 3);
+    await page.locator('#sstv-file-input').setInputFiles({ name: 'photo.png', mimeType: 'image/png', buffer: encodePng(photo, pw, ph) });
+    await page.waitForFunction(() => !document.getElementById('sstv-tx-editor').hidden, null, { timeout: 5000 });
+    await sleep(200);
+    const label = await page.locator('#sstv-tx-send').textContent();
+    check(/^Send \(Scottie S1, 1:5\d\)$/.test(label), 'Scottie S1 by default: ' + label);
+    check((await page.locator('#sstv-tx-call').inputValue()) === 'VK2IO', 'the tag starts with the station callsign');
+    await page.locator('#sstv-tx-line2').fill('UR 595');
+    const tag = await page.locator('#sstv-tx-canvas').evaluate((c) => {
+      const d = c.getContext('2d').getImageData(0, 0, c.width, c.height).data;
+      // the tag: pixels that are no longer white (outside the red square)
+      let x0 = c.width, y0 = c.height, x1 = -1, y1 = -1;
+      for (let y = 0; y < c.height; y++)
+        for (let x = 0; x < c.width; x++) {
+          const o = (y * c.width + x) * 4;
+          // grey (the box, the outline) rather than the red square or its pink edges
+          const grey = Math.abs(d[o] - d[o + 1]) < 30 && Math.abs(d[o + 1] - d[o + 2]) < 30;
+          if (grey && d[o] < 245) {
+            x0 = Math.min(x0, x); y0 = Math.min(y0, y); x1 = Math.max(x1, x); y1 = Math.max(y1, y);
+          }
+        }
+      const mid = (y) => (y * c.width + c.width / 2) * 4;
+      return { w: c.width, h: c.height, x0, y0, tw: x1 - x0 + 1, th: y1 - y0 + 1, centreRed: d[mid(c.height / 2)] > 200 && d[mid(c.height / 2) + 1] < 80 };
+    });
+    check(tag.w === 320 && tag.h === 256 && tag.centreRed, `photo cropped and scaled to 320 x 256 (the red square in the middle)`);
+    check(tag.tw <= 80 && tag.th <= 64 && tag.x0 < 10 && tag.y0 < 10, `callsign tag in the top left, ${tag.tw} x ${tag.th}: within a quarter of the width (80) and height (64)`);
+    await page.locator('#sstv-tx-corner').selectOption('br');
+    const br = await page.locator('#sstv-tx-canvas').evaluate((c) => {
+      const d = c.getContext('2d').getImageData(c.width - 5, c.height - 5, 1, 1).data;
+      const e = c.getContext('2d').getImageData(4, 4, 1, 1).data;
+      return { corner: d[0] < 245, topLeft: e[0] > 245 };
+    });
+    check(br.corner && br.topLeft, 'the tag moves to the corner chosen');
+    const w0 = writes.length;
+    await page.locator('#sstv-tx-send').click();
+    await page.waitForFunction(() => /^Sending Scottie S1 · 0:0\d of 1:5\d/.test(document.getElementById('sstv-tx-status').textContent), null, { timeout: 20000 });
+    check((await page.locator('#sstv-tx-send').textContent()) === 'Stop' && writes.length === w0 + 1 && civ.dataMode === true && civ.log.filter((e) => e[0] === 'setPtt').at(-1)[1] === true, 'sending: DATA MODE on, PTT keyed, audio written, Send became Stop: ' + (await page.locator('#sstv-tx-status').textContent()));
+    check(Math.abs(writes.at(-1).length / 2 / 48000 - server.state.sstvTx.durationSec) < 0.2, `the audio is the whole transmission (${(writes.at(-1).length / 96000).toFixed(1)} s with FSK ID and CW ID)`);
+    await page.locator('#sstv-tx-send').click();
+    await page.waitForFunction(() => document.getElementById('sstv-tx-status').textContent === 'Stopped.', null, { timeout: 5000 });
+    await sleep(200);
+    check(civ.dataMode === false && civ.log.filter((e) => e[0] === 'setPtt').at(-1)[1] === false && (await page.locator('#sstv-tx-send').textContent()).startsWith('Send ('), 'Stop: PTT released, DATA MODE off, Send back');
+  }
   await chip('SSB').click();
   await sleep(300);
   check(!server.state.sstvActive && !sstvRx.attached && !(await vis('#sstv-rx')) && civ.mode === 'USB' && (await ttyLabel()).includes('USB'), 'SSB leaves SSTV (USB on 20 m), panel hidden');
@@ -417,6 +472,7 @@ class Civ extends EventEmitter {
   oliviaRx.stop();
   hellRx.stop();
   sstvRx.stop();
+  sstvTx.stop();
   await server.close();
   console.log(failures ? `\n${failures} FAILED` : '\nAll UI checks passed');
   process.exit(failures ? 1 : 0);

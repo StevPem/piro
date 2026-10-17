@@ -23,9 +23,11 @@ const MODES = {
   M2: { name: 'Martin M2', sync: 4.862e-3, porch: 0.572e-3, septr: 0.572e-3, pixel: 0.2288e-3, line: 226.7986e-3, width: 320, lines: 256, lineHeight: 1, color: 'GBR' },
   M3: { name: 'Martin M3', sync: 4.862e-3, porch: 0.572e-3, septr: 0.572e-3, pixel: 0.2288e-3, line: 446.446e-3, width: 320, lines: 128, lineHeight: 2, color: 'GBR' },
   M4: { name: 'Martin M4', sync: 4.862e-3, porch: 0.572e-3, septr: 0.572e-3, pixel: 0.2288e-3, line: 226.7986e-3, width: 320, lines: 128, lineHeight: 2, color: 'GBR' },
-  S1: { name: 'Scottie S1', sync: 9e-3, porch: 1.5e-3, septr: 1.5e-3, pixel: 0.432e-3, line: 428.38e-3, width: 320, lines: 256, lineHeight: 1, color: 'GBR' },
+  // Scottie S1 and DX: line time / pixel time from N7CXI's specification (428.22 ms, 1.08 ms);
+  // slowrx has 428.38 ms and 1.08053 ms. See third_party/sstv/README.md.
+  S1: { name: 'Scottie S1', sync: 9e-3, porch: 1.5e-3, septr: 1.5e-3, pixel: 0.432e-3, line: 428.22e-3, width: 320, lines: 256, lineHeight: 1, color: 'GBR' },
   S2: { name: 'Scottie S2', sync: 9e-3, porch: 1.5e-3, septr: 1.5e-3, pixel: 0.2752e-3, line: 277.692e-3, width: 320, lines: 256, lineHeight: 1, color: 'GBR' },
-  SDX: { name: 'Scottie DX', sync: 9e-3, porch: 1.5e-3, septr: 1.5e-3, pixel: 1.08053e-3, line: 1050.3e-3, width: 320, lines: 256, lineHeight: 1, color: 'GBR' },
+  SDX: { name: 'Scottie DX', sync: 9e-3, porch: 1.5e-3, septr: 1.5e-3, pixel: 1.08e-3, line: 1050.3e-3, width: 320, lines: 256, lineHeight: 1, color: 'GBR' },
   // Robot 72: Y 138 ms, then R-Y and B-Y 69 ms each, each after a 4.5 ms separator and 1.5 ms porch
   // (N7CXI). slowrx has 92 ms for all three; see third_party/sstv/README.md.
   R72: { name: 'Robot 72', sync: 9e-3, porch: 3e-3, septr: 6e-3, pixel: 0.215625e-3, line: 300e-3, width: 320, lines: 240, lineHeight: 1, color: 'YUV' },

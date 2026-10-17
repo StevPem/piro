@@ -242,6 +242,52 @@ for (const [id, clk] of [['M1', 0.004], ['S1', -0.003], ['PD90', 0.0025], ['R36'
   check(ev.filter((e) => e.type === 'start').length === 2 && ev.filter((e) => e.type === 'end' && e.complete).length === 2, 'two Robot 8 B/W pictures back to back: both received');
 }
 
+// --- FSK ID and CW ID after the picture (sstv-tx encodeSstvTransmission)
+{
+  const { encodeSstvTransmission, encodeSstv: enc0 } = require('../src/audio/sstv-tx');
+  const img = testImage(320, 120);
+  const pic = enc0(img, 320, 120, 'R8BW', { amplitude: 0.5 }).samples;
+  const full = encodeSstvTransmission(img, 320, 120, 'R8BW', { callsign: 'vk3tr', cwId: false, amplitude: 0.5 }).samples;
+  const results = [];
+  // whatever the gap between the picture and the ID (i.e. wherever the receiver thinks the picture ends)
+  for (let gap = 0; gap <= 300; gap += 60) {
+    const x = new Float32Array(pic.length + gap + (full.length - pic.length));
+    x.set(pic);
+    x.set(full.subarray(pic.length), pic.length + gap);
+    results.push(decode(lead(x)).find((e) => e.type === 'fskid')?.text);
+  }
+  check(results.every((t) => t === 'VK3TR'), `FSK ID read after the picture, for any gap of 0-25 ms (${results.join(' ')})`);
+  const noisy = decode(withNoise(lead(full), 1, 0.12, 4)).find((e) => e.type === 'fskid')?.text;
+  check(noisy === 'VK3TR', `FSK ID read in noise (${noisy})`);
+  check(!decode(lead(pic)).some((e) => e.type === 'fskid'), 'no FSK ID when none was sent');
+  // FSK ID then another picture: both pictures still received
+  const two = new Float32Array(full.length * 2 + 3000);
+  two.set(full);
+  two.set(full, full.length + 3000);
+  const ev = decode(two);
+  check(ev.filter((e) => e.type === 'end' && e.complete).length === 2 && ev.filter((e) => e.type === 'fskid').length === 2, 'picture + FSK ID twice in a row: both pictures and both IDs');
+
+  const { CwDecoder } = require('../src/audio/cw-decoder');
+  const withCw = encodeSstvTransmission(img, 320, 120, 'R8BW', { callsign: 'VK3TR', sampleRate: 48000, amplitude: 0.5 });
+  const pic48 = enc0(img, 320, 120, 'R8BW', { sampleRate: 48000 }).samples.length;
+  const fsk48 = Math.round(8 * 6 * 0.022 * 48000);
+  const cw = withCw.samples.subarray(pic48 + fsk48);
+  const d = new CwDecoder({ sampleRate: 48000, pitchHz: 800, initialUnitMs: 60, autoCalibratePitch: false });
+  let text = '';
+  d.on('char', (c) => (text += c));
+  d.on('space', () => (text += ' '));
+  d.pushSamples(Int16Array.from([...cw, ...new Float32Array(48000)], (v) => Math.round(v * 32767)));
+  check(text.trim() === 'DE VK3TR', `CW ID "DE VK3TR" at 20 WPM, read by PiRO's CW decoder (${JSON.stringify(text.trim())})`);
+}
+{
+  // the Scottie starting sync pulse and the specification's line time
+  const { encodeSstv: enc0 } = require('../src/audio/sstv-tx');
+  const img = testImage(320, 256);
+  const e = enc0(img, 320, 256, 'S1', {});
+  const expect = (0.91 + 0.009 + 256 * 0.42822) * SSTV_SAMPLE_RATE;
+  check(Math.abs(e.samples.length - expect) < 2 && M.MODES.S1.line === 428.22e-3, `Scottie 1: 9 ms starting sync, 428.22 ms lines (${(e.samples.length / SSTV_SAMPLE_RATE).toFixed(3)} s)`);
+}
+
 if (failures) {
   console.error(`\n${failures} failure(s)`);
   process.exit(1);

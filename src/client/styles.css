@@ -1260,3 +1260,81 @@ button {
   max-height: 100vh;
   image-rendering: auto;
 }
+
+/* SSTV transmit: pick a photo, then crop/tag/send it. */
+.sstv-tx {
+  margin-top: 10px;
+  padding-top: 8px;
+  border-top: 1px solid var(--panel-border);
+}
+
+.sstv-tx[hidden],
+.sstv-tx__editor[hidden] {
+  display: none;
+}
+
+.sstv-tx__pick {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+}
+
+.sstv-tx__editor {
+  margin-top: 8px;
+}
+
+.sstv-tx__canvas {
+  display: block;
+  width: 100%;
+  height: auto;
+  background: #000;
+  border: 1px solid var(--panel-border);
+  border-radius: 4px;
+  touch-action: none; /* drag and pinch move the crop, not the page */
+  cursor: grab;
+}
+
+.sstv-tx__row {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  margin-top: 6px;
+}
+
+.sstv-tx__zoom input {
+  flex: 1;
+  accent-color: var(--led-green);
+}
+
+.sstv-tx__text {
+  flex: 1;
+  min-width: 0;
+  padding: 4px 6px;
+  background: var(--panel-raised);
+  color: var(--text);
+  border: 1px solid var(--panel-border);
+  border-radius: 4px;
+  font-family: var(--font-mono);
+  font-size: 0.85rem;
+}
+
+#sstv-tx-call {
+  text-transform: uppercase;
+}
+
+.sstv-tx__corner {
+  padding: 4px;
+  background: var(--panel-raised);
+  color: var(--text);
+  border: 1px solid var(--panel-border);
+  border-radius: 4px;
+  font-size: 0.8rem;
+}
+
+.sstv-tx__send {
+  flex: 1;
+}
+
+.sstv-tx__status {
+  margin-top: 4px;
+}
