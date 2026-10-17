@@ -1162,6 +1162,17 @@ async function run() {
     check(ok.data.active === true && sServer.state.sstvActive === true && events.join() === 'true', 'setSstvActive arms the receiver');
     c.send(JSON.stringify({ id: 's3', type: 'endSstvPicture' }));
     check((await nextMessage(c)).data.accepted === true && ends === 1, 'endSstvPicture is passed on');
+    const sends = [];
+    let aborts = 0;
+    sServer.on('sstv-send', (e) => sends.push(e));
+    sServer.on('sstv-abort', () => aborts++);
+    c.send(JSON.stringify({ id: 's5', type: 'sendSstv', rgb: Buffer.alloc(2 * 2 * 3, 7).toString('base64'), width: 2, height: 2 }));
+    const sent = await nextMessage(c);
+    check(sent.data.accepted === true && sends[0].width === 2 && sends[0].rgb.length === 12 && sends[0].rgb[0] === 7, 'sendSstv passes the decoded picture on');
+    c.send(JSON.stringify({ id: 's6', type: 'sendSstv', rgb: Buffer.alloc(5).toString('base64'), width: 2, height: 2 }));
+    check((await nextMessage(c)).ok === false, 'sendSstv rejects picture data of the wrong length');
+    c.send(JSON.stringify({ id: 's7', type: 'abortSstv' }));
+    check((await nextMessage(c)).data.accepted === true && aborts === 1, 'abortSstv is passed on');
     c.send(JSON.stringify({ id: 's4', type: 'getSstvPictures' }));
     const pics = await nextMessage(c);
     check(pics.data.pictures.length === 1 && pics.data.pictures[0].mode === 'M1', 'getSstvPictures returns the kept pictures');

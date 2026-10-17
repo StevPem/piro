@@ -194,6 +194,36 @@
         <div class="ft8-panel__slot sstv-rx__status" id="sstv-status" aria-live="polite">listening for a picture…</div>
         <canvas class="sstv-rx__picture" id="sstv-canvas" width="320" height="256" title="Tap to open full size"></canvas>
         <div class="sstv-rx__strip" id="sstv-strip" aria-label="Recent SSTV pictures"></div>
+        <!-- SSTV transmit: take or pick a photo, crop it to the mode's shape,
+             tag it with the callsign, send. See app.js "SSTV transmit". -->
+        <div class="sstv-tx" id="sstv-tx" hidden>
+          <div class="sstv-tx__pick">
+            <span class="row-group__label">Send a picture</span>
+            <button class="chip sstv-rx__btn" id="sstv-camera-btn" type="button">Camera</button>
+            <button class="chip sstv-rx__btn" id="sstv-file-btn" type="button">Choose image</button>
+            <input type="file" accept="image/*" capture="environment" id="sstv-camera-input" hidden />
+            <input type="file" accept="image/*" id="sstv-file-input" hidden />
+          </div>
+          <div class="sstv-tx__editor" id="sstv-tx-editor" hidden>
+            <canvas class="sstv-tx__canvas" id="sstv-tx-canvas" title="Drag to move the picture; pinch, scroll or use the slider to zoom"></canvas>
+            <label class="sstv-tx__row sstv-tx__zoom">Zoom <input type="range" id="sstv-tx-zoom" min="1" max="4" step="0.01" value="1" /></label>
+            <div class="sstv-tx__row">
+              <input class="sstv-tx__text" id="sstv-tx-call" maxlength="12" autocapitalize="characters" spellcheck="false" aria-label="Callsign shown on the picture" placeholder="callsign" />
+              <input class="sstv-tx__text" id="sstv-tx-line2" maxlength="16" spellcheck="false" aria-label="Second line shown under the callsign" placeholder="2nd line (optional)" />
+              <select class="sstv-tx__corner" id="sstv-tx-corner" aria-label="Where the callsign goes">
+                <option value="tl">Top left</option>
+                <option value="tr">Top right</option>
+                <option value="bl">Bottom left</option>
+                <option value="br">Bottom right</option>
+              </select>
+            </div>
+            <div class="sstv-tx__row">
+              <button class="chip sstv-tx__send" id="sstv-tx-send" type="button">Send</button>
+              <button class="chip" id="sstv-tx-cancel" type="button">Cancel</button>
+            </div>
+            <div class="ft8-panel__slot sstv-tx__status" id="sstv-tx-status" aria-live="polite"></div>
+          </div>
+        </div>
       </section>
 
       <section class="ft8-panel" id="ft8-panel" aria-label="FT8" hidden>

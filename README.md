@@ -12,7 +12,7 @@ Hamlib, no separate audio server and no extra apps.
 Written by VK3TR. Licensed AGPL-3.0-only (see
 [Licence](#licence)).
 
-**Current build: v76.** This is the version the app shows next to its title.
+**Current build: v77.** This is the version the app shows next to its title.
 It is the `CACHE_NAME` number in `src/client/sw.js`, which goes up with every
 change to the web app.
 
@@ -49,10 +49,12 @@ Several of the cooler features in this app are built on the work of others:
   fldigi. In all four, a text box and a Send button replace PTT; received
   text is decoded as it arrives, or for Feld-Hell painted in the scope. See
   [RTTY, JTTY, Olivia and Feld-Hell](#rtty-jtty-olivia-and-feld-hell).
-- **SSTV receive**: pictures in 25 modes (Martin, Scottie, Robot, PD,
+- **SSTV**: receive pictures in 25 modes (Martin, Scottie, Robot, PD,
   Wraase, Pasokon), recognised automatically from their VIS header, drawn as
   they arrive and then slant-corrected, with a strip of recent pictures to
-  view full size or save. See [SSTV](#sstv).
+  view full size or save; and send a photo from the phone's camera or an
+  image file, cropped and tagged with your callsign, followed by an FSK ID
+  and a CW ID. See [SSTV](#sstv).
 - **FT8**: band-activity decoding, manual TX, and a guided QSO sequence that
   suggests each reply (you still send every message yourself). Optional PSK
   Reporter spotting.
@@ -381,6 +383,9 @@ All settings are environment variables. For the systemd service they go in
 | `OLIVIA_FREQ_HZ` | `1500` | Olivia's default audio centre frequency, in Hz, for sending and receiving, until it is changed in the UI. The signal is 250 Hz wide; the receiver searches 125 Hz either side. |
 | `OLIVIA_SQUELCH` | on | `off` turns off PiRO's filtering of junk characters and decodes exactly as fldigi does with its squelch off. See [Olivia](#rtty-jtty-olivia-and-feld-hell). |
 | `SSTV_SAVE_DIR` | none | If set, every received SSTV picture is also saved in this folder as a PNG (`YYYYMMDD-HHMMSSz-<mode>.png`, UTC). |
+| `SSTV_TX_MODE` | `S1` | SSTV transmit mode: `S1` (Scottie 1), or any mode id the receiver knows (`M1`, `M2`, `S2`, `SDX`, `R36`, `R72`, `PD90`, `PD120`, `PD180`, ...; see `src/audio/sstv-modes.js`). Read at startup. |
+| `SSTV_TX_POWER_W` | none | TX power in watts while sending SSTV (put back afterwards). Unset leaves the power alone. |
+| `SSTV_FSK_ID`, `SSTV_CW_ID` | on | `off` leaves out the FSK ID or the CW ID sent after each SSTV picture. Both use `STATION_CALLSIGN`. |
 | `HELL_TONE_HZ` | `1000` | Feld-Hell's default audio tone, in Hz, for sending and receiving, until it is changed in the UI. The band frequencies the client tunes to assume the signal is at this tone. |
 | `STATION_CALLSIGN`, `STATION_GRID` | none | Your callsign and Maidenhead grid. They set the FT8 default message and guided QSO, and the FreeDV Reporter report. |
 | `TLS_CERT_PATH`, `TLS_KEY_PATH` | none | Set both to serve HTTPS and WSS. Needed for the microphone from other devices. |
@@ -479,8 +484,9 @@ src/
                    olivia-decode-worker.js), Feld-Hell (hell-font.js,
                    hell-tx.js, hell-rx.js, fed by
                    server/hell-decoder-bridge.js), SSTV (sstv-modes.js,
-                   sstv-rx.js, sstv-tx.js, sstv-decode-worker.js, fed by
-                   server/sstv-decoder-bridge.js; server/png.js) and JTTY
+                   sstv-rx.js, sstv-tx.js, sstv-decode-worker.js,
+                   sstv-encode-worker.js, with server/sstv-decoder-bridge.js,
+                   server/sstv-tx-bridge.js and server/png.js) and JTTY
                    (jtty-codec.js, jtty-tx.js, jtty-rx.js, jtty-tbcc-decode.js,
                    decimator.js, jtty-decode-worker.js); transmit is played
                    out by tty-bridge.js and receive is fed by
@@ -623,6 +629,9 @@ test/
                            false pictures, signal loss; see third_party/sstv/README.md
   sstv-decoder-bridge.test.js  SSTV receive bridge with the real worker: line
                            frames, PNG, kept pictures, saving, PTT
+  sstv-tx-bridge.test.js  SSTV transmit: radio sequence (DATA MODE, power, PTT),
+                           the audio decoded back (picture and FSK ID), Stop,
+                           refusals
   jtty-decoder-bridge.test.js  JTTY receive bridge: arming, PTT, decimation,
                            backlog dropping, broadcasts
   manual-tty-ui.js        optional browser test of the TTY button, text box and
@@ -1130,10 +1139,10 @@ watchdog (ten minutes) still applies.
 
 ### SSTV
 
-The **SSTV** button turns on the SSTV (slow-scan television) receiver. It
-puts the radio on the band's usual sideband (LSB below 10 MHz, USB above;
-no DATA MODE, since nothing is transmitted) and tunes to the band's SSTV
-frequency. Band buttons then do the same:
+The **SSTV** button turns on SSTV (slow-scan television). It puts the radio
+on the band's usual sideband (LSB below 10 MHz, USB above; DATA MODE only
+while sending) and tunes to the band's SSTV frequency. Band buttons then do
+the same:
 
 | Band | Frequency (MHz) | Sideband |
 |---|---|---|
@@ -1148,7 +1157,8 @@ outside the Australian allocations, so on those bands, and on 30, 17 and
 12 m, which have no usual SSTV frequency, the band buttons tune as normal.
 The table is `SSTV_FREQUENCIES` in `src/client/app.js`.
 
-Receive only for now: the PTT button stays the ordinary voice PTT. The
+The PTT button stays the ordinary voice PTT (for talking about the
+pictures); pictures are sent with the panel's Send button (below). The
 scope shows the 0-3 kHz audio spectrum with faint lines at 1200 Hz (sync),
 1500 Hz (black) and 2300 Hz (white) to tune by.
 
@@ -1188,6 +1198,45 @@ thread, only while SSTV is selected and you are not transmitting. Not yet
 tested over the air. The picture drawn while it arrives is not yet
 slant-corrected, so from a station whose sound card is well off it leans
 until it is redrawn at the end.
+
+**Sending a picture.** Under the received pictures, **Camera** opens the
+phone's camera (on a computer it opens a file chooser) and **Choose image**
+picks an existing picture. The picture appears at the size and shape that
+will be sent (320 × 256 for the default Scottie 1), filling the frame:
+
+* **drag** it to choose what is shown, and **pinch**, scroll or use **Zoom**
+  to get closer;
+* the **callsign** (from `STATION_CALLSIGN`, editable) and an optional
+  **second line** (for example a report, "UR 595", or a locator) are drawn
+  in white with a dark outline on a translucent box, in the **corner** you
+  choose. The tag is made as large as fits within a quarter of the
+  picture's width and a quarter of its height, box included (80 × 64 pixels
+  at most in Scottie 1);
+* **Send** shows the mode and how long it takes (about 1 minute 56 seconds
+  for Scottie 1 with the IDs). What is in the preview is exactly what is
+  sent.
+
+Sending works as for RTTY: the Pi encodes the picture (in a worker thread),
+turns DATA MODE on so the radio takes USB audio, keys PTT, plays it, and
+puts everything back afterwards, including if you press **Stop**. After the
+picture come the **FSK ID** (the callsign as the short 1900/2100 Hz burst
+that MMSSTV, slowrx and similar programs show as the sender's call) and a
+**CW ID** ("DE" and the callsign at 20 WPM, 800 Hz). The sent picture joins
+the strip, marked as sent. The status line shows the time sent and left.
+
+The mode is set on the Pi with `SSTV_TX_MODE` (Scottie 1, `S1`, by
+default; any of the receiver's mode ids, e.g. `M1`, `R36`, `PD120`).
+SSTV is a full-power tone for one to four minutes, much harder on the
+radio than voice: set `SSTV_TX_POWER_W` to send at lower power (it is put
+back afterwards), or turn the power down yourself. `SSTV_FSK_ID=off` and
+`SSTV_CW_ID=off` leave out the IDs; with no `STATION_CALLSIGN` there are
+none. The usual 10-minute PTT cut-off still applies.
+
+The encoder follows N7CXI's mode specifications: for Martin 1, Robot 36
+and PD-120, its tones match PySSTV's, an independent encoder, to within a
+few hertz throughout; Scottie modes include the starting sync pulse the
+specification calls for. Sending has been tested with PiRO's own receiver
+and a stub radio, not on air.
 
 **FT8 (RX + manual TX)**: since the IC-7300 has no native "FT8" CI-V
 mode — the radio only ever sees `USB` — FT8 is an app-level concept
@@ -1296,7 +1345,8 @@ shapes.
   `getNoiseBlanker`, `setNotch`, `getNotch`, `setFilter`, `getFilter`,
   `setTuner`, `getTuner`, `setTxPower`, `getTxPower`, `setRxGain`,
   `getRxGain`, `setFt8Active`, `sendFt8`, `sendTty`, `abortTty`, `setJttyActive`,
-  `setOliviaActive`, `setHellActive`, `setSstvActive`, `endSstvPicture`, `getSstvPictures`)
+  `setOliviaActive`, `setHellActive`, `setSstvActive`, `endSstvPicture`, `getSstvPictures`,
+  `sendSstv`, `abortSstv`)
   correlated by `id`; events (`connected`, `frequency`, `mode`, `data-mode`, `ptt`,
   `ptt-timeout`, `cw-text`, `ft8-decodes`, `ft8-tx-status`, `tty-tx-status`,
   `jtty-text`, `olivia-text`, `rig-error`, `audio-error`, `scope-error`)
@@ -1332,7 +1382,12 @@ shapes.
   `BINARY_TYPE.SSTV_LINE` frames, and it ends with `sstv-picture` (the same
   fields plus `endTime, complete, linesReceived, slantDeg, png`, the
   slant-corrected picture as base64 PNG). `endSstvPicture` ends the picture
-  in progress; `getSstvPictures` returns the recent ones.
+  in progress; `getSstvPictures` returns the recent ones. An `sstv-fsk-id`
+  broadcast (`{id, time, text}`) adds the sender's FSK ID to a received
+  picture. `sendSstv` (`{rgb, width, height}`: base64 RGB at the size in the
+  connect snapshot's `sstvTx`) transmits a picture in `SSTV_TX_MODE` with
+  the IDs; progress arrives as `sstv-tx-status` broadcasts (`encoding` →
+  `sending` → `sent`/`aborted`/`error`), and `abortSstv` stops it.
 - **Audio (binary frames, tagged `BINARY_TYPE.AUDIO`)**: by default
   (`AUDIO_CODEC=pcm`), raw 16-bit PCM in both directions — no
   framing/codec requirement, chunk sizes are whatever arrives. With

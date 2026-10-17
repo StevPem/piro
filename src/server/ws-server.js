@@ -485,6 +485,23 @@ class ControlServer extends EventEmitter {
           ws.send(makeResult(id, { accepted: true }));
           break;
         }
+        case REQUEST.SEND_SSTV: {
+          if (typeof msg.rgb !== 'string' || !Number.isInteger(msg.width) || !Number.isInteger(msg.height)) {
+            throw new Error('"rgb" (base64) and integer "width" and "height" are required');
+          }
+          if (msg.width * msg.height > 1024 * 1024) throw new Error('That picture is too large');
+          const rgb = Buffer.from(msg.rgb, 'base64');
+          if (rgb.length !== msg.width * msg.height * 3) throw new Error('"rgb" must be width * height * 3 bytes');
+          // Like SEND_TTY, this only starts it; the outcome arrives as EVENT.SSTV_TX_STATUS.
+          this.emit('sstv-send', { rgb, width: msg.width, height: msg.height });
+          ws.send(makeResult(id, { accepted: true }));
+          break;
+        }
+        case REQUEST.ABORT_SSTV: {
+          this.emit('sstv-abort');
+          ws.send(makeResult(id, { accepted: true }));
+          break;
+        }
         case REQUEST.GET_SSTV_PICTURES: {
           // Kept here by SstvDecoderBridge (newest last).
           ws.send(makeResult(id, { pictures: this.sstvPictures ?? [] }));

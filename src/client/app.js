@@ -882,6 +882,7 @@ link.addEventListener('connected', (event) => {
   // STATION_CALLSIGN/STATION_GRID picks them up on the client's next
   // reconnect too, with no page reload needed.
   stationCallsign = data.stationCallsign || null;
+  setSstvTxInfo(data.sstvTx);
   stationGrid = data.stationGrid || null;
   ft8Qso.configure({ myCall: stationCallsign, myGrid: stationGrid });
   if (data.frequency != null) updateFrequencyDisplay(data.frequency);
@@ -2066,7 +2067,8 @@ function sstvTime(ms) {
 function sstvPictureLine(p) {
   const shift = p.shiftHz ? ` · ${p.shiftHz > 0 ? '+' : ''}${p.shiftHz} Hz` : '';
   const done = p.complete ? '' : ` · cut short at line ${p.linesReceived}`;
-  return `${p.name} · ${p.width} × ${p.lines} · ${sstvTime(p.time)} UTC${shift}${done}`;
+  const who = p.own ? ' · sent' : p.fskId ? ` · ${p.fskId}` : '';
+  return `${p.name} · ${p.width} × ${p.lines} · ${sstvTime(p.time)} UTC${who}${shift}${done}`;
 }
 
 function showSstvPicture(p) {
@@ -2186,6 +2188,293 @@ sstvViewer.addEventListener('click', () => {
 sstvCanvas.addEventListener('click', () => {
   sstvViewerImg.src = !sstvCurrent && sstvShown ? `data:image/png;base64,${sstvShown.png}` : sstvCanvas.toDataURL('image/png');
   sstvViewer.hidden = false;
+});
+
+// --- SSTV transmit ---
+// Take a photo (the phone's camera) or choose an image, crop it to the
+// server's SSTV_TX_MODE shape by dragging and zooming, tag it with the
+// callsign (and an optional second line) in a corner, and send it. The
+// tag, with its backing box, is kept within a quarter of the picture's
+// width and a quarter of its height. The FSK ID and CW ID are added by the
+// server.
+const sstvTxEl = document.getElementById('sstv-tx');
+const sstvTxEditor = document.getElementById('sstv-tx-editor');
+const sstvTxCanvas = document.getElementById('sstv-tx-canvas');
+const sstvTxCtx = sstvTxCanvas.getContext('2d');
+const sstvTxZoom = document.getElementById('sstv-tx-zoom');
+const sstvTxCall = document.getElementById('sstv-tx-call');
+const sstvTxLine2 = document.getElementById('sstv-tx-line2');
+const sstvTxCorner = document.getElementById('sstv-tx-corner');
+const sstvTxSendBtn = document.getElementById('sstv-tx-send');
+const sstvTxStatus = document.getElementById('sstv-tx-status');
+const sstvCameraInput = document.getElementById('sstv-camera-input');
+const sstvFileInput = document.getElementById('sstv-file-input');
+let sstvTxInfo = null; // the connect snapshot's sstvTx: {mode, name, width, lines, lineHeight, durationSec, fskId, cwId}
+let sstvTxImage = null; // the chosen picture (ImageBitmap or <img>)
+const sstvCrop = { cx: 0, cy: 0, zoom: 1 };
+let sstvTxBusy = false;
+let sstvTxTimer = null;
+
+const mmss = (sec) => `${Math.floor(sec / 60)}:${String(Math.round(sec % 60)).padStart(2, '0')}`;
+
+function sstvTxSize() {
+  return { W: sstvTxInfo.width, H: sstvTxInfo.lines * (sstvTxInfo.lineHeight || 1) };
+}
+
+function updateSstvTxSendLabel() {
+  if (!sstvTxInfo || sstvTxBusy) return;
+  sstvTxSendBtn.textContent = `Send (${sstvTxInfo.name}, ${mmss(sstvTxInfo.durationSec)})`;
+}
+
+/** Called with the connect snapshot. */
+function setSstvTxInfo(info) {
+  sstvTxInfo = info || null;
+  sstvTxEl.hidden = !sstvTxInfo;
+  if (sstvTxInfo && !sstvTxCall.value) sstvTxCall.value = stationCallsign || '';
+  updateSstvTxSendLabel();
+}
+
+/** The picture as it will be sent: scaled to cover the frame, cropped, then tagged. */
+function drawSstvTx() {
+  if (!sstvTxInfo || !sstvTxImage) return;
+  const { W, H } = sstvTxSize();
+  sstvTxCanvas.width = W;
+  sstvTxCanvas.height = H;
+  const iw = sstvTxImage.width;
+  const ih = sstvTxImage.height;
+  const scale = Math.max(W / iw, H / ih) * sstvCrop.zoom;
+  const hw = W / scale / 2;
+  const hh = H / scale / 2;
+  sstvCrop.cx = Math.min(iw - hw, Math.max(hw, sstvCrop.cx));
+  sstvCrop.cy = Math.min(ih - hh, Math.max(hh, sstvCrop.cy));
+  sstvTxCtx.imageSmoothingEnabled = true;
+  sstvTxCtx.imageSmoothingQuality = 'high';
+  sstvTxCtx.drawImage(sstvTxImage, sstvCrop.cx - hw, sstvCrop.cy - hh, 2 * hw, 2 * hh, 0, 0, W, H);
+  drawSstvTag(sstvTxCtx, W, H, sstvTxCall.value.trim().toUpperCase(), sstvTxLine2.value.trim(), sstvTxCorner.value);
+}
+
+/**
+ * The callsign tag: bold white text with a dark outline on a translucent
+ * box, in a corner, sized as large as fits in a quarter of the width and a
+ * quarter of the height (box included). Returns the box drawn.
+ */
+function drawSstvTag(ctx, W, H, call, line2, corner) {
+  if (!call && !line2) return null;
+  const maxW = Math.floor(W / 4);
+  const maxH = Math.floor(H / 4);
+  const pad = Math.max(2, Math.round(Math.min(W, H) / 80));
+  const font = (px) => `bold ${px}px system-ui, -apple-system, "Segoe UI", Roboto, sans-serif`;
+  const ratio2 = 0.6; // second line size, relative to the callsign
+  ctx.font = font(100);
+  const w1 = call ? ctx.measureText(call).width : 0;
+  const w2 = line2 ? ctx.measureText(line2).width * ratio2 : 0;
+  const lines = (call ? 1 : 0) + (line2 ? ratio2 * 1.1 : 0);
+  // the outline adds about size/8 on each side
+  const k = Math.min((maxW - 2 * pad) / (Math.max(w1, w2) + 25), (maxH - 2 * pad) / (100 * lines + 25));
+  const size = Math.max(4, Math.floor(100 * k));
+  const boxW = Math.min(maxW, Math.ceil(k * (Math.max(w1, w2) + 25) + 2 * pad));
+  const boxH = Math.min(maxH, Math.ceil(k * (100 * lines + 25) + 2 * pad));
+  const m = pad; // margin from the picture's edge
+  const x = corner.endsWith('r') ? W - boxW - m : m;
+  const y = corner.startsWith('b') ? H - boxH - m : m;
+  ctx.save();
+  ctx.fillStyle = 'rgba(0, 0, 0, 0.45)';
+  ctx.fillRect(x, y, boxW, boxH);
+  ctx.textBaseline = 'top';
+  ctx.textAlign = 'center';
+  ctx.lineJoin = 'round';
+  ctx.strokeStyle = '#000';
+  ctx.fillStyle = '#fff';
+  let ty = y + pad + Math.round(size / 16);
+  if (call) {
+    ctx.font = font(size);
+    ctx.lineWidth = Math.max(1, size / 8);
+    ctx.strokeText(call, x + boxW / 2, ty);
+    ctx.fillText(call, x + boxW / 2, ty);
+    ty += size;
+  }
+  if (line2) {
+    const s2 = Math.max(4, Math.floor(size * ratio2));
+    ctx.font = font(s2);
+    ctx.lineWidth = Math.max(1, s2 / 8);
+    ctx.strokeText(line2, x + boxW / 2, ty + s2 * 0.1);
+    ctx.fillText(line2, x + boxW / 2, ty + s2 * 0.1);
+  }
+  ctx.restore();
+  return { x, y, w: boxW, h: boxH };
+}
+
+async function loadSstvTxFile(file) {
+  if (!file) return;
+  try {
+    let img;
+    try {
+      img = await createImageBitmap(file, { imageOrientation: 'from-image' });
+    } catch {
+      img = await new Promise((resolve, reject) => {
+        const el = new Image();
+        el.onload = () => resolve(el);
+        el.onerror = () => reject(new Error('not an image this browser can read'));
+        el.src = URL.createObjectURL(file);
+      });
+    }
+    sstvTxImage = img;
+    sstvCrop.cx = img.width / 2;
+    sstvCrop.cy = img.height / 2;
+    sstvCrop.zoom = 1;
+    sstvTxZoom.value = '1';
+    sstvTxEditor.hidden = false;
+    sstvTxStatus.textContent = 'Drag to choose what is sent; pinch or use Zoom to get closer.';
+    drawSstvTx();
+  } catch (err) {
+    showError(`Couldn't open that picture: ${err.message}`);
+  }
+}
+
+document.getElementById('sstv-camera-btn').addEventListener('click', () => sstvCameraInput.click());
+document.getElementById('sstv-file-btn').addEventListener('click', () => sstvFileInput.click());
+for (const input of [sstvCameraInput, sstvFileInput]) {
+  input.addEventListener('change', () => {
+    loadSstvTxFile(input.files && input.files[0]);
+    input.value = '';
+  });
+}
+for (const el of [sstvTxCall, sstvTxLine2, sstvTxCorner]) el.addEventListener('input', drawSstvTx);
+sstvTxZoom.addEventListener('input', () => {
+  sstvCrop.zoom = Number(sstvTxZoom.value);
+  drawSstvTx();
+});
+
+// Drag to move the crop; two fingers to zoom; the mouse wheel zooms too.
+const sstvPointers = new Map();
+let sstvPinch = null;
+function sstvCanvasScale() {
+  const { W } = sstvTxSize();
+  const rect = sstvTxCanvas.getBoundingClientRect();
+  const iw = sstvTxImage.width;
+  const ih = sstvTxImage.height;
+  const { H } = sstvTxSize();
+  return (Math.max(W / iw, H / ih) * sstvCrop.zoom * rect.width) / W; // screen px per source px
+}
+function setSstvZoom(z) {
+  sstvCrop.zoom = Math.min(4, Math.max(1, z));
+  sstvTxZoom.value = String(sstvCrop.zoom);
+  drawSstvTx();
+}
+sstvTxCanvas.addEventListener('pointerdown', (e) => {
+  if (!sstvTxImage) return;
+  sstvTxCanvas.setPointerCapture(e.pointerId);
+  sstvPointers.set(e.pointerId, { x: e.clientX, y: e.clientY });
+  if (sstvPointers.size === 2) {
+    const [a, b] = [...sstvPointers.values()];
+    sstvPinch = { d: Math.hypot(a.x - b.x, a.y - b.y), zoom: sstvCrop.zoom };
+  }
+});
+sstvTxCanvas.addEventListener('pointermove', (e) => {
+  const p = sstvPointers.get(e.pointerId);
+  if (!p || !sstvTxImage) return;
+  if (sstvPointers.size === 1) {
+    const s = sstvCanvasScale();
+    sstvCrop.cx -= (e.clientX - p.x) / s;
+    sstvCrop.cy -= (e.clientY - p.y) / s;
+    drawSstvTx();
+  }
+  p.x = e.clientX;
+  p.y = e.clientY;
+  if (sstvPointers.size === 2 && sstvPinch) {
+    const [a, b] = [...sstvPointers.values()];
+    setSstvZoom((sstvPinch.zoom * Math.hypot(a.x - b.x, a.y - b.y)) / sstvPinch.d);
+  }
+});
+const sstvPointerUp = (e) => {
+  sstvPointers.delete(e.pointerId);
+  if (sstvPointers.size < 2) sstvPinch = null;
+};
+sstvTxCanvas.addEventListener('pointerup', sstvPointerUp);
+sstvTxCanvas.addEventListener('pointercancel', sstvPointerUp);
+sstvTxCanvas.addEventListener(
+  'wheel',
+  (e) => {
+    if (!sstvTxImage) return;
+    e.preventDefault();
+    setSstvZoom(sstvCrop.zoom * (e.deltaY < 0 ? 1.1 : 1 / 1.1));
+  },
+  { passive: false }
+);
+
+document.getElementById('sstv-tx-cancel').addEventListener('click', () => {
+  if (sstvTxBusy) return;
+  sstvTxImage = null;
+  sstvTxEditor.hidden = true;
+});
+
+function sstvTxRgbBase64() {
+  const { W, H } = sstvTxSize();
+  const d = sstvTxCtx.getImageData(0, 0, W, H).data;
+  const rgb = new Uint8Array(W * H * 3);
+  for (let i = 0, j = 0; i < d.length; i += 4, j += 3) {
+    rgb[j] = d[i];
+    rgb[j + 1] = d[i + 1];
+    rgb[j + 2] = d[i + 2];
+  }
+  let bin = '';
+  for (let i = 0; i < rgb.length; i += 0x8000) bin += String.fromCharCode.apply(null, rgb.subarray(i, i + 0x8000));
+  return btoa(bin);
+}
+
+sstvTxSendBtn.addEventListener('click', () => {
+  if (sstvTxBusy) {
+    link.request('abortSstv').catch((err) => showError(`Couldn't stop the picture: ${err.message}`));
+    return;
+  }
+  if (!sstvTxImage || !sstvTxInfo) return;
+  drawSstvTx();
+  const { W, H } = sstvTxSize();
+  link.request('sendSstv', { rgb: sstvTxRgbBase64(), width: W, height: H }).catch((err) => showError(`Couldn't send: ${err.message}`));
+});
+
+link.addEventListener('sstv-tx-status', (event) => {
+  const { status, name, durationSec, startTime, error } = event.detail || {};
+  clearInterval(sstvTxTimer);
+  sstvTxBusy = status === 'encoding' || status === 'sending';
+  sstvTxSendBtn.classList.toggle('ptt--active', sstvTxBusy);
+  if (sstvTxBusy) sstvTxSendBtn.textContent = 'Stop';
+  else updateSstvTxSendLabel();
+  switch (status) {
+    case 'encoding':
+      sstvTxStatus.textContent = `Preparing ${name}…`;
+      break;
+    case 'sending': {
+      const t0 = startTime ?? Date.now();
+      const tick = () => {
+        const el = Math.min(durationSec, (Date.now() - t0) / 1000);
+        sstvTxStatus.textContent = `Sending ${name} · ${mmss(el)} of ${mmss(durationSec)}${sstvTxInfo?.fskId ? ' (then FSK ID and CW ID)' : ''}`;
+      };
+      tick();
+      sstvTxTimer = setInterval(tick, 1000);
+      break;
+    }
+    case 'sent':
+      sstvTxStatus.textContent = `Sent ${name} (${mmss(durationSec)}).`;
+      break;
+    case 'aborted':
+      sstvTxStatus.textContent = 'Stopped.';
+      break;
+    case 'error':
+      sstvTxStatus.textContent = `Couldn't send: ${error || 'unknown error'}`;
+      break;
+    default:
+      break;
+  }
+});
+
+link.addEventListener('sstv-fsk-id', (event) => {
+  const { id, time, text } = event.detail || {};
+  for (const t of sstvStripEl.children) if (Number(t.dataset.id) === id && Number(t.dataset.time) === time) t.title += ` · ${text}`;
+  if (sstvShown && sstvShown.id === id && sstvShown.time === time) {
+    sstvShown.fskId = text;
+    if (!sstvCurrent) sstvStatusEl.textContent = sstvPictureLine(sstvShown);
+  }
 });
 
 link.addEventListener('tty-tx-status', (event) => {

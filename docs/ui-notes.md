@@ -3449,3 +3449,43 @@ model for how to approach that.
   full-size view), 20m band chip (14.230 USB), SSB leaving SSTV. Not
   tested on air. Service-worker cache bumped to v76.
 
+## SSTV transmit
+
+- In `#sstv-rx`, `#sstv-tx` ("Send a picture") is shown when the connect
+  snapshot has `sstvTx` (`{mode, name, width, lines, lineHeight,
+  durationSec, fskId, cwId}`, from `SstvTxBridge`; the mode is the Pi's
+  `SSTV_TX_MODE`, Scottie 1 by default).
+- **Camera** clicks a hidden `<input type="file" accept="image/*"
+  capture="environment">` (the phone's rear camera; a file chooser on a
+  computer); **Choose image** a plain `accept="image/*"` one. File inputs
+  work over plain HTTP, unlike `getUserMedia`. The file is decoded with
+  `createImageBitmap(file, {imageOrientation: 'from-image'})` (so a
+  portrait phone photo is upright), falling back to an `<img>`.
+- `#sstv-tx-canvas` is the mode's own size (`width` x `lines *
+  lineHeight`, 320 x 256 for Scottie 1), CSS-scaled to the panel. The photo
+  is drawn to cover it (`max(W/iw, H/ih) * zoom`), the crop centre clamped
+  inside the photo. One pointer drags the crop, two pinch-zoom
+  (`touch-action: none` on the canvas), the wheel and the Zoom slider (1-4x)
+  zoom too.
+- `drawSstvTag()`: callsign (bold) and optional second line (0.6x), white
+  with a black outline (size/8) on a 45% black box, in the chosen corner,
+  as large as fits with the box no larger than W/4 x H/4. The browser test
+  measures the tag's grey pixels: 80 x 48 in Scottie 1, top left.
+- **Send** reads the canvas back (`getImageData`, RGB, base64) and sends
+  `sendSstv {rgb, width, height}`; it becomes **Stop** (`abortSstv`) while
+  `sstv-tx-status` is `encoding`/`sending`, with a once-a-second "Sending
+  Scottie S1 · 0:12 of 1:56" status. The sent picture comes back as an
+  `sstv-picture` with `own: true` and joins the strip ("· sent").
+- Received pictures' FSK IDs arrive as `sstv-fsk-id` and are added to the
+  status line and thumbnail title.
+- Server side: `SstvTxBridge` (`server/sstv-tx-bridge.js`): refuses unless
+  the radio is on LSB/USB and not transmitting, encodes in a one-off worker
+  (`audio/sstv-encode-worker.js`, `encodeSstvTransmission()`: picture, FSK
+  ID, 0.3 s, CW "DE <call>" at 20 WPM / 800 Hz), DATA MODE on, optional
+  `SSTV_TX_POWER_W`, PTT, play, then PTT off, power and DATA MODE back.
+- Verified in headless Chromium (`test/manual-tty-ui.js`): the camera
+  input's attributes, a 1200 x 900 test photo chosen, cropped to 320 x 256
+  with its centre kept, the tag size and corners, Send (DATA MODE, PTT, the
+  whole 116.6 s of audio written), Stop. Not tested on air.
+  Service-worker cache bumped to v77.
+

@@ -213,6 +213,15 @@ class SstvDecoderBridge {
       case 'end':
         this._finishPicture(msg);
         break;
+      case 'fskid': {
+        // the FSK ID follows the picture it belongs to
+        const last = [...this.controlServer.sstvPictures].reverse().find((p) => !p.own);
+        if (last && this._lastId === last.id) {
+          last.fskId = msg.text;
+          this.controlServer.broadcastJsonEvent(EVENT.SSTV_FSK_ID, { id: last.id, time: last.time, text: msg.text });
+        }
+        break;
+      }
       case 'ack':
         this._ackedSamples += msg.samples;
         break;
@@ -243,6 +252,7 @@ class SstvDecoderBridge {
       slantDeg: msg.slantDeg,
       png: png.toString('base64'),
     };
+    this._lastId = picture.id;
     const list = this.controlServer.sstvPictures;
     list.push(picture);
     while (list.length > this.keep) list.shift();

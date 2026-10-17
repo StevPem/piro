@@ -14,6 +14,7 @@
  *   <- { type: 'start', mode, name, width, lines, lineHeight, shiftHz }
  *   <- { type: 'line', y, rgb: ArrayBuffer }
  *   <- { type: 'end', mode, name, width, lines, lineHeight, rgb: ArrayBuffer, rate, skip, slantDeg, complete, linesReceived, shiftHz }
+ *   <- { type: 'fskid', text }  the FSK ID (callsign) sent after a whole picture
  *   <- { type: 'ack', samples }
  *   <- { type: 'error', error }
  */
