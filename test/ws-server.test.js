@@ -478,6 +478,8 @@ async function run() {
     );
     check(seenActive.length === 1 && seenActive[0] === true, "setFt8Active emits an internal 'ft8-active' event for Ft8Bridge to consume");
     check(server.state.ft8Active === true, 'setFt8Active is cached in server.state.ft8Active, so a newly-connecting client\'s snapshot reflects it');
+    const toB = await nextMessage(clientB);
+    check(toB.type === 'app-modes' && toB.data.ft8Active === true && toB.data.sstvActive === false, 'setFt8Active is broadcast to the other clients as app-modes');
     server.off('ft8-active', onActive);
   }
 
@@ -651,7 +653,7 @@ async function run() {
   const badVariantReply = await nextMessage(clientA);
   check(badVariantReply.id === '41' && badVariantReply.ok === false, 'setFt8Variant rejects anything other than "FT8"/"FT4" with an error, not a crash');
 
-  // --- setFreeDvActive: internal event for RadeBridge to consume, and cached in server.state (mirrors setFt8Active exactly) — NOT broadcast to other already-connected clients ---
+  // --- setFreeDvActive: internal event for RadeBridge to consume, and cached in server.state (mirrors setFt8Active exactly), and broadcast to the other clients as app-modes ---
   {
     const seenActive = [];
     const onActive = (active) => seenActive.push(active);
@@ -668,6 +670,8 @@ async function run() {
       "setFreeDvActive emits an internal 'freedv-active' event for RadeBridge to consume"
     );
     check(server.state.freeDvActive === true, 'setFreeDvActive is cached in server.state.freeDvActive, so a newly-connecting client\'s snapshot reflects it');
+    const toB = await nextMessage(clientB);
+    check(toB.type === 'app-modes' && toB.data.freeDvActive === true, 'setFreeDvActive is broadcast to the other clients as app-modes');
     server.off('freedv-active', onActive);
   }
 
@@ -1180,6 +1184,56 @@ async function run() {
     await new Promise((r) => setTimeout(r, 100));
     check(sServer.state.sstvActive === false && events.at(-1) === false, 'last client disconnecting disarms SSTV');
     await sServer.close();
+  }
+
+  // App-level modes are shared: every change reaches the other browsers as
+  // app-modes (not echoed to the one that asked), with the audio frequencies.
+  {
+    const aServer = new ControlServer({ civ: new StubCivDriver(), port: 0 });
+    const aPort = await aServer.listen();
+    const a = await connect(aPort);
+    const b = await connect(aPort);
+    await nextMessage(a);
+    const helloB = await nextMessage(b);
+    check(helloB.data.jttyTxHz === 1450, 'connected snapshot reports the JTTY transmit frequency (1450 Hz to start)');
+    a.send(JSON.stringify({ id: 'm1', type: 'setSstvActive', active: true }));
+    check((await nextMessage(a)).id === 'm1', 'the asking browser gets only its reply');
+    const m1 = await nextMessage(b);
+    check(m1.type === 'app-modes' && m1.data.sstvActive === true && m1.data.ft8Active === false, 'another browser hears SSTV selected');
+    a.send(JSON.stringify({ id: 'm2', type: 'setSstvActive', active: false }));
+    a.send(JSON.stringify({ id: 'm3', type: 'setJttyActive', active: true, txHz: 1803.6 }));
+    await nextMessage(a);
+    const m3reply = await nextMessage(a);
+    check(m3reply.id === 'm3' && m3reply.data.txHz === 1804 && aServer.state.jttyTxHz === 1804, 'setJttyActive takes and rounds the transmit frequency');
+    const m2 = await nextMessage(b);
+    const m3 = await nextMessage(b);
+    check(m2.data.sstvActive === false && m2.data.jttyActive === false, 'another browser hears SSTV left');
+    check(m3.data.jttyActive === true && m3.data.jttyTxHz === 1804, 'another browser hears JTTY selected, with its transmit frequency');
+    a.send(JSON.stringify({ id: 'm4', type: 'setJttyActive', active: true, txHz: 99999 }));
+    await nextMessage(a);
+    check((await nextMessage(b)).data.jttyTxHz === 2800, 'a JTTY transmit frequency above 2800 Hz is clamped');
+    b.send(JSON.stringify({ id: 'm5', type: 'setJttyActive', active: false }));
+    b.send(JSON.stringify({ id: 'm6', type: 'setOliviaActive', active: true, centreHz: 1600 }));
+    await nextMessage(b);
+    await nextMessage(b);
+    const m5 = await nextMessage(a);
+    const m6 = await nextMessage(a);
+    check(m5.data.jttyActive === false && m6.data.oliviaActive === true && m6.data.oliviaCentreHz === 1600, 'and the other way round: Olivia from the second browser reaches the first');
+    a.send(JSON.stringify({ id: 'm7', type: 'setOliviaActive', active: false }));
+    a.send(JSON.stringify({ id: 'm8', type: 'setHellActive', active: true, toneHz: 1100 }));
+    await nextMessage(a);
+    await nextMessage(a);
+    await nextMessage(b);
+    const m8 = await nextMessage(b);
+    check(m8.data.hellActive === true && m8.data.hellToneHz === 1100 && m8.data.oliviaActive === false, 'Feld-Hell, with its tone');
+    const c = await connect(aPort);
+    const helloC = await nextMessage(c);
+    check(helloC.data.hellActive === true && helloC.data.hellToneHz === 1100 && helloC.data.jttyTxHz === 2800, 'a browser opened later gets the same modes in its snapshot');
+    a.close();
+    b.close();
+    c.close();
+    await new Promise((r) => setTimeout(r, 100));
+    await aServer.close();
   }
 
   // PTT fail-safe watchdog (10-minute cutoff in production; a short

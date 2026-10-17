@@ -204,6 +204,20 @@
             <input type="file" accept="image/*" capture="environment" id="sstv-camera-input" hidden />
             <input type="file" accept="image/*" id="sstv-file-input" hidden />
           </div>
+          <!-- Transmit progress, shown in every browser while a picture is
+               being prepared or sent; the picture itself fills in on the
+               screen above as it goes out. -->
+          <div class="sstv-tx__progress" id="sstv-tx-progress" hidden>
+            <div class="sstv-tx__progress-head">
+              <span class="sstv-tx__progress-label" id="sstv-tx-progress-label"></span>
+              <span class="sstv-tx__progress-time" id="sstv-tx-progress-time"></span>
+              <button class="chip sstv-rx__btn sstv-tx__progress-stop" id="sstv-tx-progress-stop" type="button">Stop</button>
+            </div>
+            <div class="sstv-tx__bar" id="sstv-tx-bar" role="progressbar" aria-label="SSTV transmission" aria-valuemin="0" aria-valuemax="100" aria-valuenow="0">
+              <div class="sstv-tx__bar-fill" id="sstv-tx-bar-fill"></div>
+            </div>
+            <div class="ft8-panel__slot sstv-tx__progress-detail" id="sstv-tx-progress-detail" aria-live="off"></div>
+          </div>
           <div class="sstv-tx__editor" id="sstv-tx-editor" hidden>
             <canvas class="sstv-tx__canvas" id="sstv-tx-canvas" title="Drag to move the picture; pinch, scroll or use the slider to zoom"></canvas>
             <label class="sstv-tx__row sstv-tx__zoom">Zoom <input type="range" id="sstv-tx-zoom" min="1" max="4" step="0.01" value="1" /></label>

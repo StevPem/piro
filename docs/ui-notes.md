@@ -3505,3 +3505,45 @@ model for how to approach that.
 - Browser test: Cancel while sending stops it (PTT off, DATA MODE off) and
   closes the editor. Service-worker cache bumped to v78.
 
+### Shared app modes; SSTV transmit progress (v79)
+
+- Real bug: the app-level modes (FT8/FT4, FreeDV, JTTY, Olivia, Feld-Hell,
+  SSTV) were only told to the server, not to the other browsers, so a
+  second phone stayed on whatever it showed before (the radio can't report
+  these modes; only its LSB/USB is seen). `ControlServer` now broadcasts
+  `app-modes` (`appModes()`: every app-mode flag plus JTTY's transmit
+  frequency, Olivia's centre and Feld-Hell's tone) to the other browsers
+  after each `set*Active` request. JTTY's transmit frequency is now kept on
+  the server too (`setJttyActive`'s `txHz`, `state.jttyTxHz`).
+- Client: `applyAppModes()` follows it with the `reflect*FromServer()`
+  functions and the leave/exit functions' new `{local: true}` option, which
+  change only the display: the browser that made the change has already set
+  the radio and the server. On (re)connecting, `syncAppModesOnConnect()`
+  takes the server's modes, except when the server has none while the page
+  is still in one and the radio is still on its sideband (server restarted,
+  or every browser had gone): then the page re-arms its mode as before. The
+  connect snapshot's app modes are applied before its radio mode, so a mode
+  another browser left meanwhile is dropped quietly rather than "left"
+  (which would turn DATA MODE off under whatever replaced it).
+- Still per browser: unsent text, the FT8 QSO sequence and its TX
+  frequency, the SSTV crop and tag.
+- SSTV transmit progress: a box under "Send a picture" (elapsed / total, a
+  bar marked at the picture's start and end, the part going out with line
+  n of N, time left, Stop), shown in every browser. The outgoing picture
+  fills in on the SSTV screen, unsent rows dimmed, with a green line at the
+  row going out. `SstvTxBridge` adds `timeline` (`sstvTxTimeline()`: header,
+  picture, FSK ID, gap, CW ID), `lines`, `png` and `elapsedSec` to the
+  `sending` status and sends the current status to a page that connects
+  mid-transmission (`client-connected`). The client times from
+  `elapsedSec` and its own clock, so the Pi's and the phone's clocks needn't
+  agree. Save is hidden while sending (it would save the previous picture).
+- Tests: ws-server (app-modes to the other browser, not the one asking;
+  JTTY txHz rounding/clamping; later browsers' snapshot), sstv-tx-bridge
+  (`sending` payload, timeline matches the audio, late-join status). In
+  headless Chromium (`test/manual-tty-ui.js`), a second browser follows
+  JTTY (and its tapped frequency), Olivia's centre, Feld-Hell's tone, FT8,
+  SSTV and back to USB without sending any radio or mode command itself;
+  both show the SSTV progress, a third opened mid-transmission picks it up
+  part-way, and the screen returns to the last picture after Stop.
+  Service-worker cache bumped to v79.
+

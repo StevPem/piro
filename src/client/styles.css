@@ -1338,3 +1338,78 @@ button {
 .sstv-tx__status {
   margin-top: 4px;
 }
+
+/* Transmit progress: label, elapsed / total, Stop; a bar marked where the
+   picture ends and the IDs begin; then what is going out now. */
+.sstv-tx__progress {
+  margin-top: 8px;
+  padding: 6px 8px;
+  border: 1px solid var(--led-red);
+  border-radius: 4px;
+  background: var(--panel-raised);
+}
+
+.sstv-tx__progress[hidden] {
+  display: none;
+}
+
+.sstv-tx__progress-head {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  font-size: 0.85rem;
+}
+
+.sstv-tx__progress-label {
+  font-weight: 600;
+}
+
+.sstv-tx__progress-time {
+  font-family: var(--font-mono);
+  font-variant-numeric: tabular-nums;
+}
+
+.sstv-tx__progress-stop {
+  margin-left: auto;
+}
+
+.sstv-tx__bar {
+  position: relative;
+  height: 10px;
+  margin-top: 6px;
+  overflow: hidden;
+  border-radius: 5px;
+  background: var(--panel-border);
+}
+
+.sstv-tx__bar-fill {
+  height: 100%;
+  width: 0;
+  background: var(--led-green);
+  transition: width 0.25s linear;
+}
+
+.sstv-tx__bar--preparing .sstv-tx__bar-fill {
+  width: 100%;
+  opacity: 0.35;
+  animation: sstv-tx-pulse 1.2s ease-in-out infinite;
+}
+
+@keyframes sstv-tx-pulse {
+  50% {
+    opacity: 0.1;
+  }
+}
+
+/* where the picture ends and the FSK ID / CW ID begin */
+.sstv-tx__bar-mark {
+  position: absolute;
+  top: 0;
+  bottom: 0;
+  width: 2px;
+  background: var(--panel-raised);
+}
+
+.sstv-tx__progress-detail {
+  margin-top: 4px;
+}
