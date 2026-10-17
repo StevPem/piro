@@ -183,6 +183,29 @@ const OLIVIA_MIN_CENTRE_HZ = 400; // same limits as the server (audio/olivia-dsp
 const OLIVIA_MAX_CENTRE_HZ = 2600;
 const OLIVIA_HALF_SPAN_HZ = 109.375; // centre to outer tone, 8/250
 
+// Feld-Hell activity frequencies (signal frequency, USB), the bottom of each
+// range in the Feld Hell Club's list
+// (https://www.sites.google.com/site/feldhellclub/Home/frequencies), 20m
+// being its "preferred" 14.063. 30m is the exception: the club gives
+// 10.137-10.144, whose bottom overlaps FT8 (10.136-10.139), so 10.142 is
+// used. The dial is set below these by the current audio tone (1000 Hz by
+// default) so the signal lands on them.
+const HELL_FREQUENCIES = {
+  '160m': 1843000,
+  '80m': 3578000,
+  '40m': 7080000,
+  '30m': 10142000,
+  '20m': 14063000,
+  '17m': 18098000,
+  '15m': 21063000,
+  '12m': 24924000,
+  '10m': 28063000,
+  '6m': 50286000,
+};
+const HELL_DEFAULT_TONE_HZ = 1000;
+const HELL_MIN_TONE_HZ = 300; // same limits as the server (audio/hell-rx.js)
+const HELL_MAX_TONE_HZ = 2700;
+
 // Standard FT4 calling/dial frequencies — FT4 is a *different* protocol
 // from FT8 (same underlying ft8ts library, but a faster 7.5s slot and its
 // own waveform — see ft8-bridge.js), and per widely-used band-plan
@@ -441,8 +464,11 @@ let jttyUsbSeen = false; // true once the radio has confirmed USB after JTTY was
 let oliviaActive = false;
 let oliviaUsbSeen = false;
 let oliviaLastOffsetHz = 0; // the latest decoded signal's offset from the centre (for "Tune to signal")
-// The frequency box is shared by JTTY (lowest tone) and Olivia (centre); each keeps its own value.
-const ttyFreqByMode = { JTTY: 1450, OLIVIA: OLIVIA_DEFAULT_CENTRE_HZ };
+// The frequency box is shared by JTTY (lowest tone), Olivia (centre) and Feld-Hell (tone); each keeps its own value.
+// Feld-Hell: the fourth, also app-level on USB + DATA MODE. Nothing is decoded: the scope paints the picture.
+let hellActive = false;
+let hellUsbSeen = false;
+const ttyFreqByMode = { JTTY: 1450, OLIVIA: OLIVIA_DEFAULT_CENTRE_HZ, HELL: HELL_DEFAULT_TONE_HZ };
 let ttyTxInFlight = false;
 let ttyShownMode = null; // which TTY mode updateTtyUi() last laid the composer out for
 let ttyLastDefaultText = ''; // the CQ text updateTtyUi() last pre-filled, so a later mode switch only replaces text the operator never touched
@@ -661,6 +687,11 @@ const scopeDisplay = new ScopeDisplay({
       setOliviaCentre(hz);
       return;
     }
+    if (hellActive && !ft8Active) {
+      // Feld-Hell: the click sets the tone the picture is painted from and the next transmission uses.
+      setHellTone(hz);
+      return;
+    }
     currentQsoFreqHz = hz;
     // Also persists as the new session default (see ft8DefaultTxFreqHz's
     // doc comment) — a manual pick should stick around as "where my CQs
@@ -670,12 +701,20 @@ const scopeDisplay = new ScopeDisplay({
   },
 });
 link.addEventListener('scope-line', (event) => {
-  if (ft8Active || jttyActive || oliviaActive) return; // audio-domain FFT spectrum takes over the display; see the 'ft8-spectrum' listener below
+  if (ft8Active || jttyActive || oliviaActive || hellActive) return; // audio-domain FFT spectrum takes over the display; see the 'ft8-spectrum' listener below
   scopeDisplay.pushLine(event.detail);
 });
 link.addEventListener('ft8-spectrum', (event) => {
-  if (!ft8Active && !jttyActive && !oliviaActive) return;
+  if (!ft8Active && !jttyActive && !oliviaActive && !hellActive) return;
+  // The audio spectrum comes from the RX audio, not the radio's scope, so it
+  // works with CIV_SCOPE_ENABLED off: don't leave the "scope not enabled"
+  // notice over it (which would also hide the Feld-Hell picture).
+  scopePlaceholder.hidden = true;
   scopeDisplay.pushAudioSpectrum(event.detail);
+});
+// Feld-Hell: the received picture, drawn in the waterfall area (see ScopeDisplay#pushHellColumns()).
+link.addEventListener('hell-columns', (event) => {
+  if (hellActive) scopeDisplay.pushHellColumns(event.detail);
 });
 
 /** Renders the division tick labels below the scope canvases (50kHz RF grid, or whole-Hz for the FT8 audio spectrum). */
@@ -844,6 +883,10 @@ link.addEventListener('connected', (event) => {
   if (data.oliviaActive) reflectOliviaActiveFromServer(data.oliviaCentreHz);
   else if (oliviaActive) link.request('setOliviaActive', { active: true, centreHz: ttyFreqByMode.OLIVIA }).catch(() => {});
   else if (Number.isFinite(data.oliviaCentreHz)) ttyFreqByMode.OLIVIA = data.oliviaCentreHz;
+  // And Feld-Hell, keeping the tone.
+  if (data.hellActive) reflectHellActiveFromServer(data.hellToneHz);
+  else if (hellActive) link.request('setHellActive', { active: true, toneHz: ttyFreqByMode.HELL }).catch(() => {});
+  else if (Number.isFinite(data.hellToneHz)) ttyFreqByMode.HELL = data.hellToneHz;
 
   pttBtn.disabled = false;
   ttySendBtn.disabled = false;
@@ -1067,6 +1110,11 @@ for (const band of BANDS) {
       tuneOliviaToBand(band.name);
       return;
     }
+    // And in Feld-Hell: the band's Feld-Hell activity frequency.
+    if (hellActive && HELL_FREQUENCIES[band.name] != null) {
+      tuneHellToBand(band.name);
+      return;
+    }
     link
       .request('setFrequency', { value: band.hz })
       .then(() => {
@@ -1148,6 +1196,7 @@ for (const entry of MODE_CHIPS) {
       if (freeDvActive) exitFreeDvMode();
       if (jttyActive) exitJttyMode();
       if (oliviaActive) exitOliviaMode();
+      if (hellActive) exitHellMode();
       // First click enters FT8/FT4 mode (whichever variant was last
       // active, or 'FT8' the first time); a click while already active
       // toggles the protocol instead — see toggleFt8Variant()'s doc
@@ -1164,6 +1213,7 @@ for (const entry of MODE_CHIPS) {
       if (ft8Active) exitFt8Mode();
       if (jttyActive) exitJttyMode();
       if (oliviaActive) exitOliviaMode();
+      if (hellActive) exitHellMode();
       // Unlike FT8, there's no second variant to toggle to any more (the
       // '700E' option was removed — see enterFreeDvMode()'s doc comment),
       // so a click while already active is simply a no-op.
@@ -1176,11 +1226,12 @@ for (const entry of MODE_CHIPS) {
       if (ft8Active) exitFt8Mode();
       if (freeDvActive) exitFreeDvMode();
       // First click selects RTTY; after that the button cycles RTTY ->
-      // JTTY -> Olivia -> RTTY ... until a non-TTY mode is picked (which
-      // resets it to "TTY").
+      // JTTY -> Olivia -> Feld-Hell -> RTTY ... until a non-TTY mode is
+      // picked (which resets it to "TTY").
       const now = ttyMode();
       if (now === 'RTTY') enterJttyMode();
       else if (now === 'JTTY') switchJttyToOlivia();
+      else if (now === 'OLIVIA') switchOliviaToHell();
       else selectRttyMode();
     });
   } else if (entry === 'CW') {
@@ -1195,6 +1246,7 @@ for (const entry of MODE_CHIPS) {
       if (freeDvActive) exitFreeDvMode();
       if (jttyActive) exitJttyMode();
       if (oliviaActive) exitOliviaMode();
+      if (hellActive) exitHellMode();
       // First click enters CW mode (using whichever decoder variant is
       // already selected); a click while CW mode is already active
       // cycles the variant (CW1 -> CW2 -> CW3 -> CW1) instead of
@@ -1226,6 +1278,7 @@ for (const entry of MODE_CHIPS) {
       if (freeDvActive) exitFreeDvMode();
       if (jttyActive) exitJttyMode();
       if (oliviaActive) exitOliviaMode();
+      if (hellActive) exitHellMode();
       link
         .request('setMode', { mode })
         .then(() => updateModeButtons(mode))
@@ -1254,12 +1307,16 @@ function updateModeButtons(mode) {
     if (mode === 'USB') oliviaUsbSeen = true;
     else if (oliviaUsbSeen) leaveOlivia();
   }
+  if (hellActive) {
+    if (mode === 'USB') hellUsbSeen = true;
+    else if (hellUsbSeen) leaveHell();
+  }
   setCwPaddleVisible(mode === 'CW' && !ft8Active && !freeDvActive);
   setRttyTickerVisible(ttyMode() === 'RTTY');
   updateTtyUi();
 }
 
-// --- TTY mode (RTTY / JTTY / Olivia) ---
+// --- TTY mode (RTTY / JTTY / Olivia / Feld-Hell) ---
 
 /**
  * Which TTY mode is currently in effect: 'JTTY' (app-level, on USB + DATA
@@ -1270,6 +1327,7 @@ function updateModeButtons(mode) {
 function ttyMode() {
   if (jttyActive) return 'JTTY';
   if (oliviaActive) return 'OLIVIA';
+  if (hellActive) return 'HELL';
   if (currentMode === 'RTTY' && !ft8Active && !freeDvActive) return 'RTTY';
   return null;
 }
@@ -1279,11 +1337,12 @@ function selectRttyMode() {
   link
     .request('setMode', { mode: 'RTTY' })
     .then(() => {
-      // Leaving JTTY or Olivia turns DATA MODE back off (see leaveJtty() /
-      // leaveOlivia()); done after the mode change is confirmed so the chip
-      // never flickers via "TTY".
+      // Leaving JTTY, Olivia or Feld-Hell turns DATA MODE back off (see
+      // leaveJtty() / leaveOlivia() / leaveHell()); done after the mode
+      // change is confirmed so the chip never flickers via "TTY".
       leaveJtty();
       leaveOlivia();
+      leaveHell();
       updateModeButtons('RTTY');
     })
     .catch((err) => showError(err.message));
@@ -1426,6 +1485,81 @@ function exitOliviaMode() {
   updateTtyUi();
 }
 
+/**
+ * TTY chip click while in Olivia: on to Feld-Hell. Both run on USB with
+ * DATA MODE on, so the radio's mode is left alone; the receivers swap and
+ * the radio moves to the band's Feld-Hell frequency.
+ */
+function switchOliviaToHell() {
+  oliviaActive = false;
+  oliviaUsbSeen = false;
+  link.request('setOliviaActive', { active: false }).catch(() => {});
+  enterHellMode({ radioReady: true });
+}
+
+/**
+ * Enters Feld-Hell: USB + DATA MODE (unless already there, coming from
+ * Olivia), the band's Feld-Hell frequency, the receiver armed at the
+ * current tone, and the scope's waterfall turned into the received picture.
+ */
+function enterHellMode({ radioReady = false } = {}) {
+  hellActive = true;
+  hellUsbSeen = radioReady && currentMode === 'USB';
+  const bandName = currentFreqHz != null ? bandNameForFrequency(currentFreqHz) : null;
+  if (bandName) tuneHellToBand(bandName);
+  if (!radioReady) {
+    link
+      .request('setMode', { mode: 'USB' })
+      .then(() => updateModeButtons('USB'))
+      .catch((err) => showError(`Couldn't set USB for Feld-Hell: ${err.message}`));
+    link
+      .request('setDataMode', { on: true })
+      .catch((err) => showError(`Couldn't enable DATA MODE for Feld-Hell: ${err.message}`));
+  }
+  link
+    .request('setHellActive', { active: true, toneHz: ttyFreqByMode.HELL })
+    .catch((err) => showError(`Couldn't start Feld-Hell receive: ${err.message}`));
+  setRttyTickerVisible(false);
+  updateTtyUi();
+}
+
+/** Tunes so a signal on the band's Feld-Hell frequency comes out at the current audio tone. */
+function tuneHellToBand(bandName) {
+  const signalHz = HELL_FREQUENCIES[bandName];
+  if (signalHz == null) return;
+  const hz = signalHz - ttyFreqByMode.HELL;
+  link
+    .request('setFrequency', { value: hz })
+    .then(() => updateFrequencyDisplay(hz))
+    .catch((err) => showError(`Couldn't tune to ${bandName} Feld-Hell frequency: ${err.message}`));
+}
+
+/** Ends Feld-Hell locally and restores DATA MODE. Returns false if Feld-Hell wasn't active. */
+function leaveHell() {
+  if (!hellActive) return false;
+  hellActive = false;
+  hellUsbSeen = false;
+  link.request('setDataMode', { on: false }).catch((err) => showError(`Couldn't disable DATA MODE: ${err.message}`));
+  link.request('setHellActive', { active: false }).catch(() => {});
+  return true;
+}
+
+/** Feld-Hell was already selected when this page connected: reflect it without re-sending radio changes. */
+function reflectHellActiveFromServer(toneHz) {
+  if (Number.isFinite(toneHz)) ttyFreqByMode.HELL = toneHz;
+  if (hellActive) return;
+  hellActive = true;
+  hellUsbSeen = false;
+  setRttyTickerVisible(false);
+  updateTtyUi();
+}
+
+/** Leaves Feld-Hell because the operator picked some other mode. */
+function exitHellMode() {
+  if (!leaveHell()) return;
+  updateTtyUi();
+}
+
 const PTT_HINT_VOICE = 'Hold to transmit (or hold Space). First use will ask for microphone access.';
 const PTT_HINT_CW =
   'Hold Dot/Dash to key CW (iambic — hold both to alternate). CI-V round-trip latency may make timing less precise than a hardware keyer.';
@@ -1434,11 +1568,19 @@ const TTY_HINT = {
   JTTY: 'Type your text and press Send (or Enter). Received JTTY appears above; tap a line to transmit on its frequency. The radio is on USB with DATA MODE on.',
   OLIVIA:
     'Type your text and press Send (or Enter). Olivia 8/250 sends about 1.5 characters a second. Received text appears above; click the spectrum to set the centre frequency (the receiver searches 125 Hz either side). The radio is on USB with DATA MODE on.',
+  HELL:
+    'Type your text and press Send (or Enter). Feld-Hell sends about 2.5 characters a second, drawn rather than coded. Received signals are painted in the scope as they arrive; read them there. Click the spectrum on a signal to set the tone. The radio is on USB with DATA MODE on.',
 };
-const TTY_PLACEHOLDER = { RTTY: 'CQ CQ DE VK2IO K', JTTY: 'CQ VK2IO CQ', OLIVIA: 'CQ CQ CQ DE VK2IO VK2IO K' };
-const TTY_MAX_CHARS = { RTTY: 200, JTTY: 80, OLIVIA: 300 }; // Olivia: matches OLIVIA_MAX_CHARS in audio/tty-bridge.js
-const TTY_CHIP_LABEL = { RTTY: 'RTTY', JTTY: 'JTTY', OLIVIA: 'Olivia' };
-const TTY_FREQ_LABEL = { JTTY: 'TX audio', OLIVIA: 'Centre' };
+const TTY_PLACEHOLDER = { RTTY: 'CQ CQ DE VK2IO K', JTTY: 'CQ VK2IO CQ', OLIVIA: 'CQ CQ CQ DE VK2IO VK2IO K', HELL: 'CQ CQ DE VK2IO VK2IO K' };
+const TTY_MAX_CHARS = { RTTY: 200, JTTY: 80, OLIVIA: 300, HELL: 400 }; // Olivia/Feld-Hell: match OLIVIA_MAX_CHARS/HELL_MAX_CHARS in audio/tty-bridge.js
+const TTY_CHIP_LABEL = { RTTY: 'RTTY', JTTY: 'JTTY', OLIVIA: 'Olivia', HELL: 'Feld-Hell' };
+const TTY_FREQ_LABEL = { JTTY: 'TX audio', OLIVIA: 'Centre', HELL: 'Tone' };
+const TTY_FREQ_RANGE = { JTTY: [200, 2800], OLIVIA: [OLIVIA_MIN_CENTRE_HZ, OLIVIA_MAX_CENTRE_HZ], HELL: [HELL_MIN_TONE_HZ, HELL_MAX_TONE_HZ] };
+const TTY_FREQ_ARIA = {
+  JTTY: 'JTTY transmit audio frequency in hertz',
+  OLIVIA: 'Olivia centre audio frequency in hertz',
+  HELL: 'Feld-Hell tone audio frequency in hertz',
+};
 
 /** The CQ text the composer starts a TTY session with (empty if STATION_CALLSIGN isn't configured). */
 function ttyDefaultText(mode) {
@@ -1462,24 +1604,30 @@ function updateTtyUi() {
   ttyModeBtn.textContent = mode ? TTY_CHIP_LABEL[mode] : 'TTY';
   ttyModeBtn.classList.toggle('chip--active', mode !== null);
   ttyComposerEl.hidden = mode === null;
-  const freqMode = mode === 'JTTY' || mode === 'OLIVIA';
+  const freqMode = mode === 'JTTY' || mode === 'OLIVIA' || mode === 'HELL';
   ttyFreqLabelEl.hidden = !freqMode;
   jttyRxEl.hidden = mode !== 'JTTY';
   oliviaRxEl.hidden = mode !== 'OLIVIA';
-  // JTTY and Olivia show the 0-3 kHz audio spectrum (like FT8/FT4), so the RF span buttons don't apply.
+  // JTTY, Olivia and Feld-Hell show the 0-3 kHz audio spectrum (like FT8/FT4), so the RF span buttons don't apply.
   scopeSpansEl.hidden = ft8Active || freqMode;
+  // Feld-Hell turns the waterfall into the received picture, scrolling right to left.
+  scopeDisplay.setHellMode(mode === 'HELL');
+  // Back on the RF scope: show its "not enabled" notice again if it applies
+  // (it only has text once the server has said the scope is off).
+  if (!ft8Active && !freqMode && scopePlaceholder.textContent) scopePlaceholder.hidden = scopeEnabled;
   if (freqMode) {
     ttyFreqLabelEl.firstChild.textContent = `${TTY_FREQ_LABEL[mode]} `;
-    ttyFreqEl.min = mode === 'OLIVIA' ? String(OLIVIA_MIN_CENTRE_HZ) : '200';
-    ttyFreqEl.max = mode === 'OLIVIA' ? String(OLIVIA_MAX_CENTRE_HZ) : '2800';
-    ttyFreqEl.setAttribute('aria-label', mode === 'OLIVIA' ? 'Olivia centre audio frequency in hertz' : 'JTTY transmit audio frequency in hertz');
+    ttyFreqEl.min = String(TTY_FREQ_RANGE[mode][0]);
+    ttyFreqEl.max = String(TTY_FREQ_RANGE[mode][1]);
+    ttyFreqEl.setAttribute('aria-label', TTY_FREQ_ARIA[mode]);
     if (mode !== ttyShownMode) ttyFreqEl.value = String(ttyFreqByMode[mode]);
     scopeDisplay.setQsoFreq(Number(ttyFreqEl.value) || null);
   } else if (!ft8Active) scopeDisplay.setQsoFreq(null);
 
   // RTTY and JTTY only carry capitals, so the box shows text that way; Olivia
-  // sends exactly what is typed, so it must show the real case.
-  ttyInputEl.classList.toggle('tty-composer__input--as-typed', mode === 'OLIVIA');
+  // and Feld-Hell send exactly what is typed (fldigi's Feld-Hell font draws
+  // most, not all, lower-case letters as capitals), so it must show the real case.
+  ttyInputEl.classList.toggle('tty-composer__input--as-typed', mode === 'OLIVIA' || mode === 'HELL');
   if (mode !== null) {
     pttBtn.hidden = true;
     pttHintEl.textContent = TTY_HINT[mode];
@@ -1529,7 +1677,21 @@ function setOliviaCentre(hz, { quiet = false } = {}) {
   }
 }
 
+/** Sets the Feld-Hell tone: the box, the spectrum marker, and the receiver (which retunes, keeping the picture). */
+function setHellTone(hz, { quiet = false } = {}) {
+  const tone = Math.max(HELL_MIN_TONE_HZ, Math.min(HELL_MAX_TONE_HZ, Math.round(hz)));
+  ttyFreqByMode.HELL = tone;
+  ttyFreqEl.value = String(tone);
+  scopeDisplay.setQsoFreq(tone);
+  if (hellActive) link.request('setHellActive', { active: true, toneHz: tone }).catch((err) => showError(`Couldn't retune Feld-Hell: ${err.message}`));
+  if (!quiet) {
+    ttyStatusEl.hidden = false;
+    ttyStatusEl.textContent = `Feld-Hell tone set to ${tone} Hz (receiving about ${tone - 150}–${tone + 150} Hz).`;
+  }
+}
+
 let oliviaRetuneTimer = null;
+let hellRetuneTimer = null;
 ttyFreqEl.addEventListener('input', () => {
   const mode = ttyMode();
   const hz = Number(ttyFreqEl.value);
@@ -1542,6 +1704,12 @@ ttyFreqEl.addEventListener('input', () => {
     clearTimeout(oliviaRetuneTimer);
     if (Number.isFinite(hz) && hz >= OLIVIA_MIN_CENTRE_HZ && hz <= OLIVIA_MAX_CENTRE_HZ) {
       oliviaRetuneTimer = setTimeout(() => setOliviaCentre(hz, { quiet: true }), 600);
+    }
+  } else if (mode === 'HELL') {
+    scopeDisplay.setQsoFreq(hz || null);
+    clearTimeout(hellRetuneTimer);
+    if (Number.isFinite(hz) && hz >= HELL_MIN_TONE_HZ && hz <= HELL_MAX_TONE_HZ) {
+      hellRetuneTimer = setTimeout(() => setHellTone(hz, { quiet: true }), 600);
     }
   }
 });
@@ -1557,7 +1725,7 @@ function sendTty() {
   const text = ttyInputEl.value.trim();
   if (!text) return;
   const request = { mode, text };
-  if (mode === 'JTTY' || mode === 'OLIVIA') {
+  if (mode === 'JTTY' || mode === 'OLIVIA' || mode === 'HELL') {
     const freqHz = Number(ttyFreqEl.value);
     if (Number.isFinite(freqHz) && freqHz > 0) request.freqHz = freqHz;
   }
@@ -1674,6 +1842,7 @@ link.addEventListener('tty-tx-status', (event) => {
       if (durationSec) detail.push(`${durationSec.toFixed(1)} s`);
       if (mode === 'JTTY' && freqHz) detail.push(`${freqHz}–${Math.round(freqHz + 93.75)} Hz`);
       if (mode === 'OLIVIA' && freqHz) detail.push(`centre ${freqHz} Hz`);
+      if (mode === 'HELL' && freqHz) detail.push(`tone ${freqHz} Hz`);
       if (mode === 'OLIVIA') appendOliviaText(`${message || ''}\n`, { own: true });
       ttyStatusEl.textContent = `Sending ${TTY_CHIP_LABEL[mode] ?? mode}: "${shown}"${detail.length ? ` (${detail.join(', ')})` : ''}…${note ? ` ${note}.` : ''}`;
       break;

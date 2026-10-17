@@ -32,8 +32,10 @@ let scopeDivisions;
 let snapToNearestKHz;
 let snapTo50Hz;
 let RTTY_SHIFT_HZ;
+let hellColumnPixels;
+let hellColumnWidth;
 try {
-  ({ amplitudeToColor, tuningMarkerX, frequencyAtFraction, scopeDivisions, snapToNearestKHz, snapTo50Hz, RTTY_SHIFT_HZ } =
+  ({ amplitudeToColor, tuningMarkerX, frequencyAtFraction, scopeDivisions, snapToNearestKHz, snapTo50Hz, RTTY_SHIFT_HZ, hellColumnPixels, hellColumnWidth } =
     await import(`file://${tmpPath}`));
 } finally {
   fs.rmSync(tmpPath, { force: true });
@@ -256,6 +258,32 @@ test('snapTo50Hz rounds an exact half-step up (matches Math.round\'s convention)
 test('snapTo50Hz handles 0Hz (the bottom of the FT8 audio passband)', () => {
   assert.strictEqual(snapTo50Hz(0), 0);
   assert.strictEqual(snapTo50Hz(24), 0);
+});
+
+test('hellColumnPixels: twin display, previous column below the current one, bottom pixel first', () => {
+  const prev = Uint8Array.of(1, 2, 3);
+  const cur = Uint8Array.of(4, 5, 6);
+  assert.deepStrictEqual([...hellColumnPixels(prev, cur, 6)], [6, 5, 4, 3, 2, 1]);
+  // scaled to the canvas height: each source pixel covers height / (2 * rows) screen rows
+  assert.deepStrictEqual([...hellColumnPixels(prev, cur, 12)], [6, 6, 5, 5, 4, 4, 3, 3, 2, 2, 1, 1]);
+  // the very first column has no previous one: blank below
+  assert.deepStrictEqual([...hellColumnPixels(null, cur, 6)], [6, 5, 4, 0, 0, 0]);
+});
+
+test('hellColumnPixels: an uneven height still covers every pixel of both columns', () => {
+  const prev = Uint8Array.from({ length: 20 }, (_, i) => i + 1);
+  const cur = Uint8Array.from({ length: 20 }, (_, i) => 101 + i);
+  const px = hellColumnPixels(prev, cur, 130);
+  assert.strictEqual(px.length, 130);
+  assert.strictEqual(px[0], 120);
+  assert.strictEqual(px[129], 1);
+  assert.deepStrictEqual([...new Set(px)].length, 40);
+});
+
+test('hellColumnWidth: about a 1:14 column for the scope\'s 130 px waterfall, never 0', () => {
+  assert.strictEqual(hellColumnWidth(130), 5);
+  assert.strictEqual(hellColumnWidth(260), 9);
+  assert.strictEqual(hellColumnWidth(10), 1);
 });
 
 if (failures > 0) {
