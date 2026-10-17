@@ -77,6 +77,11 @@ class Civ extends EventEmitter {
   await page.locator('#modes .chip', { hasText: /^TTY$/ }).click();
   await page.waitForFunction(() => [...document.querySelectorAll('#modes .chip')].some((c) => c.textContent === 'RTTY'));
   check(civ.mode === 'RTTY', 'first click puts the radio in RTTY mode');
+  await sleep(150);
+  {
+    const i = civ.log.findIndex((e) => e[0] === 'setFrequency' && e[1] === 14091000);
+    check(i > civ.log.findIndex((e) => e[0] === 'setMode' && e[1] === 'RTTY') && i >= 0, 'selecting RTTY on 20m tunes to 14.091 MHz (middle of the WIA digital segment), after the mode change');
+  }
   check((await ttyLabel()).includes('RTTY'), 'button relabelled "RTTY"');
   check(await vis('#tty-composer') && !(await vis('#ptt-btn')), 'RTTY: text entry + Send replace the PTT button');
   check((await page.locator('#tty-send-btn').textContent()) === 'Send', 'Send button present');
@@ -267,6 +272,9 @@ class Civ extends EventEmitter {
   await page.waitForFunction(() => [...document.querySelectorAll('#modes .chip')].some((c) => c.textContent === 'RTTY'));
   await sleep(150);
   check(civ.mode === 'RTTY' && civ.dataMode === false, 'fifth click: back to RTTY, DATA MODE off');
+  await page.locator('#bands .chip', { hasText: /^40m$/ }).click();
+  await sleep(200);
+  check(civ.freq === 7050000 && civ.mode === 'RTTY', 'in RTTY, the 40m band chip goes to 7.050 MHz (middle of the WIA digital segment) and stays in RTTY');
   check(server.state.jttyActive === false && !jttyRx.attached && server.state.oliviaActive === false && !oliviaRx.attached && server.state.hellActive === false && !hellRx.attached, 'leaving Feld-Hell disarms the receiver');
   {
     const lit = await page.locator('#scope-waterfall').evaluate((c) => {

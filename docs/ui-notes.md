@@ -3266,6 +3266,23 @@ model for how to approach that.
   `.tty-composer__freq[hidden] { display: none; }` override (see "CW iambic
   paddle" above for the pattern).
 
+### RTTY band frequencies
+
+- Selecting RTTY from the TTY button (`selectRttyMode()`), and band chips
+  while `ttyMode()` is `'RTTY'`, tune to `RTTY_FREQUENCIES`: the centre of
+  each band's digital-modes segment in the WIA band plan (TAC "HF
+  Digimodes" paper, 2017): 160m 1.800-1.810 -> 1.805, 80m 3.620-3.640 ->
+  3.630, 40m 7.040-7.060 -> 7.050, 30m 10.130-10.140 -> 10.135, 20m
+  14.070-14.112 -> 14.091, 17m 18.100-18.110 -> 18.105, 15m 21.070-21.125
+  -> 21.0975, 12m 24.920-24.930 -> 24.925, 10m 28.050-28.150 -> 28.100
+  (MHz). 6m has no segment, so its chip is unchanged.
+- The frequency is set after the `setMode RTTY` reply, so the radio shows it
+  as the mark frequency (the IC-7300's RTTY-mode display convention).
+  Choosing RTTY on the radio's own front panel does not retune.
+- The paper also proposes moving 80m to 3.570-3.600 and widening several
+  segments; the table needs updating if the WIA adopts that.
+- Service-worker cache bumped to v74.
+
 ### Olivia 8/250
 
 - `ttyMode()` returns `'OLIVIA'` while `oliviaActive`; the chip reads

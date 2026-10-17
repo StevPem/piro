@@ -12,7 +12,7 @@ Hamlib, no separate audio server and no extra apps.
 Written by VK3TR. Licensed AGPL-3.0-only (see
 [Licence](#licence)).
 
-**Current build: v73.** This is the version the app shows next to its title.
+**Current build: v74.** This is the version the app shows next to its title.
 It is the `CACHE_NAME` number in `src/client/sw.js`, which goes up with every
 change to the web app.
 
@@ -932,6 +932,9 @@ Unchecked by default.
 The mode row has one **TTY** button where the RTTY button used to be:
 
 1. The first click selects the radio's RTTY mode, and the button now reads **RTTY**.
+   Selecting RTTY also tunes to the middle of the band's digital-modes segment
+   in the WIA band plan (e.g. 14.091 MHz on 20 m; see the table below), and band
+   buttons then do the same.
 2. The next click switches to **JTTY**, and the button reads **JTTY**.
    Entering JTTY also tunes to the standard JTTY dial frequency for the current
    band (e.g. 14.090 MHz on 20 m; the list is the WSJT-X 3.3 beta's and is marked
@@ -954,6 +957,31 @@ Send turns into **Stop**, which cuts the transmission short and releases PTT.
 The Space bar does not key the microphone in these modes. The text box starts
 with a CQ built from `STATION_CALLSIGN` (if set), and keeps whatever you
 type when you switch between the modes.
+
+**RTTY band frequencies.** RTTY has no calling frequencies, so PiRO starts
+you in the middle of each band's narrowband digital segment from the WIA's
+band plan (the WIA Technical Advisory Committee's
+[HF digimodes paper](https://www.wia.org.au/members/bandplans/data/documents/TAC%20Band%20Plans%20-%20HF%20Digimodes%20170103.pdf)),
+to tune around from. The radio's RTTY mode displays the mark frequency.
+
+| Band | WIA digital segment (MHz) | PiRO tunes to (MHz) |
+|---|---|---|
+| 160 m | 1.800–1.810 | 1.805 |
+| 80 m | 3.620–3.640 | 3.630 |
+| 40 m | 7.040–7.060 | 7.050 |
+| 30 m | 10.130–10.140 | 10.135 |
+| 20 m | 14.070–14.112 | 14.091 |
+| 17 m | 18.100–18.110 | 18.105 |
+| 15 m | 21.070–21.125 | 21.0975 |
+| 12 m | 24.920–24.930 | 24.925 |
+| 10 m | 28.050–28.150 | 28.100 |
+
+6 m has no segment in the paper, so its band button works as usual. The same
+paper proposes moving 80 m to 3.570–3.600 MHz (where most of the world's
+80 m RTTY is) and widening the 30, 17, 15, 12 and 10 m segments; the table is
+`RTTY_FREQUENCIES` in `src/client/app.js` if the plan changes. Busy RTTY is
+often elsewhere in the segment (on 20 m, 14.080–14.099), and keep clear of
+the beacons at 14.100, 18.110, 21.150 and 24.930 MHz.
 
 **RTTY** sends your text as audio-frequency-shift keying: 45.45 baud, 170 Hz
 shift, 2125 Hz mark and 2295 Hz space, using the same tones and the same
