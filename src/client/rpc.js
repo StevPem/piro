@@ -14,6 +14,7 @@ const BINARY_TYPE = {
   AUDIO: 0x01,
   SCOPE_LINE: 0x02,
   FT8_SPECTRUM: 0x03,
+  HELL_COLUMNS: 0x04,
 };
 
 // Mirrors src/civ/commands.js SCOPE_MODE.
@@ -56,6 +57,21 @@ function decodeFt8Spectrum(arrayBuffer) {
   const binHz = view.getFloat32(1, true);
   const bins = new Uint8Array(arrayBuffer, 5);
   return { binHz, bins };
+}
+
+/**
+ * Mirrors src/server/hell-decoder-bridge.js's encodeHellColumnsFrame():
+ * tag, rows, count, tone (uint16 LE), then `count` columns of `rows` ink
+ * bytes, each column bottom pixel first.
+ */
+function decodeHellColumns(arrayBuffer) {
+  const view = new DataView(arrayBuffer);
+  const rows = view.getUint8(1);
+  const count = view.getUint8(2);
+  const toneHz = view.getUint16(3, true);
+  const columns = [];
+  for (let i = 0; i < count; i++) columns.push(new Uint8Array(arrayBuffer, 5 + i * rows, rows));
+  return { rows, toneHz, columns };
 }
 
 export class RigLink extends EventTarget {
@@ -154,6 +170,14 @@ export class RigLink extends EventTarget {
     if (tag === BINARY_TYPE.FT8_SPECTRUM) {
       try {
         this._dispatch('ft8-spectrum', decodeFt8Spectrum(arrayBuffer));
+      } catch {
+        // malformed frame — drop it, nothing useful to recover
+      }
+      return;
+    }
+    if (tag === BINARY_TYPE.HELL_COLUMNS) {
+      try {
+        this._dispatch('hell-columns', decodeHellColumns(arrayBuffer));
       } catch {
         // malformed frame — drop it, nothing useful to recover
       }

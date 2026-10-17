@@ -132,6 +132,32 @@ export function snapTo50Hz(hz) {
  * than on whatever the sweep happens to start at. Pure function,
  * unit-tested directly — see test/scope-display.test.mjs.
  */
+/**
+ * One on-screen column of the Feld-Hell picture, `height` pixels tall, top
+ * first: as fldigi draws it (its `col_data` holds the previous received
+ * column below the current one). Feld-Hell is not synchronised, so a line of text drifts up or
+ * down the column; stacked like this, a whole copy of it is always on
+ * screen. `prev` and `cur` are ink values (0-255), bottom pixel first, as
+ * they arrive in HELL_COLUMNS frames.
+ * @returns {Uint8Array} ink for each screen row, top row first
+ */
+export function hellColumnPixels(prev, cur, height) {
+  const rows = cur.length;
+  const out = new Uint8Array(height);
+  for (let y = 0; y < height; y++) {
+    const k = Math.min(2 * rows - 1, Math.floor(((height - 1 - y) * 2 * rows) / height)); // 0 = bottom
+    out[y] = k < rows ? (prev ? prev[k] : 0) : cur[k - rows];
+  }
+  return out;
+}
+
+/** Screen width (device pixels) of one Feld-Hell column, so letters keep roughly their shape. */
+export function hellColumnWidth(height) {
+  // A column is half the height (twin display) and seven font dots tall;
+  // a dot this wide would be square, half as wide fits more text on screen.
+  return Math.max(1, Math.round(height / 2 / 14));
+}
+
 export function scopeDivisions(lo, hi, stepHz = 50000) {
   if (lo == null || hi == null || hi <= lo || stepHz <= 0) return [];
   const divisions = [];
@@ -187,6 +213,8 @@ export class ScopeDisplay {
     this._qsoFreqHz = null; // set via setQsoFreq() — see that method's doc comment
     this._rttyMode = false; // set via setRttyMode() — see that method's doc comment
     this._cwMode = false; // set via setCwMode() — see that method's doc comment
+    this._hellMode = false; // set via setHellMode() — see that method's doc comment
+    this._hellPrev = null; // the last Feld-Hell column drawn (the twin display's lower half)
     this._resizeForDpr();
 
     // A single, exact source of truth for "what frequency is under this
@@ -202,8 +230,15 @@ export class ScopeDisplay {
     };
 
     const handleClick = (canvas) => (event) => {
+      // In Feld-Hell mode the waterfall area is the received picture: its x axis is time, not frequency.
+      if (this._hellMode && canvas === this.waterfallCanvas) return;
       const hz = freqForEvent(canvas, event);
       if (hz == null) return;
+      if (this._audioMode && this._hellMode) {
+        // Feld-Hell: the receive filter is only +/-150 Hz wide, so tune to the nearest 10 Hz rather than 50.
+        this.onAudioFrequencyClick(Math.round(hz / 10) * 10);
+        return;
+      }
       if (this._audioMode) {
         // Clicking the FT8 audio spectrum sets that (50Hz-snapped) audio
         // offset as the TX frequency for FT8 transmissions — the
@@ -248,12 +283,14 @@ export class ScopeDisplay {
     document.body.appendChild(this._hoverTipEl);
 
     const handleMove = (canvas) => (event) => {
-      const hz = freqForEvent(canvas, event);
+      const hz = this._hellMode && canvas === this.waterfallCanvas ? null : freqForEvent(canvas, event);
       if (hz == null) {
         this._hideHoverTip();
         return;
       }
-      if (this._audioMode) {
+      if (this._audioMode && this._hellMode) {
+        this._showHoverTip(Math.round(hz / 10) * 10, event.clientX, event.clientY, true);
+      } else if (this._audioMode) {
         this._showHoverTip(snapTo50Hz(hz), event.clientX, event.clientY, true);
       } else if (this._rttyMode || this._cwMode) {
         // Preview the exact (unsnapped) frequency a click would select —
@@ -341,6 +378,64 @@ export class ScopeDisplay {
     this._cwMode = active;
   }
 
+  /**
+   * Feld-Hell mode: the trace keeps showing the audio spectrum (for finding
+   * a signal and clicking to set the receive tone), but the waterfall area
+   * becomes the received picture, scrolling right to left as columns
+   * arrive (see pushHellColumns()). Leaving the mode clears the picture so
+   * the ordinary waterfall starts clean.
+   */
+  setHellMode(active) {
+    if (active === this._hellMode) return;
+    this._hellMode = active;
+    this._hellPrev = null;
+    this._clearWaterfall();
+  }
+
+  /**
+   * Appends received Feld-Hell columns (a HELL_COLUMNS frame, see rpc.js)
+   * at the right edge of the waterfall canvas, scrolling the picture left.
+   * Ignored outside Feld-Hell mode.
+   * @param {{columns: Uint8Array[]}} frame
+   */
+  pushHellColumns({ columns }) {
+    if (!this._hellMode || !columns || columns.length === 0) return;
+    this._resizeForDpr();
+    const ctx = this._waterfallCtx;
+    const w = this.waterfallCanvas.width;
+    const h = this.waterfallCanvas.height;
+    const colW = hellColumnWidth(h);
+    const shift = Math.min(w, colW * columns.length);
+    if (shift < w) ctx.drawImage(this.waterfallCanvas, shift, 0, w - shift, h, 0, 0, w - shift, h);
+    const img = ctx.createImageData(shift, h);
+    columns.forEach((col, i) => {
+      const ink = hellColumnPixels(this._hellPrev, col, h);
+      this._hellPrev = col;
+      const x0 = shift - colW * (columns.length - i);
+      for (let y = 0; y < h; y++) {
+        const v = ink[y];
+        // Pale green ink on the scope's dark background.
+        const r = Math.round(v * 0.86);
+        const g = v;
+        const b = Math.round(v * 0.78);
+        for (let x = Math.max(0, x0); x < x0 + colW; x++) {
+          const o = (y * shift + x) * 4;
+          img.data[o] = r;
+          img.data[o + 1] = g;
+          img.data[o + 2] = b;
+          img.data[o + 3] = 255;
+        }
+      }
+    });
+    ctx.putImageData(img, w - shift, 0);
+  }
+
+  _clearWaterfall() {
+    const ctx = this._waterfallCtx;
+    ctx.fillStyle = '#000';
+    ctx.fillRect(0, 0, this.waterfallCanvas.width, this.waterfallCanvas.height);
+  }
+
   _resizeForDpr() {
     const dpr = window.devicePixelRatio || 1;
     for (const canvas of [this.traceCanvas, this.waterfallCanvas]) {
@@ -418,7 +513,8 @@ export class ScopeDisplay {
 
     this._drawTrace(bins, lo, hi, divisions);
     this._drawQsoMarker(lo, hi);
-    this._scrollWaterfall(bins);
+    // In Feld-Hell mode the waterfall canvas holds the received picture instead (see pushHellColumns()).
+    if (!this._hellMode) this._scrollWaterfall(bins);
   }
 
   _drawTrace(points, lo, hi, divisions) {
