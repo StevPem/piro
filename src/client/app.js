@@ -972,8 +972,17 @@ link.addEventListener('close', () => {
   stopFunctionPolling();
 });
 
-link.addEventListener('frequency', (event) => updateFrequencyDisplay(event.detail.value));
-link.addEventListener('mode', (event) => updateModeButtons(event.detail.value.mode));
+// While an RTTY transmission is going out the server briefly puts the radio
+// on LSB/USB + DATA MODE with the dial offset (AFSK; see audio/tty-bridge.js)
+// and then back. Those passing mode and frequency changes are not shown, so
+// the TTY panel stays put; the real state is read back when it ends.
+let rttyAfskInFlight = false;
+link.addEventListener('frequency', (event) => {
+  if (!rttyAfskInFlight) updateFrequencyDisplay(event.detail.value);
+});
+link.addEventListener('mode', (event) => {
+  if (!rttyAfskInFlight) updateModeButtons(event.detail.value.mode);
+});
 link.addEventListener('ptt', (event) => updatePttVisual(event.detail.value));
 // Fail-safe transmission cutoff (server-enforced — see docs/civ-notes.md).
 // The 'ptt' event above already updates the button back to its released
@@ -1873,7 +1882,14 @@ oliviaTuneBtn.addEventListener('click', () => {
 });
 
 link.addEventListener('tty-tx-status', (event) => {
-  const { status, mode, message, nframes, durationSec, error, note, freqHz } = event.detail || {};
+  const { status, mode, message, nframes, durationSec, error, note, freqHz, afsk } = event.detail || {};
+  const wasAfsk = rttyAfskInFlight;
+  rttyAfskInFlight = status === 'sending' && mode === 'RTTY' && afsk?.markRfHz != null;
+  if (wasAfsk && !rttyAfskInFlight) {
+    // Resynchronise with the radio after the AFSK detour.
+    link.request('getMode').then((d) => updateModeButtons(d.value.mode)).catch(() => {});
+    link.request('getFrequency').then((d) => updateFrequencyDisplay(d.value)).catch(() => {});
+  }
   ttyTxInFlight = status === 'sending';
   ttySendBtn.textContent = ttyTxInFlight ? 'Stop' : 'Send';
   ttySendBtn.classList.toggle('ptt--active', ttyTxInFlight);
@@ -1887,6 +1903,7 @@ link.addEventListener('tty-tx-status', (event) => {
       if (mode === 'JTTY' && freqHz) detail.push(`${freqHz}–${Math.round(freqHz + 93.75)} Hz`);
       if (mode === 'OLIVIA' && freqHz) detail.push(`centre ${freqHz} Hz`);
       if (mode === 'HELL' && freqHz) detail.push(`tone ${freqHz} Hz`);
+      if (mode === 'RTTY' && afsk) detail.push(`AFSK on ${afsk.sideband}-D, mark ${afsk.markHz} Hz / space ${afsk.spaceHz} Hz`);
       if (mode === 'OLIVIA') appendOliviaText(`${message || ''}\n`, { own: true });
       ttyStatusEl.textContent = `Sending ${TTY_CHIP_LABEL[mode] ?? mode}: "${shown}"${detail.length ? ` (${detail.join(', ')})` : ''}…${note ? ` ${note}.` : ''}`;
       break;

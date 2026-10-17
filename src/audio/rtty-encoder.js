@@ -19,8 +19,9 @@ const { BAUDOT_TABLE, FIGS_CODE, LTRS_CODE, DEFAULT_MARK_HZ, DEFAULT_SPACE_HZ, D
  *
  * Everything this module produces is audio. It does not key the radio's
  * hardware FSK input: the rig has to accept the audio on its modulation
- * input (for example USB/LSB with DATA MODE on); see README.md,
- * "RTTY and JTTY transmit".
+ * input. tty-bridge.js switches the radio to LSB or USB with DATA MODE on for
+ * each transmission and chooses markHz/spaceHz so mark is the higher RF
+ * frequency on either sideband (see rttyAfskPlan() there).
  */
 
 const MAX_CHARS = 500;

@@ -3266,6 +3266,29 @@ model for how to approach that.
   `.tty-composer__freq[hidden] { display: none; }` override (see "CW iambic
   paddle" above for the pattern).
 
+### RTTY transmit (AFSK via LSB-D / USB-D)
+
+- Real bug: the IC-7300's RTTY mode transmits FSK from its keying line and
+  ignores USB audio, so Send in RTTY keyed PTT and sent only a steady mark
+  carrier; PiRO's correct 2125/2295 Hz audio never went out.
+- Now `TtyBridge` (`rttyAfskPlan()`, `_enterRttyAfsk()`, `_leaveRttyAfsk()`)
+  reads the RTTY-mode frequency (the mark) and filter, switches to LSB-D
+  below 10 MHz or USB-D from 10 MHz up (FIL1), offsets the dial so the mark
+  lands on that frequency, keys PTT, plays the audio, then restores
+  DATA MODE off, RTTY (or RTTY-R) with the original filter, and the mark
+  frequency, also on Stop or a CI-V error.
+- Mark is always the higher RF frequency: LSB uses mark 2125 / space 2295
+  audio with the dial at mark + 2125; USB uses mark 2295 / space 2125 with
+  the dial at mark - 2295. The Reverse tick-box inverts both; RTTY-R stays
+  reversed.
+- The `sending` status carries `afsk: {sideband, markHz, spaceHz, markRfHz,
+  dialHz}`. While it is in flight the client ignores `mode` and `frequency`
+  events (`rttyAfskInFlight`) so the TTY panel stays in RTTY, then re-reads
+  mode and frequency when the transmission ends.
+- Covered by `test/tty-bridge.test.js` (plans, CI-V order, tones, decode on
+  USB, Stop, CI-V failure) and `test/manual-tty-ui.js`. Not tested on air.
+  Service-worker cache bumped to v75.
+
 ### RTTY band frequencies
 
 - Selecting RTTY from the TTY button (`selectRttyMode()`), and band chips
