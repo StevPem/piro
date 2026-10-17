@@ -214,6 +214,7 @@ export class ScopeDisplay {
     this._rttyMode = false; // set via setRttyMode() — see that method's doc comment
     this._cwMode = false; // set via setCwMode() — see that method's doc comment
     this._hellMode = false; // set via setHellMode() — see that method's doc comment
+    this._guideFreqs = []; // set via setGuideFreqs()
     this._hellPrev = null; // the last Feld-Hell column drawn (the twin display's lower half)
     this._resizeForDpr();
 
@@ -379,6 +380,35 @@ export class ScopeDisplay {
   }
 
   /**
+   * Faint dotted lines at fixed audio frequencies on the audio spectrum
+   * (SSTV: its 1200 Hz sync, 1500 Hz black and 2300 Hz white tones), so a
+   * signal can be tuned onto them by eye. Pass [] to clear.
+   */
+  setGuideFreqs(freqs) {
+    this._guideFreqs = Array.isArray(freqs) ? freqs.slice() : [];
+  }
+
+  _drawGuides(lo, hi) {
+    if (!this._guideFreqs.length) return;
+    const ctx = this._traceCtx;
+    const w = this.traceCanvas.width;
+    const h = this.traceCanvas.height;
+    ctx.save();
+    ctx.strokeStyle = '#8a8f98';
+    ctx.setLineDash([2, 4]);
+    ctx.lineWidth = Math.max(1, Math.round(w / 600));
+    for (const f of this._guideFreqs) {
+      const x = tuningMarkerX(f, lo, hi, w);
+      if (x == null) continue;
+      ctx.beginPath();
+      ctx.moveTo(x, 0);
+      ctx.lineTo(x, h);
+      ctx.stroke();
+    }
+    ctx.restore();
+  }
+
+  /**
    * Feld-Hell mode: the trace keeps showing the audio spectrum (for finding
    * a signal and clicking to set the receive tone), but the waterfall area
    * becomes the received picture, scrolling right to left as columns
@@ -512,6 +542,7 @@ export class ScopeDisplay {
     this.onRangeUpdate({ lo, hi, divisions, audio: true });
 
     this._drawTrace(bins, lo, hi, divisions);
+    this._drawGuides(lo, hi);
     this._drawQsoMarker(lo, hi);
     // In Feld-Hell mode the waterfall canvas holds the received picture instead (see pushHellColumns()).
     if (!this._hellMode) this._scrollWaterfall(bins);

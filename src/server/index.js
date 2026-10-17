@@ -12,6 +12,7 @@ const { JttyDecoderBridge } = require('./jtty-decoder-bridge');
 const { OliviaDecoderBridge } = require('./olivia-decoder-bridge');
 const { clampOliviaCentre } = require('../audio/olivia-dsp');
 const { HellDecoderBridge } = require('./hell-decoder-bridge');
+const { SstvDecoderBridge } = require('./sstv-decoder-bridge');
 const { clampHellTone } = require('../audio/hell-rx');
 const { Ft8Bridge } = require('../audio/ft8-bridge');
 const { TtyBridge } = require('../audio/tty-bridge');
@@ -262,6 +263,7 @@ let ttyBridge;
 let jttyDecoderBridge;
 let oliviaDecoderBridge;
 let hellDecoderBridge;
+let sstvDecoderBridge;
 let radeBridge;
 let freeDvReporterBridge;
 
@@ -507,6 +509,13 @@ async function main() {
     hellDecoderBridge.start();
     console.log('Feld-Hell receive ready (paints while Feld-Hell is selected).');
 
+    // SSTV receive (after slowrx): a worker thread decodes while the client
+    // has SSTV selected; pictures go to the browser as they arrive.
+    // SSTV_SAVE_DIR, if set, also saves every picture there as a PNG.
+    sstvDecoderBridge = new SstvDecoderBridge({ controlServer, audioBridge, saveDir: process.env.SSTV_SAVE_DIR || undefined });
+    sstvDecoderBridge.start();
+    console.log(`SSTV receive ready (decodes while SSTV is selected${process.env.SSTV_SAVE_DIR ? `; saving pictures to ${process.env.SSTV_SAVE_DIR}` : ''}).`);
+
     // RADE (FreeDV's neural-vocoder mode) is likewise a hard dependency
     // on AudioBridge — same reasoning as FT8 immediately above, since
     // it's also not a real CI-V mode. Unlike FT8, this doesn't decode
@@ -568,6 +577,7 @@ async function shutdown(signal) {
     if (jttyDecoderBridge) jttyDecoderBridge.stop();
     if (oliviaDecoderBridge) oliviaDecoderBridge.stop();
     if (hellDecoderBridge) hellDecoderBridge.stop();
+    if (sstvDecoderBridge) sstvDecoderBridge.stop();
     if (radeBridge) radeBridge.stop();
     if (freeDvReporterBridge) freeDvReporterBridge.stop();
     if (audioBridge) audioBridge.stop();

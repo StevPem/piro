@@ -119,7 +119,15 @@ const MODES = ['LSB', 'USB', 'AM', 'CW', 'RTTY', 'FM'];
 // app-level pseudo-mode like FT8, running on USB + DATA MODE) and relabels
 // it to match, until some non-TTY mode is picked and it reverts to "TTY".
 // See ttyMode()/updateTtyUi() and the 'TTY' branch in the render loop.
-const MODE_CHIPS = ['LSB', 'USB', 'AM', 'FM', 'CW', 'TTY', 'FT8', 'FreeDV'];
+//
+// Since then the rows were rearranged (two rows of four): SSB, AM, FM, CW on
+// top; TTY, DIGI, FreeDV, SSTV below. 'SSB' is one toggle for LSB and USB:
+// the first click picks the usual sideband for the band (LSB below 10 MHz,
+// USB above), a click while in LSB/USB switches to the other, and the chip
+// reads "LSB"/"USB" while selected. 'DIGI' is the FT8/FT4 chip (it reads
+// "FT8" or "FT4" while selected). 'SSTV' is the SSTV receiver (app-level,
+// on the band's sideband like voice); see enterSstvMode().
+const MODE_CHIPS = ['SSB', 'AM', 'FM', 'CW', 'TTY', 'DIGI', 'FreeDV', 'SSTV'];
 
 // Standard FT8 calling/dial frequencies (USB dial, i.e. the frequency the
 // radio is tuned to — the actual audio tone sits ~1-3kHz above this
@@ -215,6 +223,20 @@ const RTTY_FREQUENCIES = {
 // 10.137-10.144, whose bottom overlaps FT8 (10.136-10.139), so 10.142 is
 // used. The dial is set below these by the current audio tone (1000 Hz by
 // default) so the signal lands on them.
+// SSTV calling frequencies (dial, on the band's usual sideband: LSB below
+// 10 MHz, USB above), from the usual worldwide list (e.g.
+// https://www.sigidwiki.com/wiki/SSTV). Only bands whose usual frequency is
+// inside the Australian allocation are listed: 80m's 3.730 / 3.845 MHz and
+// 160m's 1.890 MHz are not, so on those bands the band button tunes as
+// usual. 6m uses the 50.950 MHz USB frequency (50.680 is FM).
+const SSTV_FREQUENCIES = {
+  '40m': 7171000,
+  '20m': 14230000,
+  '15m': 21340000,
+  '10m': 28680000,
+  '6m': 50950000,
+};
+
 const HELL_FREQUENCIES = {
   '160m': 1843000,
   '80m': 3578000,
@@ -406,6 +428,12 @@ const ttyFreqEl = document.getElementById('tty-freq');
 const jttyRxEl = document.getElementById('jtty-rx');
 const jttyTableBodyEl = document.getElementById('jtty-table-body');
 const oliviaRxEl = document.getElementById('olivia-rx');
+const sstvRxEl = document.getElementById('sstv-rx');
+const sstvStatusEl = document.getElementById('sstv-status');
+const sstvCanvas = document.getElementById('sstv-canvas');
+const sstvStripEl = document.getElementById('sstv-strip');
+const sstvStopBtn = document.getElementById('sstv-stop-btn');
+const sstvSaveBtn = document.getElementById('sstv-save-btn');
 const oliviaRxTextEl = document.getElementById('olivia-rx-text');
 const oliviaSignalEl = document.getElementById('olivia-signal');
 const oliviaTuneBtn = document.getElementById('olivia-tune-btn');
@@ -491,6 +519,8 @@ let oliviaUsbSeen = false;
 let oliviaLastOffsetHz = 0; // the latest decoded signal's offset from the centre (for "Tune to signal")
 // The frequency box is shared by JTTY (lowest tone), Olivia (centre) and Feld-Hell (tone); each keeps its own value.
 // Feld-Hell: the fourth, also app-level on USB + DATA MODE. Nothing is decoded: the scope paints the picture.
+let sstvActive = false; // the SSTV receiver is selected (on LSB/USB, no DATA MODE)
+let sstvSidebandSeen = false;
 let hellActive = false;
 let hellUsbSeen = false;
 const ttyFreqByMode = { JTTY: 1450, OLIVIA: OLIVIA_DEFAULT_CENTRE_HZ, HELL: HELL_DEFAULT_TONE_HZ };
@@ -544,7 +574,7 @@ function sidebandForFrequency(hz) {
  * no "unselected" state for it to revert from).
  */
 function updateFt8VariantUi() {
-  if (ft8ModeBtn) ft8ModeBtn.textContent = ft8Active ? ft8Variant : 'FT8/FT4';
+  if (ft8ModeBtn) ft8ModeBtn.textContent = ft8Active ? ft8Variant : 'DIGI';
   if (ft8PanelLabelEl) ft8PanelLabelEl.textContent = `${ft8Variant} band activity`;
 }
 
@@ -726,11 +756,11 @@ const scopeDisplay = new ScopeDisplay({
   },
 });
 link.addEventListener('scope-line', (event) => {
-  if (ft8Active || jttyActive || oliviaActive || hellActive) return; // audio-domain FFT spectrum takes over the display; see the 'ft8-spectrum' listener below
+  if (ft8Active || jttyActive || oliviaActive || hellActive || sstvActive) return; // audio-domain FFT spectrum takes over the display; see the 'ft8-spectrum' listener below
   scopeDisplay.pushLine(event.detail);
 });
 link.addEventListener('ft8-spectrum', (event) => {
-  if (!ft8Active && !jttyActive && !oliviaActive && !hellActive) return;
+  if (!ft8Active && !jttyActive && !oliviaActive && !hellActive && !sstvActive) return;
   // The audio spectrum comes from the RX audio, not the radio's scope, so it
   // works with CIV_SCOPE_ENABLED off: don't leave the "scope not enabled"
   // notice over it (which would also hide the Feld-Hell picture).
@@ -908,6 +938,9 @@ link.addEventListener('connected', (event) => {
   if (data.oliviaActive) reflectOliviaActiveFromServer(data.oliviaCentreHz);
   else if (oliviaActive) link.request('setOliviaActive', { active: true, centreHz: ttyFreqByMode.OLIVIA }).catch(() => {});
   else if (Number.isFinite(data.oliviaCentreHz)) ttyFreqByMode.OLIVIA = data.oliviaCentreHz;
+  // SSTV likewise.
+  if (data.sstvActive) reflectSstvActiveFromServer();
+  else if (sstvActive) link.request('setSstvActive', { active: true }).catch(() => {});
   // And Feld-Hell, keeping the tone.
   if (data.hellActive) reflectHellActiveFromServer(data.hellToneHz);
   else if (hellActive) link.request('setHellActive', { active: true, toneHz: ttyFreqByMode.HELL }).catch(() => {});
@@ -1144,6 +1177,11 @@ for (const band of BANDS) {
       tuneOliviaToBand(band.name);
       return;
     }
+    // In SSTV: the band's SSTV frequency, on the band's sideband.
+    if (sstvActive) {
+      tuneSstvTo(SSTV_FREQUENCIES[band.name] ?? band.hz, band.name);
+      return;
+    }
     // In RTTY: the middle of the band's WIA digital segment.
     if (ttyMode() === 'RTTY' && RTTY_FREQUENCIES[band.name] != null) {
       tuneRttyToBand(band.name);
@@ -1211,13 +1249,35 @@ let ft8ModeBtn = null;
 let freeDvModeBtn = null;
 let cwModeBtn = null;
 let ttyModeBtn = null;
+let ssbModeBtn = null;
+let sstvModeBtn = null;
 for (const entry of MODE_CHIPS) {
   const btn = document.createElement('button');
   btn.type = 'button';
   btn.className = 'chip';
   btn.textContent = entry;
 
-  if (entry === 'FT8') {
+  if (entry === 'SSB') {
+    ssbModeBtn = btn;
+    btn.addEventListener('click', () => {
+      // A click while already in LSB/USB (and no app-level mode) flips the
+      // sideband; otherwise it selects the usual one for the band.
+      const inSsb = (currentMode === 'LSB' || currentMode === 'USB') && !appModeActive();
+      const mode = inSsb ? (currentMode === 'LSB' ? 'USB' : 'LSB') : sidebandForFrequency(currentFreqHz ?? 14000000);
+      exitAppModes();
+      link
+        .request('setMode', { mode })
+        .then(() => updateModeButtons(mode))
+        .catch((err) => showError(err.message));
+    });
+  } else if (entry === 'SSTV') {
+    sstvModeBtn = btn;
+    btn.addEventListener('click', () => {
+      if (sstvActive) return;
+      exitAppModes();
+      enterSstvMode();
+    });
+  } else if (entry === 'DIGI') {
     ft8ModeBtn = btn;
     // Starts on the neutral "FT8/FT4" label, matching what
     // updateFt8VariantUi() reverts to once the mode is left — see its
@@ -1225,7 +1285,7 @@ for (const entry of MODE_CHIPS) {
     // be written as a call to updateFt8VariantUi() here, but the literal
     // string keeps this loop from depending on ft8ModeBtn already being
     // assigned to itself mid-assignment.)
-    btn.textContent = 'FT8/FT4';
+    btn.textContent = 'DIGI';
     btn.addEventListener('click', () => {
       // Explicitly picking FT8 always means "I'm not doing FreeDV right
       // now" — the two app-level pseudo-modes are mutually exclusive
@@ -1236,6 +1296,7 @@ for (const entry of MODE_CHIPS) {
       if (jttyActive) exitJttyMode();
       if (oliviaActive) exitOliviaMode();
       if (hellActive) exitHellMode();
+      if (sstvActive) exitSstvMode();
       // First click enters FT8/FT4 mode (whichever variant was last
       // active, or 'FT8' the first time); a click while already active
       // toggles the protocol instead — see toggleFt8Variant()'s doc
@@ -1253,6 +1314,7 @@ for (const entry of MODE_CHIPS) {
       if (jttyActive) exitJttyMode();
       if (oliviaActive) exitOliviaMode();
       if (hellActive) exitHellMode();
+      if (sstvActive) exitSstvMode();
       // Unlike FT8, there's no second variant to toggle to any more (the
       // '700E' option was removed — see enterFreeDvMode()'s doc comment),
       // so a click while already active is simply a no-op.
@@ -1264,6 +1326,7 @@ for (const entry of MODE_CHIPS) {
       // Same mutual exclusivity as the other app-level modes.
       if (ft8Active) exitFt8Mode();
       if (freeDvActive) exitFreeDvMode();
+      if (sstvActive) exitSstvMode();
       // First click selects RTTY; after that the button cycles RTTY ->
       // JTTY -> Olivia -> Feld-Hell -> RTTY ... until a non-TTY mode is
       // picked (which resets it to "TTY").
@@ -1286,6 +1349,7 @@ for (const entry of MODE_CHIPS) {
       if (jttyActive) exitJttyMode();
       if (oliviaActive) exitOliviaMode();
       if (hellActive) exitHellMode();
+      if (sstvActive) exitSstvMode();
       // First click enters CW mode (using whichever decoder variant is
       // already selected); a click while CW mode is already active
       // cycles the variant (CW1 -> CW2 -> CW3 -> CW1) instead of
@@ -1318,6 +1382,7 @@ for (const entry of MODE_CHIPS) {
       if (jttyActive) exitJttyMode();
       if (oliviaActive) exitOliviaMode();
       if (hellActive) exitHellMode();
+      if (sstvActive) exitSstvMode();
       link
         .request('setMode', { mode })
         .then(() => updateModeButtons(mode))
@@ -1329,11 +1394,42 @@ for (const entry of MODE_CHIPS) {
   modesEl.appendChild(btn);
 }
 
+/** True while one of the app-level modes layered on LSB/USB is selected. */
+function appModeActive() {
+  return ft8Active || freeDvActive || jttyActive || oliviaActive || hellActive || sstvActive;
+}
+
+/** Leaves whichever app-level mode is selected (picking SSB or SSTV). */
+function exitAppModes() {
+  if (ft8Active) exitFt8Mode();
+  if (freeDvActive) exitFreeDvMode();
+  if (jttyActive) exitJttyMode();
+  if (oliviaActive) exitOliviaMode();
+  if (hellActive) exitHellMode();
+  if (sstvActive) exitSstvMode();
+}
+
+/** The SSB chip reads "LSB"/"USB" and lights while the radio is on plain SSB, else "SSB". */
+function updateSsbChip() {
+  if (!ssbModeBtn) return;
+  const on = (currentMode === 'LSB' || currentMode === 'USB') && !appModeActive();
+  ssbModeBtn.textContent = on ? currentMode : 'SSB';
+  ssbModeBtn.classList.toggle('chip--active', on);
+  if (sstvModeBtn) sstvModeBtn.classList.toggle('chip--active', sstvActive);
+}
+
 function updateModeButtons(mode) {
   currentMode = mode;
   for (const [name, btn] of modeButtons) {
     btn.classList.toggle('chip--active', name === mode);
   }
+  // SSTV rides on LSB/USB like voice: if the radio is later put in any
+  // other mode, SSTV is over (once LSB/USB has been confirmed, as for JTTY).
+  if (sstvActive) {
+    if (mode === 'LSB' || mode === 'USB') sstvSidebandSeen = true;
+    else if (sstvSidebandSeen) leaveSstv();
+  }
+  updateSsbChip();
   // JTTY runs on USB: if the radio is later reported in any other mode (a
   // front-panel change, say), JTTY is over. Ignored until USB has been
   // confirmed once, so a stale mode report that crosses with entering JTTY
@@ -1613,6 +1709,68 @@ function exitHellMode() {
   updateTtyUi();
 }
 
+/**
+ * Enters SSTV receive: the band's SSTV frequency (if it has one) on the
+ * band's sideband, the server's receiver armed, the picture panel shown and
+ * the scope on the audio spectrum. Receive only, so DATA MODE is left off
+ * and PTT stays the ordinary voice PTT.
+ */
+function enterSstvMode() {
+  sstvActive = true;
+  sstvSidebandSeen = false;
+  const band = currentFreqHz != null ? bandNameForFrequency(currentFreqHz) : null;
+  tuneSstvTo(band && SSTV_FREQUENCIES[band] != null ? SSTV_FREQUENCIES[band] : currentFreqHz, band);
+  link.request('setSstvActive', { active: true }).catch((err) => showError(`Couldn't start SSTV receive: ${err.message}`));
+  loadSstvPictures();
+  updateTtyUi();
+}
+
+/** Tunes to `hz` (if given) and puts the radio on the usual sideband for it. */
+function tuneSstvTo(hz, bandName) {
+  const target = hz ?? currentFreqHz ?? 14230000;
+  const sideband = sidebandForFrequency(target);
+  const setSideband = () =>
+    link
+      .request('setMode', { mode: sideband })
+      .then(() => updateModeButtons(sideband))
+      .catch((err) => showError(`Couldn't set ${sideband} for SSTV: ${err.message}`));
+  if (hz == null) {
+    setSideband();
+    return;
+  }
+  link
+    .request('setFrequency', { value: target })
+    .then(() => {
+      updateFrequencyDisplay(target);
+      return setSideband();
+    })
+    .catch((err) => showError(`Couldn't tune to ${bandName ?? ''} SSTV frequency: ${err.message}`));
+}
+
+/** Ends SSTV locally. Returns false if SSTV wasn't active. */
+function leaveSstv() {
+  if (!sstvActive) return false;
+  sstvActive = false;
+  sstvSidebandSeen = false;
+  link.request('setSstvActive', { active: false }).catch(() => {});
+  updateTtyUi();
+  return true;
+}
+
+/** SSTV was already selected when this page connected: reflect it without retuning. */
+function reflectSstvActiveFromServer() {
+  if (sstvActive) return;
+  sstvActive = true;
+  sstvSidebandSeen = false;
+  loadSstvPictures();
+  updateTtyUi();
+}
+
+/** Leaves SSTV because the operator picked some other mode. */
+function exitSstvMode() {
+  leaveSstv();
+}
+
 const PTT_HINT_VOICE = 'Hold to transmit (or hold Space). First use will ask for microphone access.';
 const PTT_HINT_CW =
   'Hold Dot/Dash to key CW (iambic — hold both to alternate). CI-V round-trip latency may make timing less precise than a hardware keyer.';
@@ -1662,12 +1820,16 @@ function updateTtyUi() {
   jttyRxEl.hidden = mode !== 'JTTY';
   oliviaRxEl.hidden = mode !== 'OLIVIA';
   // JTTY, Olivia and Feld-Hell show the 0-3 kHz audio spectrum (like FT8/FT4), so the RF span buttons don't apply.
-  scopeSpansEl.hidden = ft8Active || freqMode;
+  scopeSpansEl.hidden = ft8Active || freqMode || sstvActive;
+  sstvRxEl.hidden = !sstvActive;
+  // SSTV: faint guides at the sync (1200 Hz), black (1500 Hz) and white (2300 Hz) tones.
+  scopeDisplay.setGuideFreqs(sstvActive ? [1200, 1500, 2300] : []);
+  updateSsbChip();
   // Feld-Hell turns the waterfall into the received picture, scrolling right to left.
   scopeDisplay.setHellMode(mode === 'HELL');
   // Back on the RF scope: show its "not enabled" notice again if it applies
   // (it only has text once the server has said the scope is off).
-  if (!ft8Active && !freqMode && scopePlaceholder.textContent) scopePlaceholder.hidden = scopeEnabled;
+  if (!ft8Active && !freqMode && !sstvActive && scopePlaceholder.textContent) scopePlaceholder.hidden = scopeEnabled;
   if (freqMode) {
     ttyFreqLabelEl.firstChild.textContent = `${TTY_FREQ_LABEL[mode]} `;
     ttyFreqEl.min = String(TTY_FREQ_RANGE[mode][0]);
@@ -1879,6 +2041,151 @@ link.addEventListener('olivia-text', (event) => {
 });
 oliviaTuneBtn.addEventListener('click', () => {
   setOliviaCentre(ttyFreqByMode.OLIVIA + oliviaLastOffsetHz);
+});
+
+// --- SSTV receive ---
+// While a picture comes in, its lines are drawn into the canvas as they
+// arrive (uncorrected); when it ends, the slant-corrected PNG replaces them
+// and joins the strip of recent pictures. Tap the picture to see it full
+// size; Save downloads the one shown.
+const SSTV_STRIP_MAX = 12;
+let sstvCurrent = null; // {id, mode, name, width, lines, lineHeight, shiftHz, received}
+let sstvShown = null; // the finished picture in the canvas: an EVENT.SSTV_PICTURE payload
+const sstvSeen = new Set(); // picture ids already in the strip
+const sstvCtx = sstvCanvas.getContext('2d');
+
+function sstvSize(w, lines, lineHeight) {
+  sstvCanvas.width = w;
+  sstvCanvas.height = lines * (lineHeight || 1);
+}
+
+function sstvTime(ms) {
+  return utcClock(ms).slice(0, 5);
+}
+
+function sstvPictureLine(p) {
+  const shift = p.shiftHz ? ` · ${p.shiftHz > 0 ? '+' : ''}${p.shiftHz} Hz` : '';
+  const done = p.complete ? '' : ` · cut short at line ${p.linesReceived}`;
+  return `${p.name} · ${p.width} × ${p.lines} · ${sstvTime(p.time)} UTC${shift}${done}`;
+}
+
+function showSstvPicture(p) {
+  const img = new Image();
+  img.onload = () => {
+    if (sstvCurrent) return; // a new picture started meanwhile
+    sstvSize(p.width, p.lines, p.lineHeight);
+    sstvCtx.imageSmoothingEnabled = false;
+    sstvCtx.drawImage(img, 0, 0, sstvCanvas.width, sstvCanvas.height);
+  };
+  img.src = `data:image/png;base64,${p.png}`;
+  sstvShown = p;
+  sstvSaveBtn.hidden = false;
+  if (!sstvCurrent) sstvStatusEl.textContent = sstvPictureLine(p);
+  for (const t of sstvStripEl.children) t.classList.toggle('sstv-rx__thumb--shown', Number(t.dataset.id) === p.id && Number(t.dataset.time) === p.time);
+}
+
+function addSstvThumb(p) {
+  const key = `${p.id}:${p.time}`;
+  if (sstvSeen.has(key)) return;
+  sstvSeen.add(key);
+  const btn = document.createElement('button');
+  btn.type = 'button';
+  btn.className = 'sstv-rx__thumb';
+  btn.dataset.id = String(p.id);
+  btn.dataset.time = String(p.time);
+  btn.title = sstvPictureLine(p);
+  const img = document.createElement('img');
+  img.alt = `${p.name}, ${sstvTime(p.time)} UTC`;
+  img.src = `data:image/png;base64,${p.png}`;
+  btn.appendChild(img);
+  btn.addEventListener('click', () => showSstvPicture(p));
+  sstvStripEl.prepend(btn);
+  while (sstvStripEl.children.length > SSTV_STRIP_MAX) sstvStripEl.lastElementChild.remove();
+}
+
+function loadSstvPictures() {
+  link
+    .request('getSstvPictures')
+    .then(({ pictures }) => {
+      for (const p of pictures || []) addSstvThumb(p);
+      if (!sstvShown && !sstvCurrent && pictures?.length) showSstvPicture(pictures[pictures.length - 1]);
+    })
+    .catch(() => {});
+}
+
+link.addEventListener('sstv-start', (event) => {
+  const p = event.detail;
+  sstvCurrent = { ...p, received: 0 };
+  sstvShown = null;
+  sstvSize(p.width, p.lines, p.lineHeight);
+  sstvCtx.fillStyle = '#000';
+  sstvCtx.fillRect(0, 0, sstvCanvas.width, sstvCanvas.height);
+  sstvStopBtn.hidden = false;
+  sstvSaveBtn.hidden = true;
+  sstvStatusEl.textContent = `Receiving ${p.name} (${p.width} × ${p.lines})…`;
+});
+
+link.addEventListener('sstv-line', (event) => {
+  const { id, y, width, rgb } = event.detail;
+  const cur = sstvCurrent;
+  if (!cur || cur.id !== id || width !== cur.width) return;
+  const h = cur.lineHeight || 1;
+  const row = sstvCtx.createImageData(width, h);
+  for (let r = 0; r < h; r++) {
+    for (let x = 0; x < width; x++) {
+      const o = (r * width + x) * 4;
+      row.data[o] = rgb[x * 3];
+      row.data[o + 1] = rgb[x * 3 + 1];
+      row.data[o + 2] = rgb[x * 3 + 2];
+      row.data[o + 3] = 255;
+    }
+  }
+  sstvCtx.putImageData(row, 0, y * h);
+  cur.received = y + 1;
+  const shift = cur.shiftHz ? ` · ${cur.shiftHz > 0 ? '+' : ''}${cur.shiftHz} Hz` : '';
+  sstvStatusEl.textContent = `Receiving ${cur.name} · line ${y + 1} of ${cur.lines}${shift}`;
+});
+
+link.addEventListener('sstv-picture', (event) => {
+  const p = event.detail;
+  sstvCurrent = null;
+  sstvStopBtn.hidden = true;
+  addSstvThumb(p);
+  showSstvPicture(p);
+});
+
+sstvStopBtn.addEventListener('click', () => {
+  link.request('endSstvPicture').catch((err) => showError(`Couldn't stop the picture: ${err.message}`));
+});
+
+sstvSaveBtn.addEventListener('click', () => {
+  const p = sstvShown;
+  if (!p) return;
+  const d = new Date(p.time);
+  const pad = (n) => String(n).padStart(2, '0');
+  const a = document.createElement('a');
+  a.href = `data:image/png;base64,${p.png}`;
+  a.download = `sstv-${d.getUTCFullYear()}${pad(d.getUTCMonth() + 1)}${pad(d.getUTCDate())}-${pad(d.getUTCHours())}${pad(d.getUTCMinutes())}${pad(d.getUTCSeconds())}z-${p.mode}.png`;
+  document.body.appendChild(a);
+  a.click();
+  a.remove();
+});
+
+// Full-size view: the picture at its own size (or the screen's), where the
+// browser's pinch-zoom works; tap anywhere to close.
+const sstvViewer = document.createElement('div');
+sstvViewer.className = 'sstv-viewer';
+sstvViewer.hidden = true;
+const sstvViewerImg = document.createElement('img');
+sstvViewerImg.alt = 'SSTV picture, full size';
+sstvViewer.appendChild(sstvViewerImg);
+document.body.appendChild(sstvViewer);
+sstvViewer.addEventListener('click', () => {
+  sstvViewer.hidden = true;
+});
+sstvCanvas.addEventListener('click', () => {
+  sstvViewerImg.src = !sstvCurrent && sstvShown ? `data:image/png;base64,${sstvShown.png}` : sstvCanvas.toDataURL('image/png');
+  sstvViewer.hidden = false;
 });
 
 link.addEventListener('tty-tx-status', (event) => {
