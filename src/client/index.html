@@ -182,6 +182,20 @@
         <pre class="olivia-rx__text" id="olivia-rx-text" aria-live="polite" aria-label="Received Olivia text"></pre>
       </section>
 
+      <!-- SSTV receive: the picture coming in, filled line by line, then
+           replaced by the slant-corrected one; recent pictures below.
+           Shown while the SSTV mode button is active; see app.js. -->
+      <section class="ft8-panel sstv-rx" id="sstv-rx" aria-label="SSTV received" hidden>
+        <div class="ft8-panel__header">
+          <span class="row-group__label">SSTV</span>
+          <button class="chip sstv-rx__btn" id="sstv-stop-btn" type="button" hidden title="End this picture now, keeping what has arrived">Stop</button>
+          <button class="chip sstv-rx__btn" id="sstv-save-btn" type="button" hidden title="Save this picture as a PNG">Save</button>
+        </div>
+        <div class="ft8-panel__slot sstv-rx__status" id="sstv-status" aria-live="polite">listening for a picture…</div>
+        <canvas class="sstv-rx__picture" id="sstv-canvas" width="320" height="256" title="Tap to open full size"></canvas>
+        <div class="sstv-rx__strip" id="sstv-strip" aria-label="Recent SSTV pictures"></div>
+      </section>
+
       <section class="ft8-panel" id="ft8-panel" aria-label="FT8" hidden>
         <div class="ft8-panel__header">
           <span class="row-group__label" id="ft8-panel-label">FT8 band activity</span>

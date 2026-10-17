@@ -3393,3 +3393,59 @@ model for how to approach that.
   tuning, the picture starting at the right edge and scrolling left, click
   to set the tone, clicks on the picture ignored, send/stop, and the canvas
   cleared on leaving. Not tested on air. Service-worker cache bumped to v73.
+
+## Mode rows: SSB toggle, DIGI, SSTV
+
+- `MODE_CHIPS` is now `['SSB', 'AM', 'FM', 'CW', 'TTY', 'DIGI', 'FreeDV',
+  'SSTV']`: two rows of four (the existing `.chips--grid-4`), the radio's
+  own voice/CW modes on top and the modes PiRO decodes/encodes below.
+- **SSB** replaces the separate LSB and USB chips. Clicking it while the
+  radio is on LSB/USB with no app-level mode selected flips the sideband;
+  otherwise it leaves any app-level mode (`exitAppModes()`) and selects
+  `sidebandForFrequency()` for the current frequency (LSB below 10 MHz).
+  `updateSsbChip()` (called from `updateModeButtons()` and `updateTtyUi()`)
+  labels it "LSB"/"USB" and lights it only on plain SSB; while FT8, JTTY,
+  Olivia, Feld-Hell, FreeDV or SSTV is selected it reads "SSB", unlit, even
+  though the radio is on a sideband. The band chip's existing sideband
+  re-check on band change is unchanged.
+- **DIGI** is the FT8/FT4 chip, renamed: it reads "DIGI" when not selected
+  (was "FT8/FT4") and "FT8"/"FT4" while selected, as before.
+- Browser test: `test/manual-tty-ui.js` checks the order, the two rows, the
+  SSB labels and flipping, and DIGI's label.
+
+## SSTV receive
+
+- **SSTV** (`enterSstvMode()`): tunes to `SSTV_FREQUENCIES` for the band
+  (40m 7.171 LSB, 20m 14.230, 15m 21.340, 10m 28.680, 6m 50.950 USB; 160m
+  and 80m left out because their usual frequencies are outside the
+  Australian allocations), sets the band's sideband (`tuneSstvTo()`), no
+  DATA MODE (receive only, so the voice PTT stays), sends `setSstvActive`,
+  and loads the recent pictures (`getSstvPictures`). Band chips while in
+  SSTV go to the band's SSTV frequency (or the ordinary quick-tune point)
+  on its sideband. Leaving: any other mode chip; or the radio reported in a
+  non-SSB mode after LSB/USB was seen (`sstvSidebandSeen`, as for JTTY).
+- Scope: the audio spectrum (`ft8-spectrum` frames from
+  `SstvDecoderBridge`), RF span buttons hidden, and new
+  `ScopeDisplay#setGuideFreqs()` dotted guides at 1200/1500/2300 Hz.
+- `#sstv-rx` panel: status line, canvas, Stop / Save, thumbnail strip.
+  `sstv-start` sizes the canvas to the mode (`width` x `lines *
+  lineHeight`) and clears it; `sstv-line` (binary `SSTV_LINE`) rows are
+  drawn as they come (only for the current picture id); `sstv-picture`
+  draws the slant-corrected PNG over them, adds a thumbnail (12 kept,
+  newest first) and offers Save (a `data:` URL download named
+  `sstv-YYYYMMDD-HHMMSSz-<mode>.png`). Tapping the canvas opens a fixed
+  full-screen overlay with the picture as an `<img>` (the page's viewport
+  allows pinch-zoom); tapping closes it. The canvas is `width: 100%` with
+  its own aspect, so a 320 x 256 picture fills a phone's panel.
+- The live lines are not slant-corrected (as in slowrx); with a sender
+  whose clock is far off (e.g. 0.2%) the live picture leans visibly until
+  the corrected one replaces it.
+- Server side: `SstvDecoderBridge` (12 kHz into
+  `audio/sstv-decode-worker.js`, `audio/sstv-rx.js`; `server/png.js` for the
+  PNG; pictures kept in `ControlServer.sstvPictures`; `SSTV_SAVE_DIR`).
+- Verified in headless Chromium (`test/manual-tty-ui.js`): FT8 -> SSTV on
+  40m (7.171 LSB, FT8 off), a Robot 8 B/W picture fed through the capture
+  stream (status, Stop, strip, Save, canvas content at 320 x 240, the
+  full-size view), 20m band chip (14.230 USB), SSB leaving SSTV. Not
+  tested on air. Service-worker cache bumped to v76.
+

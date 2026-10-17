@@ -1143,6 +1143,34 @@ async function run() {
     await hServer.close();
   }
 
+  // SSTV: setSstvActive, endSstvPicture, getSstvPictures, release when the last client leaves.
+  {
+    const sServer = new ControlServer({ civ: new StubCivDriver(), port: 0 });
+    const sPort = await sServer.listen();
+    const events = [];
+    let ends = 0;
+    sServer.on('sstv-active', (e) => events.push(e));
+    sServer.on('sstv-end-picture', () => ends++);
+    sServer.sstvPictures = [{ id: 3, mode: 'M1', png: 'iVBOR' }];
+    const c = await connect(sPort);
+    const hello = await nextMessage(c);
+    check(hello.data.sstvActive === false, 'connected snapshot reports sstvActive=false');
+    c.send(JSON.stringify({ id: 's1', type: 'setSstvActive', active: 'on' }));
+    check((await nextMessage(c)).ok === false, 'setSstvActive rejects a non-boolean');
+    c.send(JSON.stringify({ id: 's2', type: 'setSstvActive', active: true }));
+    const ok = await nextMessage(c);
+    check(ok.data.active === true && sServer.state.sstvActive === true && events.join() === 'true', 'setSstvActive arms the receiver');
+    c.send(JSON.stringify({ id: 's3', type: 'endSstvPicture' }));
+    check((await nextMessage(c)).data.accepted === true && ends === 1, 'endSstvPicture is passed on');
+    c.send(JSON.stringify({ id: 's4', type: 'getSstvPictures' }));
+    const pics = await nextMessage(c);
+    check(pics.data.pictures.length === 1 && pics.data.pictures[0].mode === 'M1', 'getSstvPictures returns the kept pictures');
+    c.close();
+    await new Promise((r) => setTimeout(r, 100));
+    check(sServer.state.sstvActive === false && events.at(-1) === false, 'last client disconnecting disarms SSTV');
+    await sServer.close();
+  }
+
   // PTT fail-safe watchdog (10-minute cutoff in production; a short
   // override here so the test doesn't take 10 real minutes — see
   // docs/civ-notes.md for why this lives server-side).

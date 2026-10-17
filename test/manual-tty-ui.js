@@ -11,6 +11,8 @@ const { OliviaDecoderBridge } = require(PKG + '/src/server/olivia-decoder-bridge
 const { encodeOlivia } = require(PKG + '/src/audio/olivia-tx');
 const { HellDecoderBridge } = require(PKG + '/src/server/hell-decoder-bridge');
 const { encodeFeldHell } = require(PKG + '/src/audio/hell-tx');
+const { SstvDecoderBridge } = require(PKG + '/src/server/sstv-decoder-bridge');
+const { encodeSstv } = require(PKG + '/src/audio/sstv-tx');
 const { encodeJtty } = require(PKG + '/src/audio/jtty-tx');
 const { upsampleFloatToPcm } = require(PKG + '/src/audio/resample');
 let chromium;
@@ -56,6 +58,8 @@ class Civ extends EventEmitter {
   oliviaRx.start();
   const hellRx = new HellDecoderBridge({ controlServer: server, audioBridge });
   hellRx.start();
+  const sstvRx = new SstvDecoderBridge({ controlServer: server, audioBridge });
+  sstvRx.start();
 
   const browser = await chromium.launch({ executablePath: process.env.CHROMIUM_PATH || undefined, args: ['--no-sandbox'] });
   const page = await browser.newPage({ viewport: { width: 430, height: 1100 } });
@@ -68,6 +72,14 @@ class Civ extends EventEmitter {
   const chip = (label) => page.locator('#modes .chip', { hasText: new RegExp(`^${label}$`) });
   const ttyLabel = async () => (await page.locator('#modes .chip').allTextContents());
   const vis = async (sel) => page.locator(sel).isVisible();
+
+  // Mode rows: SSB AM FM CW on top, TTY DIGI FreeDV SSTV below
+  {
+    const chips = await page.locator('#modes .chip').evaluateAll((els) => els.map((e) => ({ t: e.textContent, top: e.offsetTop, on: e.classList.contains('chip--active') })));
+    check(chips.map((c) => c.t).join(' ') === 'LSB AM FM CW 1 TTY DIGI FreeDV SSTV', 'mode chips: ' + chips.map((c) => c.t).join(' ') + ' (the SSB chip reads LSB: the radio is on LSB)');
+    check(chips.slice(0, 4).every((c) => c.top === chips[0].top) && chips.slice(4).every((c) => c.top === chips[4].top) && chips[4].top > chips[0].top, 'two rows of four');
+    check(chips[0].on && chips.slice(1).every((c) => !c.on), 'only the SSB chip is lit');
+  }
 
   let labels = await ttyLabel();
   check(labels.includes('TTY') && !labels.includes('RTTY'), 'mode row shows "TTY" (no separate RTTY chip): ' + labels.join(' '));
@@ -309,11 +321,17 @@ class Civ extends EventEmitter {
   await page.waitForFunction(() => [...document.querySelectorAll('#modes .chip')].some((c) => c.textContent === 'JTTY'));
   check((await page.locator('#tty-input').inputValue()) === 'test 73', 'operator-typed text is kept when toggling RTTY <-> JTTY');
 
-  // leave TTY by picking a normal mode -> label returns to TTY, PTT back
-  await chip('USB').click();
+  // leave TTY by picking SSB -> label returns to TTY, PTT back; SSB picks LSB on 40 m
+  await chip('SSB').click();
   await page.waitForFunction(() => [...document.querySelectorAll('#modes .chip')].some((c) => c.textContent === 'TTY'));
   await sleep(150);
-  check(civ.mode === 'USB' && civ.dataMode === false, 'picking USB leaves JTTY (DATA MODE off)');
+  check(civ.mode === 'LSB' && civ.dataMode === false && (await ttyLabel()).includes('LSB'), 'picking SSB on 40 m leaves JTTY for LSB (DATA MODE off); the chip reads LSB');
+  await chip('LSB').click();
+  await sleep(150);
+  check(civ.mode === 'USB' && (await ttyLabel()).includes('USB'), 'clicking it again flips to USB');
+  await chip('USB').click();
+  await sleep(150);
+  check(civ.mode === 'LSB', 'and back to LSB');
   check((await ttyLabel()).includes('TTY') && !(await ttyLabel()).includes('JTTY'), 'button back to "TTY"');
   check((await vis('#ptt-btn')) && !(await vis('#tty-composer')), 'PTT button restored, text entry gone');
   check((await page.locator('#ptt-hint').textContent()).startsWith('Hold to transmit'), 'PTT hint restored');
@@ -336,20 +354,61 @@ class Civ extends EventEmitter {
   await page.locator('#modes .chip', { hasText: /^JTTY$/ }).click();
   await page.waitForFunction(() => [...document.querySelectorAll('#modes .chip')].some((c) => c.textContent === 'Olivia'));
   check((await page.locator('#tty-freq').inputValue()) === '1531', 'Olivia remembers its centre between sessions');
-  await chip('LSB').click();
+  check((await ttyLabel()).includes('SSB'), 'while Olivia is selected the SSB chip reads SSB (not lit)');
+  await chip('SSB').click();
   await page.waitForFunction(() => [...document.querySelectorAll('#modes .chip')].some((c) => c.textContent === 'TTY'));
   await sleep(200);
-  check(civ.mode === 'LSB' && civ.dataMode === false && server.state.oliviaActive === false && (await vis('#ptt-btn')), 'Olivia -> LSB: Olivia off, DATA MODE off, PTT back');
+  check(civ.mode === 'LSB' && civ.dataMode === false && server.state.oliviaActive === false && (await vis('#ptt-btn')), 'Olivia -> SSB (LSB on 40 m): Olivia off, DATA MODE off, PTT back');
 
   // JTTY -> FT8 and back
   await page.locator('#modes .chip', { hasText: /^TTY$/ }).click();
   await page.locator('#modes .chip', { hasText: /^RTTY$/ }).click();
   await page.waitForFunction(() => [...document.querySelectorAll('#modes .chip')].some((c) => c.textContent === 'JTTY'));
-  await page.locator('#modes .chip', { hasText: /^FT8/ }).click();
+  await page.locator('#modes .chip', { hasText: /^DIGI$/ }).click();
   await page.waitForFunction(() => [...document.querySelectorAll('#modes .chip')].some((c) => c.textContent === 'TTY'));
   await sleep(200);
   check(civ.dataMode === true, 'JTTY -> FT8 leaves DATA MODE on (FT8 needs it)');
   check(!(await vis('#tty-composer')) && !(await vis('#ptt-btn')), 'FT8: neither PTT nor TTY composer (FT8 panel instead)');
+  check((await ttyLabel()).includes('FT8'), 'the DIGI chip reads FT8 while FT8 is selected');
+
+  // SSTV: FT8 -> SSTV on 40 m, a picture comes in, band change, then SSB
+  await chip('SSTV').click();
+  await sleep(300);
+  check(civ.freq === 7171000 && civ.mode === 'LSB' && server.state.sstvActive && sstvRx.attached && !server.state.ft8Active, 'SSTV on 40 m: 7.171 MHz LSB, receiver armed, FT8 off');
+  check((await vis('#sstv-rx')) && (await vis('#ptt-btn')) && !(await vis('#ft8-panel')), 'SSTV panel shown, voice PTT back, FT8 panel gone');
+  check((await ttyLabel()).includes('DIGI') && (await ttyLabel()).includes('SSB') && (await page.locator('#modes .chip', { hasText: /^SSTV$/ }).evaluate((e) => e.classList.contains('chip--active'))), 'SSTV chip lit; DIGI and SSB back to their plain labels');
+  {
+    const w = 320;
+    const h = 120;
+    const img = new Uint8Array(w * h * 3);
+    for (let i = 0; i < w * h; i++) img.fill(Math.floor(i / w) < 60 ? 255 : 30, i * 3, i * 3 + 3);
+    const enc = encodeSstv(img, w, h, 'R8BW', { amplitude: 0.4 });
+    const pcm = upsampleFloatToPcm(Float32Array.from([...new Float32Array(6000), ...enc.samples, ...new Float32Array(12000)]), 12000, 48000);
+    const half = Math.floor(pcm.length / 4) * 2;
+    for (let i = 0; i < half; i += 9600) capture.emit('data', pcm.subarray(i, Math.min(half, i + 9600)));
+    await page.waitForFunction(() => /Receiving Robot 8 B\/W · line \d+ of 120/.test(document.getElementById('sstv-status').textContent), null, { timeout: 10000 });
+    check(await vis('#sstv-stop-btn'), 'receiving: status shows the mode and line; Stop offered: ' + (await page.locator('#sstv-status').textContent()));
+    for (let i = half; i < pcm.length; i += 9600) capture.emit('data', pcm.subarray(i, i + 9600));
+    await page.waitForFunction(() => document.querySelectorAll('#sstv-strip .sstv-rx__thumb').length === 1, null, { timeout: 10000 });
+    await sleep(300);
+    const st = await page.locator('#sstv-status').textContent();
+    check(/^Robot 8 B\/W · 320 × 120 · \d\d:\d\d UTC$/.test(st) && (await vis('#sstv-save-btn')) && !(await vis('#sstv-stop-btn')), 'picture done: in the strip, status ' + st + ', Save offered');
+    const px = await page.locator('#sstv-canvas').evaluate((c) => {
+      const d = c.getContext('2d').getImageData(0, 0, c.width, c.height).data;
+      return { w: c.width, h: c.height, top: d[(10 * c.width + 100) * 4], bottom: d[(200 * c.width + 100) * 4] };
+    });
+    check(px.w === 320 && px.h === 240 && px.top > 200 && px.bottom < 80, `canvas shows the picture at 320 x 240 (lines drawn twice): top ${px.top}, bottom ${px.bottom}`);
+    await page.locator('#sstv-canvas').click();
+    check(await vis('.sstv-viewer'), 'tapping the picture opens it full size');
+    await page.locator('.sstv-viewer').click();
+    check(!(await vis('.sstv-viewer')), 'and tapping again closes it');
+  }
+  await page.locator('#bands .chip', { hasText: /^20m$/ }).click();
+  await sleep(300);
+  check(civ.freq === 14230000 && civ.mode === 'USB' && server.state.sstvActive, 'in SSTV, the 20m band chip goes to 14.230 MHz USB');
+  await chip('SSB').click();
+  await sleep(300);
+  check(!server.state.sstvActive && !sstvRx.attached && !(await vis('#sstv-rx')) && civ.mode === 'USB' && (await ttyLabel()).includes('USB'), 'SSB leaves SSTV (USB on 20 m), panel hidden');
 
   check(errors.length === 0, 'no page errors' + (errors.length ? ': ' + errors.join(' | ') : ''));
   await browser.close();
@@ -357,6 +416,7 @@ class Civ extends EventEmitter {
   jttyRx.stop();
   oliviaRx.stop();
   hellRx.stop();
+  sstvRx.stop();
   await server.close();
   console.log(failures ? `\n${failures} FAILED` : '\nAll UI checks passed');
   process.exit(failures ? 1 : 0);

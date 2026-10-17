@@ -15,6 +15,7 @@ const BINARY_TYPE = {
   SCOPE_LINE: 0x02,
   FT8_SPECTRUM: 0x03,
   HELL_COLUMNS: 0x04,
+  SSTV_LINE: 0x05,
 };
 
 // Mirrors src/civ/commands.js SCOPE_MODE.
@@ -72,6 +73,13 @@ function decodeHellColumns(arrayBuffer) {
   const columns = [];
   for (let i = 0; i < count; i++) columns.push(new Uint8Array(arrayBuffer, 5 + i * rows, rows));
   return { rows, toneHz, columns };
+}
+
+/** Mirrors src/server/sstv-decoder-bridge.js's encodeSstvLineFrame(): tag, picture id, line, width, RGB. */
+function decodeSstvLine(arrayBuffer) {
+  const view = new DataView(arrayBuffer);
+  const width = view.getUint16(5, true);
+  return { id: view.getUint16(1, true), y: view.getUint16(3, true), width, rgb: new Uint8Array(arrayBuffer, 7, width * 3) };
 }
 
 export class RigLink extends EventTarget {
@@ -180,6 +188,14 @@ export class RigLink extends EventTarget {
         this._dispatch('hell-columns', decodeHellColumns(arrayBuffer));
       } catch {
         // malformed frame — drop it, nothing useful to recover
+      }
+      return;
+    }
+    if (tag === BINARY_TYPE.SSTV_LINE) {
+      try {
+        this._dispatch('sstv-line', decodeSstvLine(arrayBuffer));
+      } catch {
+        // malformed frame — drop it
       }
       return;
     }

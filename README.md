@@ -12,7 +12,7 @@ Hamlib, no separate audio server and no extra apps.
 Written by VK3TR. Licensed AGPL-3.0-only (see
 [Licence](#licence)).
 
-**Current build: v75.** This is the version the app shows next to its title.
+**Current build: v76.** This is the version the app shows next to its title.
 It is the `CACHE_NAME` number in `src/client/sw.js`, which goes up with every
 change to the web app.
 
@@ -30,6 +30,7 @@ Several of the cooler features in this app are built on the work of others:
 - JTTY support = Ported to JS from https://wsjtx.github.io/wsjtx/index.html
 - Olivia support = Ported to JS from Pawel Jalocha's (SP9VRC) MFSK code in fldigi, https://github.com/w1hkj/fldigi
 - Feld-Hell support = Ported to JS from fldigi's Feld-Hell modem and font, https://github.com/w1hkj/fldigi
+- SSTV receiver = Ported to JS from slowrx by Oona Räisänen (OH2EIQ), https://github.com/windytan/slowrx
 
 ## Features
 
@@ -48,6 +49,10 @@ Several of the cooler features in this app are built on the work of others:
   fldigi. In all four, a text box and a Send button replace PTT; received
   text is decoded as it arrives, or for Feld-Hell painted in the scope. See
   [RTTY, JTTY, Olivia and Feld-Hell](#rtty-jtty-olivia-and-feld-hell).
+- **SSTV receive**: pictures in 25 modes (Martin, Scottie, Robot, PD,
+  Wraase, Pasokon), recognised automatically from their VIS header, drawn as
+  they arrive and then slant-corrected, with a strip of recent pictures to
+  view full size or save. See [SSTV](#sstv).
 - **FT8**: band-activity decoding, manual TX, and a guided QSO sequence that
   suggests each reply (you still send every message yourself). Optional PSK
   Reporter spotting.
@@ -375,6 +380,7 @@ All settings are environment variables. For the systemd service they go in
 | `JTTY_RX_QUALITY` | `economy` | JTTY decoder effort. `economy` uses about 40% of `full`'s CPU and decoded nearly as many weak signals in testing. `light` is in between, `full` matches WSJT-X's search exactly, and `auto` runs `full` but drops to `economy` when the Pi falls behind. |
 | `OLIVIA_FREQ_HZ` | `1500` | Olivia's default audio centre frequency, in Hz, for sending and receiving, until it is changed in the UI. The signal is 250 Hz wide; the receiver searches 125 Hz either side. |
 | `OLIVIA_SQUELCH` | on | `off` turns off PiRO's filtering of junk characters and decodes exactly as fldigi does with its squelch off. See [Olivia](#rtty-jtty-olivia-and-feld-hell). |
+| `SSTV_SAVE_DIR` | none | If set, every received SSTV picture is also saved in this folder as a PNG (`YYYYMMDD-HHMMSSz-<mode>.png`, UTC). |
 | `HELL_TONE_HZ` | `1000` | Feld-Hell's default audio tone, in Hz, for sending and receiving, until it is changed in the UI. The band frequencies the client tunes to assume the signal is at this tone. |
 | `STATION_CALLSIGN`, `STATION_GRID` | none | Your callsign and Maidenhead grid. They set the FT8 default message and guided QSO, and the FreeDV Reporter report. |
 | `TLS_CERT_PATH`, `TLS_KEY_PATH` | none | Set both to serve HTTPS and WSS. Needed for the microphone from other devices. |
@@ -472,7 +478,9 @@ src/
                    (olivia-dsp.js, olivia-tx.js, olivia-rx.js,
                    olivia-decode-worker.js), Feld-Hell (hell-font.js,
                    hell-tx.js, hell-rx.js, fed by
-                   server/hell-decoder-bridge.js) and JTTY
+                   server/hell-decoder-bridge.js), SSTV (sstv-modes.js,
+                   sstv-rx.js, sstv-tx.js, sstv-decode-worker.js, fed by
+                   server/sstv-decoder-bridge.js; server/png.js) and JTTY
                    (jtty-codec.js, jtty-tx.js, jtty-rx.js, jtty-tbcc-decode.js,
                    decimator.js, jtty-decode-worker.js); transmit is played
                    out by tty-bridge.js and receive is fed by
@@ -610,6 +618,11 @@ test/
                            off tune and via 48 kHz; see third_party/feldhell/README.md
   hell-decoder-bridge.test.js  Feld-Hell receive bridge: arming, retuning, PTT,
                            column frames, spectrum
+  sstv.test.js            SSTV receiver: all 25 modes, whole pictures, PySSTV
+                           audio, mistuning, clock error (slant), noise, no
+                           false pictures, signal loss; see third_party/sstv/README.md
+  sstv-decoder-bridge.test.js  SSTV receive bridge with the real worker: line
+                           frames, PNG, kept pictures, saving, PTT
   jtty-decoder-bridge.test.js  JTTY receive bridge: arming, PTT, decimation,
                            backlog dropping, broadcasts
   manual-tty-ui.js        optional browser test of the TTY button, text box and
@@ -693,8 +706,8 @@ not "14.195000" — for readability at a glance; the editable field itself
 still takes/shows a plain decimal, e.g. "14.195000", so it stays a valid
 number while you're typing) with -10kHz/-1kHz/+1kHz/+10kHz step buttons
 alongside it, band quick-select (10 bands, 160m through 6m, the current
-band highlighted the same way the current mode is) and mode buttons (LSB
-through FM) laid out in fixed 2-row grids, RX function
+band highlighted the same way the current mode is) and mode buttons laid
+out in fixed 2-row grids (see "Mode buttons" below), RX function
 toggle buttons (Preamp, NR, NB, Notch, Filter — each cycles through its
 states on click, e.g. "P.Amp Off" -> "P.Amp 1" -> "P.Amp 2", "Filter 1"
 -> "Filter 2" -> "Filter 3") alongside them, a segmented S-meter (S0-S9
@@ -740,7 +753,17 @@ service worker — see `docs/pwa-notes.md`) and a browser that implements
 the API; degrades to the phone's normal screen-timeout behavior
 otherwise, with no other effect on the app. See `docs/ui-notes.md`.
 
-An **FT8** chip sits in the mode row itself (where the old RTTY chip used to sit,
+**Mode buttons.** Two rows of four: **SSB**, **AM**, **FM**, **CW** on top
+(the radio's own voice and CW modes), and **TTY**, **DIGI**, **FreeDV**,
+**SSTV** below (modes PiRO decodes or encodes itself). **SSB** is one button
+for both sidebands: the first press picks the usual sideband for the band
+(LSB below 10 MHz, USB from 10 MHz up), and pressing it again while in SSB
+switches to the other. It reads **LSB** or **USB** while selected, and **SSB**
+otherwise (including while a digital mode that runs on a sideband is
+selected). **DIGI** is the FT8/FT4 button described next; it reads **FT8**
+or **FT4** while selected.
+
+An **FT8** chip (labelled **DIGI**) sits in the mode row itself (where the old RTTY chip used to sit,
 styled identically to the real mode chips — see below for why it isn't
 actually a hardware mode despite living there); selecting it puts the
 radio on USB, auto-tunes to the current band's standard FT8 calling
@@ -1105,6 +1128,67 @@ not yet been tested over the air.
 Transmit is refused if the radio is already transmitting. The usual PTT
 watchdog (ten minutes) still applies.
 
+### SSTV
+
+The **SSTV** button turns on the SSTV (slow-scan television) receiver. It
+puts the radio on the band's usual sideband (LSB below 10 MHz, USB above;
+no DATA MODE, since nothing is transmitted) and tunes to the band's SSTV
+frequency. Band buttons then do the same:
+
+| Band | Frequency (MHz) | Sideband |
+|---|---|---|
+| 40 m | 7.171 | LSB |
+| 20 m | 14.230 | USB |
+| 15 m | 21.340 | USB |
+| 10 m | 28.680 | USB |
+| 6 m | 50.950 | USB |
+
+The usual 160 m (1.890 MHz) and 80 m (3.730 and 3.845 MHz) frequencies are
+outside the Australian allocations, so on those bands, and on 30, 17 and
+12 m, which have no usual SSTV frequency, the band buttons tune as normal.
+The table is `SSTV_FREQUENCIES` in `src/client/app.js`.
+
+Receive only for now: the PTT button stays the ordinary voice PTT. The
+scope shows the 0-3 kHz audio spectrum with faint lines at 1200 Hz (sync),
+1500 Hz (black) and 2300 Hz (white) to tune by.
+
+The receiver waits for the VIS header that starts every SSTV picture, which
+names its mode, and handles 25 modes: Martin M1-M4, Scottie S1, S2 and DX,
+Robot 36, 72, 24 and the black-and-white 8, 12 and 24, PD 50, 90, 120,
+160, 180, 240 and 290, Wraase SC-2 120 and 180, and Pasokon P3, P5 and P7.
+It measures how far the signal is from the standard tones from the header
+(so it copies a station up to about 150 Hz off), and its frequency
+measurement gets more averaging as the signal gets noisier. The picture
+panel under the S-meter fills in line by line as the picture arrives, with
+the mode, line count and offset above it. When the picture ends, the
+receiver finds the sync pulses' slope, which is how far the other station's
+sound card clock is off, and redraws the picture straight. It then joins
+the strip of recent pictures (the last 12, kept by the server, so another
+browser or a reload sees them too).
+
+* **Stop** ends the picture now and keeps what has arrived. A picture also
+  ends by itself if the sync pulses stop for 12 lines (the signal has gone),
+  and when you transmit.
+* **Save** downloads the picture shown as a PNG, at its own resolution.
+* Tap the picture to open it full size (pinch to zoom; tap again to close).
+  Thumbnails show older pictures.
+* Set `SSTV_SAVE_DIR` to have the server save every picture there as well.
+
+Picture sizes are 320 × 256 for Martin, Scottie, Wraase and PD 50/90,
+320 × 240 for Robot, 512 × 400 for PD 160 and 640 × 496 for PD 120/180/240
+and Pasokon (800 × 616 for PD 290). On a phone the panel is about 360-430
+points wide, which on a 2-3× screen is at least as many pixels as the
+picture has.
+
+The receiver is a JavaScript port of slowrx by Oona Räisänen OH2EIQ (ISC
+licence); see [`third_party/sstv/README.md`](third_party/sstv/README.md)
+for what was ported, the differences, and how it was checked (including
+against audio from PySSTV, an independent encoder). It runs in a worker
+thread, only while SSTV is selected and you are not transmitting. Not yet
+tested over the air. The picture drawn while it arrives is not yet
+slant-corrected, so from a station whose sound card is well off it leans
+until it is redrawn at the end.
+
 **FT8 (RX + manual TX)**: since the IC-7300 has no native "FT8" CI-V
 mode — the radio only ever sees `USB` — FT8 is an app-level concept
 layered on top: opening the FT8 panel puts the radio on USB and starts
@@ -1212,7 +1296,7 @@ shapes.
   `getNoiseBlanker`, `setNotch`, `getNotch`, `setFilter`, `getFilter`,
   `setTuner`, `getTuner`, `setTxPower`, `getTxPower`, `setRxGain`,
   `getRxGain`, `setFt8Active`, `sendFt8`, `sendTty`, `abortTty`, `setJttyActive`,
-  `setOliviaActive`, `setHellActive`)
+  `setOliviaActive`, `setHellActive`, `setSstvActive`, `endSstvPicture`, `getSstvPictures`)
   correlated by `id`; events (`connected`, `frequency`, `mode`, `data-mode`, `ptt`,
   `ptt-timeout`, `cw-text`, `ft8-decodes`, `ft8-tx-status`, `tty-tx-status`,
   `jtty-text`, `olivia-text`, `rig-error`, `audio-error`, `scope-error`)
@@ -1242,6 +1326,13 @@ shapes.
   `setHellActive` (`{active, toneHz?}`) starts and stops the Feld-Hell
   receiver and sets its tone; the picture arrives as binary
   `BINARY_TYPE.HELL_COLUMNS` frames (below).
+  `setSstvActive` (`{active}`) starts and stops the SSTV receiver. A
+  picture is announced by an `sstv-start` broadcast (`{id, mode, name,
+  width, lines, lineHeight, shiftHz, time}`), its lines follow as binary
+  `BINARY_TYPE.SSTV_LINE` frames, and it ends with `sstv-picture` (the same
+  fields plus `endTime, complete, linesReceived, slantDeg, png`, the
+  slant-corrected picture as base64 PNG). `endSstvPicture` ends the picture
+  in progress; `getSstvPictures` returns the recent ones.
 - **Audio (binary frames, tagged `BINARY_TYPE.AUDIO`)**: by default
   (`AUDIO_CODEC=pcm`), raw 16-bit PCM in both directions — no
   framing/codec requirement, chunk sizes are whatever arrives. With
@@ -1252,6 +1343,9 @@ shapes.
 - **Scope (binary frames, tagged `BINARY_TYPE.SCOPE_LINE`,
   server→client only)**: one reassembled spectrum line per frame — see
   `src/server/scope-bridge.js` for the exact header format.
+- **SSTV lines (binary frames, tagged `BINARY_TYPE.SSTV_LINE`,
+  server→client only)**: one received line as it arrives — picture id,
+  line number, width, then RGB; see `src/server/protocol.js`.
 - **Feld-Hell picture (binary frames, tagged `BINARY_TYPE.HELL_COLUMNS`,
   server→client only)**: received columns, about ten frames a second —
   rows per column, column count, tone, then the columns' ink values; see

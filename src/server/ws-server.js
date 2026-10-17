@@ -157,6 +157,9 @@ class ControlServer extends EventEmitter {
       // Same reasons as jttyActive.
       hellActive: false,
       hellToneHz: 1000,
+      // Whether the client has SSTV selected (see REQUEST.SET_SSTV_ACTIVE /
+      // server/sstv-decoder-bridge.js). Same reasons as jttyActive.
+      sstvActive: false,
       // Which variant the FreeDV mode button is currently in — '700E' or
       // 'RADE' (see REQUEST.SET_FREEDV_VARIANT / src/server/rade-bridge.js).
       // Defaults to 'RADE' — the only variant the client's FreeDV chip
@@ -324,12 +327,19 @@ class ControlServer extends EventEmitter {
     this.emit('hell-active', { active, toneHz: this.state.hellToneHz });
   }
 
-  /** JTTY, Olivia and Feld-Hell receiving cost CPU: don't leave them running for a browser that has gone away. */
+  _setSstvActive(active) {
+    this.state.sstvActive = active;
+    // Handled by SstvDecoderBridge (internal-only event).
+    this.emit('sstv-active', active);
+  }
+
+  /** JTTY, Olivia, Feld-Hell and SSTV receiving cost CPU: don't leave them running for a browser that has gone away. */
   _releaseJttyIfAlone() {
     if (this.clients.size !== 0) return;
     if (this.state.jttyActive) this._setJttyActive(false);
     if (this.state.oliviaActive) this._setOliviaActive(false);
     if (this.state.hellActive) this._setHellActive(false);
+    if (this.state.sstvActive) this._setSstvActive(false);
   }
 
   async _handleMessage(ws, raw) {
@@ -460,6 +470,24 @@ class ControlServer extends EventEmitter {
           const toneHz = msg.toneHz === undefined ? undefined : clampHellTone(msg.toneHz);
           this._setHellActive(msg.active, toneHz);
           ws.send(makeResult(id, { active: msg.active, toneHz: this.state.hellToneHz }));
+          break;
+        }
+        case REQUEST.SET_SSTV_ACTIVE: {
+          if (typeof msg.active !== 'boolean') {
+            throw new Error('"active" must be a boolean');
+          }
+          this._setSstvActive(msg.active);
+          ws.send(makeResult(id, { active: msg.active }));
+          break;
+        }
+        case REQUEST.END_SSTV_PICTURE: {
+          this.emit('sstv-end-picture');
+          ws.send(makeResult(id, { accepted: true }));
+          break;
+        }
+        case REQUEST.GET_SSTV_PICTURES: {
+          // Kept here by SstvDecoderBridge (newest last).
+          ws.send(makeResult(id, { pictures: this.sstvPictures ?? [] }));
           break;
         }
         case REQUEST.SEND_FT8: {
