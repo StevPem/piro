@@ -3489,3 +3489,19 @@ model for how to approach that.
   whole 116.6 s of audio written), Stop. Not tested on air.
   Service-worker cache bumped to v77.
 
+### SSTV transmit fixes (v78)
+
+- Real bug: no RF output while sending. DATA mode never actually came on
+  (the driver used `1A 05 00 63`, not the IC-7300's DATA mode command
+  `1A 06`; see docs/civ-notes.md "DATA MODE"), so the radio modulated from
+  its DATA OFF source. Fixed in `CivDriver#setDataMode()`; this affects
+  every audio transmission, not just SSTV.
+- Real bug: **Cancel** did nothing while a picture was going out (only the
+  Send/Stop button stopped it), so the radio kept transmitting. Cancel now
+  sends `abortSstv` and closes the editor once the server reports
+  `aborted`.
+- `SstvTxBridge` also stops a transmission when the last browser
+  disconnects, and never keys PTT if Stop came during encoding.
+- Browser test: Cancel while sending stops it (PTT off, DATA MODE off) and
+  closes the editor. Service-worker cache bumped to v78.
+

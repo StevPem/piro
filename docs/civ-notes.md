@@ -130,7 +130,37 @@ byte every time, there's no way to change just the filter in isolation.
 produces (a mode read, then a mode+filter write) verified against a
 fake transport.
 
-## DATA MODE (command 0x1A, sub-command 0x05, parameter 0x0063) — real bug found: FT8 TX had no audio path at all
+## DATA MODE (command 0x1A, sub-command 0x06) — real bug found twice: audio transmissions had no audio path
+
+**Correction (the second bug).** Everything below about `1A 05 00 63` was
+wrong: on the IC-7300 that address is not DATA MODE but one of the ACC/USB
+output settings in the same numbered group as `00 59` (AF/IF output
+select), `00 60` (AF output level, as Hamlib's IC-7300 backend has it) and
+`00 65` (USB MOD level). The radio accepted the writes with OK and read the
+value back, so it looked right, but DATA mode never came on. Every audio
+transmission (FT8, RTTY AFSK, JTTY, Olivia, Feld-Hell, SSTV) therefore went
+out on the DATA OFF MOD source (MIC/ACC by default): PTT keyed and nothing
+modulated the carrier. It was found when an SSTV transmission showed zero
+output on an external power meter.
+
+DATA mode is command **`1A 06`** with two data bytes, `[data, filter]`:
+`01 <FIL 1-3>` for on (USB-D / LSB-D), `00 00` for off; a bare `1A 06`
+reads it back in the same form. This is the command Icom's CI-V reference
+gives and the one Hamlib's icom backend uses for every modern Icom
+(`S_MEM_DATA_MODE`, `rigs/icom/icom_defs.h`). `CivDriver#setDataMode(on,
+filter)` keeps the current filter unless one is given, and
+`test/civ-driver.test.js` checks the bytes and that nothing is sent to
+`1A 05 00 63` any more.
+
+Two side effects of the old bug worth knowing: the radio's ACC/USB setting
+at `00 63` may have been left at 0 or 1 by earlier PiRO versions (check it
+in Menu > Set > Connectors if you use that output), and the radio's
+**DATA MOD** input (Menu > Set > Connectors > MOD Input > DATA MOD) must
+be **USB** for PiRO's transmissions now that DATA mode really comes on.
+Also note that the plain mode command (`06`) turns DATA mode off on Icom
+radios, so DATA mode is always set after the mode.
+
+### The original write-up (superseded)
 
 A user reported RX working well but never completing a single FT8 QSO
 despite the TX pipeline's sample-generation and PTT-timing having already

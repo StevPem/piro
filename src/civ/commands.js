@@ -17,7 +17,7 @@ const CMD = {
   READ_TRANSCEIVER_ID: 0x19, // paired with SUBCMD.TRANSCEIVER_ID, for address auto-detect
   PTT: 0x1c, // paired with SUBCMD.PTT
   FUNCTION: 0x16, // various RX function toggles; see FUNCTION_SUBCMD
-  OPTIONAL: 0x1a, // Icom's large "optional command" group; only DATA_MODE is used here — see OPTIONAL_SUBCMD
+  OPTIONAL: 0x1a, // Icom's large "optional command" group: extended settings and DATA mode — see OPTIONAL_SUBCMD
   SCOPE: 0x27, // spectrum scope; see SCOPE_SUBCMD and src/civ/scope.js
 
   // Reply-only pseudo-commands: the rig echoes the original command byte
@@ -126,50 +126,33 @@ const FUNCTION_SUBCMD = {
 };
 
 /**
- * Sub-commands under CMD.OPTIONAL (0x1A) — a large, model-specific group;
- * only DATA_MODE is used by this project. Per Icom's official CI-V
- * reference manual (also independently corroborated by other open-source
- * CI-V implementations targeting the IC-7300, e.g. Hamlib's icom backend,
- * which defines this exact "1A 05 00 63" address for the same setting),
- * "05" is itself a further-addressed sub-group: the actual setting is
- * selected by a 2-byte parameter number sent as the first two data bytes
- * (see DATA_MODE_PARAM_BYTES below), *not* by subCmd alone — the same
- * "two-part addressing" pattern this project's scope commands already use
- * (see SCOPE_SUBCMD.MODE/SPAN's own doc comments).
+ * Sub-commands under CMD.OPTIONAL (0x1A), a large model-specific group.
  *
- * DATA_MODE is genuinely distinct from the main operating mode (CMD.
- * SET_MODE/0x06) — see CivDriver#setDataMode's doc comment for why this
- * matters for FT8 TX specifically, and for how its *value* width (2
- * bytes, not 1 — see DATA_MODE_PARAM_BYTES below) was confirmed against
- * real IC-7300 hardware.
+ *   PARAMS (0x05): the radio's extended settings ("menu items"), each
+ *     selected by a 2-byte parameter number sent as the first two data
+ *     bytes (see the *_PARAM_BYTES constants below), then its value.
+ *   DATA_MODE (0x06): DATA mode and its filter, two data bytes: [data
+ *     (00 = off, 01 = on, i.e. USB-D / LSB-D), filter (01-03; 00 when data
+ *     is off)]. This is what Icom's CI-V reference and Hamlib's icom
+ *     backend (S_MEM_DATA_MODE, used for every modern Icom including the
+ *     IC-7300) use.
+ *
+ * Real bug, found from an SSTV transmission with no RF output: DATA mode
+ * used to be set with `1A 05 00 63`, which on the IC-7300 is not DATA mode
+ * but one of the ACC/USB output settings in the same numbered group as
+ * 00 59 (AF/IF output select), 00 60 (AF output level) and 00 65 (USB MOD
+ * level). The radio accepted it, so nothing failed, but DATA mode never
+ * came on: the radio kept taking TX audio from its DATA OFF MOD source
+ * (MIC/ACC by default), so FT8, RTTY AFSK, JTTY, Olivia, Feld-Hell and
+ * SSTV keyed the transmitter with no audio. See docs/civ-notes.md.
  */
 const OPTIONAL_SUBCMD = {
-  // Not really "the DATA MODE command" on its own — 0x05 addresses a
-  // whole shared sub-group of extended, model-specific settings under
-  // CMD.OPTIONAL, each individually selected by a further 2-byte
-  // parameter number sent as the first two data bytes (see the
-  // *_PARAM_BYTES constants below). DATA_MODE was the first (and, for a
-  // while, only) one this project used, hence the name it kept —
-  // AF_OUTPUT_LEVEL_USB_PARAM_BYTES and MOD_INPUT_LEVEL_USB_PARAM_BYTES
-  // below share this exact same subCmd byte, just a different parameter
-  // number.
-  DATA_MODE: 0x05,
+  PARAMS: 0x05,
+  DATA_MODE: 0x06,
 };
 
-// 2-byte parameter number selecting the DATA MODE setting within
-// CMD.OPTIONAL/OPTIONAL_SUBCMD.DATA_MODE's "05" sub-group (see that
-// constant's doc comment) — sent as the first two data bytes. The value
-// itself is a further 2-byte field after this ([0x00, on?1:0] for this
-// project's own on/off use — see CivDriver#setDataMode()), confirmed
-// against a real IC-7300 via test/manual-data-mode-diagnostics.js: a
-// bare read of this parameter came back as 4 data bytes total (this
-// 2-byte parameter number plus a 2-byte value), not 3, correcting an
-// earlier single-value-byte assumption that a real hardware test showed
-// was silently accepted (OK reply) but had no actual effect.
-const DATA_MODE_PARAM_BYTES = [0x00, 0x63];
-
 // Two more parameter numbers in the same "1A 05" sub-group, both genuine
-// 0-255 continuous levels (not on/off, unlike DATA_MODE above) — the
+// 0-255 continuous levels — the
 // radio's own internal level settings for its USB audio codec, distinct
 // from both the front-panel volume knob and this project's own ALSA-side
 // `amixer` capture/playback gain maximization (see docs/audio-notes.md;
@@ -187,7 +170,7 @@ const DATA_MODE_PARAM_BYTES = [0x00, 0x63];
 // worked example setting both to 02 55 (255, max) via
 // CivDriver#_encodeMeterValue()'s packing — the same "hundreds-digit
 // nibble + BCD byte" 0-255 encoding already hardware-confirmed for
-// S-meter/TX power/RX gain, not DATA_MODE's own plain on/off value. See
+// S-meter/TX power/RX gain. See
 // CivDriver#setAfOutputLevelUsb()/setModInputLevelUsb() for how these are
 // used (maxed once at server startup, to work around the USB audio
 // levels the README already flags as resetting on every restart).
@@ -239,7 +222,6 @@ module.exports = {
   SCOPE_MODE,
   SCOPE_SPAN_PRESETS_HZ,
   OPTIONAL_SUBCMD,
-  DATA_MODE_PARAM_BYTES,
   AF_OUTPUT_LEVEL_USB_PARAM_BYTES,
   MOD_INPUT_LEVEL_USB_PARAM_BYTES,
   MODE,

@@ -95,16 +95,22 @@ class SstvTxBridge {
     };
     this._onSend = (req) => this.send(req).catch(() => {});
     this._onAbort = () => this.abort();
+    // Nobody left to press Stop: don't keep a minutes-long transmission going.
+    this._onClientGone = () => {
+      if (this._tx && this.controlServer.clients && this.controlServer.clients.size === 0) this.abort();
+    };
   }
 
   start() {
     this.controlServer.on('sstv-send', this._onSend);
     this.controlServer.on('sstv-abort', this._onAbort);
+    this.controlServer.on('client-disconnected', this._onClientGone);
   }
 
   stop() {
     this.controlServer.off('sstv-send', this._onSend);
     this.controlServer.off('sstv-abort', this._onAbort);
+    this.controlServer.off('client-disconnected', this._onClientGone);
     if (this._tx) this.abort();
   }
 
@@ -168,9 +174,11 @@ class SstvTxBridge {
           await civ.setTxPower(this.txPowerW);
         }
       }
-      keyed = true;
-      await this.controlServer.setPttFromServer(true);
-      this._status({ status: 'sending', durationSec, startTime: this.now() });
+      if (!tx.aborted) {
+        keyed = true;
+        await this.controlServer.setPttFromServer(true);
+        this._status({ status: 'sending', durationSec, startTime: this.now() });
+      }
       if (!tx.aborted) {
         this.audioBridge.playback.write(pcm);
         const ms = (pcm.length / 2 / this.audioBridge.sampleRate) * 1000;
@@ -180,7 +188,7 @@ class SstvTxBridge {
         });
       }
       tx.timer = null;
-      await this.controlServer.setPttFromServer(false);
+      if (keyed) await this.controlServer.setPttFromServer(false);
       keyed = false;
       await this._restore(civ, dataOn, prevPower);
       dataOn = false;

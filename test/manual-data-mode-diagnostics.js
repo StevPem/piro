@@ -1,23 +1,17 @@
 'use strict';
 
 /**
- * Diagnostic tool for the IC-7300 "DATA MODE" set/read command
- * (1A 05 00 63), which CivDriver#setDataMode()/getDataMode() implement —
- * see that method's doc comment in src/civ/driver.js and the "DATA MODE"
- * section of docs/civ-notes.md for the full story.
+ * Diagnostic tool for the IC-7300's DATA mode (CI-V 1A 06 [data, filter]),
+ * which CivDriver#setDataMode()/getDataMode() implement — see that
+ * method's doc comment in src/civ/driver.js and the "DATA MODE" section of
+ * docs/civ-notes.md.
  *
- * History: a first version of this script (and of setDataMode()) assumed
- * a single value byte after the 2-byte parameter number (3 data bytes
- * total: [0x00, 0x63, on?1:0]). A user ran that version against a real
- * IC-7300 and got a very informative result: the SET command came back
- * OK, but a read-back afterward showed no change at all, AND the bare
- * read itself came back as **4** data bytes (`[0x00, 0x63, 0x00, 0x01]`)
- * — not 3 — proving the value itself is a 2-byte field, not 1. The
- * driver has since been corrected to send/parse the full 4-byte
- * structure ([param, param, valueHi, valueLo]). This script now verifies
- * that fix directly, using CivDriver's real setDataMode()/getDataMode()
- * rather than hand-rolled frames, plus prints the raw hex on every step
- * so the wire format stays visible either way.
+ * History: earlier versions of this script and of the driver used
+ * `1A 05 00 63`, which on the IC-7300 is not DATA mode at all (it is one
+ * of the ACC/USB output settings), so the radio accepted it and nothing
+ * changed. The driver now uses 1A 06, the command Icom's CI-V reference
+ * and Hamlib use. With this script you can see the radio's display change
+ * to USB-D (or LSB-D) and back.
  *
  * What it does, in order:
  *   1. Reads the current operating mode (should already be USB if FT8

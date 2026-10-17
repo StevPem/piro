@@ -12,7 +12,7 @@ Hamlib, no separate audio server and no extra apps.
 Written by VK3TR. Licensed AGPL-3.0-only (see
 [Licence](#licence)).
 
-**Current build: v77.** This is the version the app shows next to its title.
+**Current build: v78.** This is the version the app shows next to its title.
 It is the `CACHE_NAME` number in `src/client/sw.js`, which goes up with every
 change to the web app.
 
@@ -437,6 +437,12 @@ one hard refresh (Ctrl+Shift+R, or Cmd+Shift+R on a Mac).
   build. Re-do the check in [RNNoise](#rnnoise-rnn-button).
 - **The server runs at 100% CPU after turning HamNoise on.** Make sure
   `HAMNOISE_QUALITY` is not set to `v2` on a Raspberry Pi.
+- **A digital transmission (FT8, RTTY, JTTY, Olivia, Feld-Hell, SSTV) keys
+  the radio but shows no power.** The radio's display should read USB-D or
+  LSB-D while it transmits; PiRO turns DATA mode on with CI-V `1A 06`
+  (before v78 it sent the wrong command, so DATA mode never came on). Then
+  check on the radio: Menu > Set > Connectors > MOD Input > **DATA MOD**
+  must be **USB**, and USB MOD Level not 0.
 - **FT8 decodes nothing or at the wrong times.** Check the system clock with
   `timedatectl`. It must show "System clock synchronized: yes".
 - **The microphone is blocked in the browser.** Use HTTPS (see

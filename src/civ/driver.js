@@ -13,7 +13,6 @@ const {
   SCOPE_MODE,
   SCOPE_SPAN_PRESETS_HZ,
   OPTIONAL_SUBCMD,
-  DATA_MODE_PARAM_BYTES,
   AF_OUTPUT_LEVEL_USB_PARAM_BYTES,
   MOD_INPUT_LEVEL_USB_PARAM_BYTES,
   MODE,
@@ -351,7 +350,7 @@ class CivDriver extends EventEmitter {
   }
 
   /**
-   * Toggle the IC-7300's "DATA MODE" (CI-V 1A 05 00 63) — a setting
+   * Toggle the IC-7300's "DATA MODE" (CI-V 1A 06) — a setting
    * genuinely distinct from, and *in addition to*, the operating mode
    * itself (setMode('USB')). This is very likely the missing piece behind
    * "FT8 RX works but nothing I send is ever decoded by the other
@@ -371,62 +370,50 @@ class CivDriver extends EventEmitter {
    * decodes anything, because there's no FT8 tone in the RF actually
    * going out (or, if the mic is live, just room noise).
    *
-   * On: 1 (this project only ever needs DATA1 — some Icom models accept
-   * 2/3 for DATA2/DATA3, distinguishing further per-filter DATA MOD
-   * Input options in the radio's menu structure, which this app has no
-   * need for). Off: 0.
+   * The command is 1A 06 [data, filter] (Icom's CI-V reference; Hamlib's
+   * S_MEM_DATA_MODE): [01, FIL] turns DATA mode on with that filter (the
+   * current one is kept unless `filter` is given), [00, 00] turns it off.
    *
-   * VALUE WIDTH — corrected against real hardware: an earlier version of
-   * this sent a single value byte (`[0x00, 0x63, on?1:0]`, 3 data bytes
-   * total), reasoned only from the address being a well-corroborated
-   * 2-byte parameter number, not from an actual read-back. A user's own
-   * hardware diagnostic (test/manual-data-mode-diagnostics.js) against a
-   * real IC-7300 showed the radio replies to a bare read of this
-   * parameter with **4** data bytes — `[0x00, 0x63, 0x00, 0x01]` while
-   * DATA MODE was known to be on — not 3, meaning the *value* itself is a
-   * 2-byte field (`[0x00, 0x01]`, i.e. the setting's value BCD/digit
-   * -packed across two bytes the same way several other "1A 05" extended
-   * parameters do), not the single byte originally assumed. The single
-   * -byte SET this project sent before didn't error (the radio replied
-   * OK), but a follow-up read-back showed no actual change — consistent
-   * with a short/malformed value field being silently tolerated but not
-   * correctly applied. Sending the full 2-byte value field (`[0x00,
-   * on?1:0]`) is the fix, matching the read reply's own structure
-   * exactly. See docs/civ-notes.md's "DATA MODE" section for the full
-   * diagnostic trace this was found from.
+   * REAL BUG, fixed: earlier versions sent `1A 05 00 63 00 <0|1>`, believing
+   * 00 63 to be the DATA MODE menu item. On the IC-7300 it is one of the
+   * ACC/USB output settings next to 00 59 (AF/IF output select), 00 60
+   * (AF output level) and 00 65 (USB MOD level); the radio replied OK, so
+   * nothing looked wrong, but DATA mode never came on and every audio
+   * transmission (FT8, RTTY AFSK, JTTY, Olivia, Feld-Hell, SSTV) went out
+   * with the DATA OFF MOD source (MIC/ACC by default): PTT keyed, no
+   * power. Found when an SSTV transmission showed zero output on a power
+   * meter. See docs/civ-notes.md.
    *
-   * IMPORTANT CAVEAT, same honesty this project applies to every other
-   * CI-V byte layout (see docs/civ-notes.md): the "1A 05 00 63" address
-   * and its 2-byte value-field width are now both confirmed against real
-   * IC-7300 hardware (not just corroborating documentation), but whether
-   * turning it on here actually routes audio to the transmitter still
-   * depends on one thing this CI-V command **cannot** do: reach into the
-   * radio's own menu and change what "MOD Input (DATA ON)" is set to. If
-   * that menu setting isn't already USB on the actual radio, DATA MODE
-   * being genuinely on via CI-V still won't route this app's audio to the
-   * transmitter. See docs/ui-notes.md for exactly where to check that
-   * menu setting.
+   * The radio's MOD Input for DATA ON (Menu > Set > Connectors > MOD Input
+   * > DATA MOD) must be USB for this app's audio to reach the transmitter;
+   * no CI-V command here changes that.
    */
-  async setDataMode(on) {
-    const data = Buffer.from([...DATA_MODE_PARAM_BYTES, 0x00, on ? 1 : 0]);
+  async setDataMode(on, filter) {
+    // 1A 06 [data, filter]: data 01 = on (USB-D/LSB-D) with the filter to
+    // use (keep the current one), 00 = off, when the filter byte must be 00.
+    let fil = filter;
+    if (on && !(fil >= 1 && fil <= 3)) {
+      try {
+        fil = (await this.getMode()).filter;
+      } catch {
+        fil = 1;
+      }
+    }
+    if (!(fil >= 1 && fil <= 3)) fil = 1;
+    const data = Buffer.from(on ? [0x01, fil] : [0x00, 0x00]);
     const frame = await this._send(CMD.OPTIONAL, OPTIONAL_SUBCMD.DATA_MODE, data);
     this._throwIfNG(frame, 'set data mode');
     return true;
   }
 
-  /** Read back whether DATA MODE is currently on — see setDataMode(). */
+  /** Read back whether DATA mode is on (1A 06 -> [data, filter]) — see setDataMode(). */
   async getDataMode() {
-    const data = Buffer.from(DATA_MODE_PARAM_BYTES);
-    const frame = await this._send(CMD.OPTIONAL, OPTIONAL_SUBCMD.DATA_MODE, data);
+    const frame = await this._send(CMD.OPTIONAL, OPTIONAL_SUBCMD.DATA_MODE);
     this._throwIfNG(frame, 'read data mode');
-    // frame.data is everything after the subCmd byte (0x05) — i.e. the
-    // echoed 2-byte parameter number followed by the actual 2-byte value
-    // field (see setDataMode()'s doc comment for how this width was
-    // confirmed against real hardware — it is NOT a single value byte).
-    if (!frame.data || frame.data.length < 4) {
-      throw new Error('Unexpected data-mode reply format (older firmware may not support reading this back)');
+    if (!frame.data || frame.data.length < 1) {
+      throw new Error('Unexpected data-mode reply format');
     }
-    return frame.data[3] !== 0;
+    return frame.data[0] !== 0;
   }
 
   /**
@@ -456,7 +443,7 @@ class CivDriver extends EventEmitter {
    */
   async setAfOutputLevelUsb(value = 255) {
     const data = Buffer.concat([Buffer.from(AF_OUTPUT_LEVEL_USB_PARAM_BYTES), this._encodeMeterValue(value)]);
-    const frame = await this._send(CMD.OPTIONAL, OPTIONAL_SUBCMD.DATA_MODE, data);
+    const frame = await this._send(CMD.OPTIONAL, OPTIONAL_SUBCMD.PARAMS, data);
     this._throwIfNG(frame, 'set AF output level (ACC/USB)');
     return Math.max(0, Math.min(255, Math.round(value)));
   }
@@ -464,7 +451,7 @@ class CivDriver extends EventEmitter {
   /** Read back the current "AF output level to ACC/USB" — see setAfOutputLevelUsb(). */
   async getAfOutputLevelUsb() {
     const data = Buffer.from(AF_OUTPUT_LEVEL_USB_PARAM_BYTES);
-    const frame = await this._send(CMD.OPTIONAL, OPTIONAL_SUBCMD.DATA_MODE, data);
+    const frame = await this._send(CMD.OPTIONAL, OPTIONAL_SUBCMD.PARAMS, data);
     this._throwIfNG(frame, 'read AF output level (ACC/USB)');
     // frame.data is everything after the subCmd byte: the echoed 2-byte
     // parameter number followed by the actual 2-byte value field — same
@@ -487,7 +474,7 @@ class CivDriver extends EventEmitter {
    */
   async setModInputLevelUsb(value = 255) {
     const data = Buffer.concat([Buffer.from(MOD_INPUT_LEVEL_USB_PARAM_BYTES), this._encodeMeterValue(value)]);
-    const frame = await this._send(CMD.OPTIONAL, OPTIONAL_SUBCMD.DATA_MODE, data);
+    const frame = await this._send(CMD.OPTIONAL, OPTIONAL_SUBCMD.PARAMS, data);
     this._throwIfNG(frame, 'set MOD input level (from USB)');
     return Math.max(0, Math.min(255, Math.round(value)));
   }
@@ -495,7 +482,7 @@ class CivDriver extends EventEmitter {
   /** Read back the current "MOD input level from USB" — see setModInputLevelUsb(). */
   async getModInputLevelUsb() {
     const data = Buffer.from(MOD_INPUT_LEVEL_USB_PARAM_BYTES);
-    const frame = await this._send(CMD.OPTIONAL, OPTIONAL_SUBCMD.DATA_MODE, data);
+    const frame = await this._send(CMD.OPTIONAL, OPTIONAL_SUBCMD.PARAMS, data);
     this._throwIfNG(frame, 'read MOD input level (from USB)');
     if (!frame.data || frame.data.length < 4) {
       throw new Error('Unexpected MOD input level (from USB) reply format (older firmware may not support reading this back)');
