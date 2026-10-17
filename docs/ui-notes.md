@@ -3223,12 +3223,12 @@ manual verification in a real browser against real hardware — see the
 step-by-step testing guidance already given for earlier phases as a
 model for how to approach that.
 
-## TTY button and Send composer (RTTY / JTTY / Olivia)
+## TTY button and Send composer (RTTY / JTTY / Olivia / Feld-Hell)
 
 - The mode row's old RTTY chip is now **TTY**. First click selects the
   radio's RTTY mode (label reads "RTTY"); the next click enters JTTY
   (label "JTTY"); the next enters Olivia 8/250 (label "Olivia"); the next
-  goes back to RTTY, and so on round, until any other mode chip is chosen.
+  enters Feld-Hell (label "Feld-Hell"); the next goes back to RTTY, and so on round, until any other mode chip is chosen.
   JTTY and Olivia are app-level pseudo-modes like FT8/FreeDV: the radio is
   put in USB with DATA MODE on, and DATA MODE is turned off again when
   leaving. Going from JTTY straight to Olivia (`switchJttyToOlivia()`)
@@ -3303,3 +3303,53 @@ model for how to approach that.
   it was sent: the synchroniser integrates over `syncIntegLen` = 4 blocks
   before outputting, exactly like fldigi.
 - Service-worker cache bumped to v72.
+
+### Feld-Hell
+
+- `ttyMode()` returns `'HELL'` while `hellActive`; the chip reads
+  "Feld-Hell". Olivia -> Feld-Hell (`switchOliviaToHell()`) sends no mode
+  commands, like JTTY -> Olivia. Entering it, and band chips while it is
+  selected, tune so a signal on the band's `HELL_FREQUENCIES` entry comes
+  out at the current tone: the table holds **signal** frequencies (the Feld
+  Hell Club's list, 30m moved to 10.142 MHz to stay clear of FT8) and the
+  dial is set that far below (`tuneHellToBand()`), so 20m with the default
+  1000 Hz tone is dial 14.062 MHz.
+- The frequency box reads "Tone" (300-2700 Hz, default from `HELL_TONE_HZ`
+  via the snapshot's `hellToneHz`), one frequency for sending and receiving.
+  `setHellTone()` updates the box, marker and receiver (`setHellActive
+  {active: true, toneHz}`); retuning keeps the picture (the receiver just
+  moves). Typing retunes after a 600 ms pause.
+- There is no text panel: the picture is the output. `ScopeDisplay`
+  gets `setHellMode(true)`, in which the trace still shows the audio
+  spectrum (frames from `HellDecoderBridge`) but `pushAudioSpectrum()`
+  stops drawing into the waterfall canvas, and `pushHellColumns()` (fed by
+  `hell-columns` events, i.e. `BINARY_TYPE.HELL_COLUMNS` frames) scrolls the
+  canvas left and paints the new columns at the right edge. Each screen
+  column is drawn as fldigi does (`hellColumnPixels()`): the previous
+  received column underneath the current one, 2 x 20 pixels scaled to the
+  canvas height, so a whole line of text is always visible however it has
+  drifted vertically. Columns are `hellColumnWidth()` = height/28 px wide
+  (5 px on the 130 px waterfall): letters come out about half as wide as
+  square, which fits more text on a phone. Pale green ink on black.
+- In Feld-Hell mode a click on the spectrum sets the tone to the nearest
+  10 Hz (the receive filter is only +/-150 Hz, so 50 Hz steps are too
+  coarse); clicks and hover on the picture are ignored, since its x axis is
+  time. Leaving Feld-Hell clears the canvas so the waterfall restarts clean.
+- Real bug found while adding Feld-Hell: with `CIV_SCOPE_ENABLED` off the
+  "scope not enabled" placeholder stayed over the scope area even in the
+  audio-spectrum modes, whose spectrum comes from the RX audio and works
+  without the radio's scope. It would have hidden the Feld-Hell picture
+  entirely. The placeholder is now hidden whenever an audio-spectrum frame
+  is drawn and shown again (if it applies) when returning to the RF scope.
+- The composer shows text as typed (`.tty-composer__input--as-typed`), as
+  in Olivia; fldigi's font draws most lower-case letters as capitals anyway.
+- Server side: `HellDecoderBridge` (decimates capture to 8 kHz, runs
+  `audio/hell-rx.js` on the main thread, which is cheap: about 0.4% of a
+  core on x86, batches columns into a frame every 100 ms, broadcasts the
+  0-3 kHz spectrum every 250 ms, pauses during PTT); `TtyBridge` mode
+  `'HELL'` (encodes at 8 kHz, upsamples, up to 400 characters, a note for
+  characters outside the font).
+- Verified in headless Chromium (`test/manual-tty-ui.js`): the cycle, the
+  tuning, the picture starting at the right edge and scrolling left, click
+  to set the tone, clicks on the picture ignored, send/stop, and the canvas
+  cleared on leaving. Not tested on air. Service-worker cache bumped to v73.

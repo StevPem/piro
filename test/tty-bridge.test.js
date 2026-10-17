@@ -5,7 +5,8 @@ const { EventEmitter } = require('events');
 const { TtyBridge, DEFAULT_JTTY_TX_FREQ_HZ } = require('../src/audio/tty-bridge');
 const { EVENT } = require('../src/server/protocol');
 const { encodeJtty } = require('../src/audio/jtty-tx');
-const { OLIVIA_MAX_CHARS } = require('../src/audio/tty-bridge');
+const { OLIVIA_MAX_CHARS, HELL_MAX_CHARS } = require('../src/audio/tty-bridge');
+const { encodeFeldHell, hellDurationSec } = require('../src/audio/hell-tx');
 const { OliviaReceiver, OliviaTextDecoder } = require('../src/audio/olivia-rx');
 const { StreamDecimator } = require('../src/audio/decimator');
 
@@ -220,6 +221,50 @@ const statuses = (cs) => cs.broadcasts.filter((b) => b.type === EVENT.TTY_TX_STA
     bridge.abort();
     await p;
     check(controlServer.pttCalls.join() === 'true,false', 'Olivia: PTT released after abort');
+  }
+
+  // --- Feld-Hell ---
+  {
+    const { controlServer, playback, bridge } = setup();
+    const p = bridge.send({ mode: 'HELL', text: 'CQ DE VK3TR', freqHz: 1234.4 });
+    await sleep(10);
+    const st = statuses(controlServer)[0];
+    check(st.status === 'sending' && st.mode === 'HELL' && st.freqHz === 1234, 'Feld-Hell: sending status, at the requested (rounded) tone');
+    check(Math.abs(st.durationSec - hellDurationSec('CQ DE VK3TR')) < 0.01, `Feld-Hell: duration as estimated (${st.durationSec.toFixed(2)} s)`);
+    const i16 = new Int16Array(playback.writes[0].buffer, playback.writes[0].byteOffset, playback.writes[0].length / 2);
+    const x8 = new StreamDecimator(48000, 8000, { cutoffHz: 3000 }).process(Int16Array.from(i16));
+    const ref = encodeFeldHell('CQ DE VK3TR', { toneHz: 1234 }).samples;
+    // the 48 kHz audio, brought back to 8 kHz, is the 8 kHz modulator output (bar the
+    // filtering and a fractional-sample delay, which costs a little correlation at 1234 Hz)
+    let best = 0;
+    for (let lag = 0; lag < 40; lag++) {
+      let sxy = 0;
+      let sxx = 0;
+      let syy = 0;
+      for (let i = 0; i + lag < x8.length && i < ref.length; i++) {
+        const a = x8[i + lag] / 32768;
+        sxy += a * ref[i];
+        sxx += a * a;
+        syy += ref[i] * ref[i];
+      }
+      best = Math.max(best, sxy / Math.sqrt(sxx * syy));
+    }
+    check(best > 0.9, `Feld-Hell: the 48 kHz audio written to the radio is the modulator's output (r = ${best.toFixed(4)})`);
+    bridge.abort();
+    await p;
+    check(controlServer.pttCalls.join() === 'true,false', 'Feld-Hell: PTT keyed on then off');
+  }
+  {
+    const { controlServer, bridge } = setup();
+    const p = bridge.send({ mode: 'HELL', text: 'Ω OK', freqHz: 50 });
+    await sleep(10);
+    const st = statuses(controlServer)[0];
+    check(/Ω/.test(st.note || '') && st.freqHz === 300, 'Feld-Hell: characters outside the font are reported, tone clamped to 300 Hz');
+    bridge.abort();
+    await p;
+    let err = null;
+    await bridge.send({ mode: 'HELL', text: 'X'.repeat(HELL_MAX_CHARS + 1) }).catch((e) => (err = e));
+    check(err && /too long/i.test(err.message), `Feld-Hell: more than ${HELL_MAX_CHARS} characters is refused`);
   }
 
   if (failures > 0) {

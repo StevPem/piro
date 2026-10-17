@@ -6,10 +6,14 @@ const { encodeJtty, sampleRateSupported, JTTY_BASE_RATE, JTTY_BAUD } = require('
 const { upsampleFloatToPcm } = require('./resample');
 const { encodeOlivia, textToOliviaBytes } = require('./olivia-tx');
 const { OLIVIA_SAMPLE_RATE, clampOliviaCentre } = require('./olivia-dsp');
+const { encodeFeldHell, hellDurationSec, HELL_SAMPLE_RATE } = require('./hell-tx');
+const { clampHellTone, DEFAULT_TONE_HZ: DEFAULT_HELL_TONE_HZ } = require('./hell-rx');
 
 // Olivia 8/250 sends ~1.46 characters a second, so this is about 3.5
 // minutes on air: well inside the 10-minute PTT watchdog.
 const OLIVIA_MAX_CHARS = 300;
+// Feld-Hell sends about 2.5 characters a second: 400 is under 3 minutes.
+const HELL_MAX_CHARS = 400;
 
 // Audio frequency (Hz) of JTTY's lowest tone. The signal occupies this
 // frequency plus ~94 Hz (four tones 31.25 Hz apart), so 1450 centres it on
@@ -30,14 +34,15 @@ const PTT_RELEASE_MARGIN_MS = 300;
 const DEFAULT_TX_AMPLITUDE = 1.0;
 
 /**
- * RTTY, JTTY and Olivia transmit. Receives `tty-send` / `tty-abort` events from the
+ * RTTY, JTTY, Olivia and Feld-Hell transmit. Receives `tty-send` / `tty-abort` events from the
  * ControlServer (the client's "Send" button), synthesizes the audio, keys
  * PTT, plays the audio out through the same ALSA path FT8 and voice use,
  * and releases PTT afterwards. Unlike FT8, neither mode is slotted, so a
  * transmission starts the moment it is requested.
  *
  * Receive for these modes is separate (RTTY: rtty-decoder-bridge.js;
- * JTTY: server/jtty-decoder-bridge.js; Olivia: server/olivia-decoder-bridge.js).
+ * JTTY: server/jtty-decoder-bridge.js; Olivia: server/olivia-decoder-bridge.js; Feld-Hell:
+ * server/hell-decoder-bridge.js).
  *
  * Status is reported through EVENT.TTY_TX_STATUS broadcasts:
  *   {status: 'sending', mode, text, message, nframes?, durationSec}
@@ -51,16 +56,18 @@ class TtyBridge {
    * @param {import('../server/audio-bridge').AudioBridge} opts.audioBridge
    * @param {number} [opts.jttyFreqHz] - default JTTY lowest-tone audio frequency
    * @param {number} [opts.oliviaFreqHz] - default Olivia centre audio frequency (used if a request gives none)
+   * @param {number} [opts.hellToneHz] - default Feld-Hell tone audio frequency (used if a request gives none)
    * @param {number} [opts.pttReleaseMarginMs] - injectable for testing
    * @param {number} [opts.amplitude]
    */
-  constructor({ controlServer, audioBridge, jttyFreqHz, oliviaFreqHz, pttReleaseMarginMs, amplitude } = {}) {
+  constructor({ controlServer, audioBridge, jttyFreqHz, oliviaFreqHz, hellToneHz, pttReleaseMarginMs, amplitude } = {}) {
     if (!controlServer) throw new Error('TtyBridge requires opts.controlServer');
     if (!audioBridge) throw new Error('TtyBridge requires opts.audioBridge');
     this.controlServer = controlServer;
     this.audioBridge = audioBridge;
     this.jttyFreqHz = jttyFreqHz ?? DEFAULT_JTTY_TX_FREQ_HZ;
     this.oliviaFreqHz = clampOliviaCentre(oliviaFreqHz);
+    this.hellToneHz = clampHellTone(hellToneHz ?? DEFAULT_HELL_TONE_HZ);
     this.pttReleaseMarginMs = pttReleaseMarginMs ?? PTT_RELEASE_MARGIN_MS;
     this.amplitude = amplitude ?? DEFAULT_TX_AMPLITUDE;
     this._tx = null; // the in-flight transmission, if any
@@ -123,6 +130,20 @@ class TtyBridge {
         note: replaced.length ? `Sent "." for characters Olivia cannot carry: ${[...new Set(replaced)].join('')}` : undefined,
       };
     }
+    if (mode === 'HELL') {
+      if ([...String(text)].length > HELL_MAX_CHARS) {
+        return { error: `That text is too long for one Feld-Hell transmission (the limit is ${HELL_MAX_CHARS} characters, about ${Math.round(hellDurationSec('n'.repeat(HELL_MAX_CHARS)) / 60)} minutes).` };
+      }
+      const toneHz = clampHellTone(freqHz ?? this.hellToneHz);
+      const enc = encodeFeldHell(text, { toneHz, amplitude: this.amplitude });
+      return {
+        pcm: rate === HELL_SAMPLE_RATE ? floatToPcm(enc.samples) : upsampleFloatToPcm(enc.samples, HELL_SAMPLE_RATE, rate),
+        durationSec: enc.durationSec,
+        message: text,
+        freqHz: toneHz,
+        note: enc.unsupported.length ? `Left a gap for characters the Feld-Hell font does not have: ${[...new Set(enc.unsupported)].join('')}` : undefined,
+      };
+    }
     // JTTY
     const f0 = clampFreq(freqHz ?? this.jttyFreqHz);
     const direct = sampleRateSupported(rate);
@@ -153,7 +174,7 @@ class TtyBridge {
       this._status({ status: 'error', mode, error });
       return Promise.reject(new Error(error));
     };
-    if (mode !== 'RTTY' && mode !== 'JTTY' && mode !== 'OLIVIA') return fail('Unknown mode.');
+    if (!['RTTY', 'JTTY', 'OLIVIA', 'HELL'].includes(mode)) return fail('Unknown mode.');
     if (typeof text !== 'string' || text.trim() === '') return fail('Nothing to send.');
     if (this._tx) return fail('Already transmitting.');
     if (this.controlServer.state?.ptt) return fail('The radio is already transmitting.');
@@ -235,4 +256,5 @@ module.exports = {
   DEFAULT_TX_AMPLITUDE,
   JTTY_BAUD,
   OLIVIA_MAX_CHARS,
+  HELL_MAX_CHARS,
 };

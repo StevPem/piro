@@ -12,7 +12,7 @@ Hamlib, no separate audio server and no extra apps.
 Written by VK3TR. Licensed AGPL-3.0-only (see
 [Licence](#licence)).
 
-**Current build: v72.** This is the version the app shows next to its title.
+**Current build: v73.** This is the version the app shows next to its title.
 It is the `CACHE_NAME` number in `src/client/sw.js`, which goes up with every
 change to the web app.
 
@@ -29,6 +29,7 @@ Several of the cooler features in this app are built on the work of others:
 - RNnoise denoiser = https://jmvalin.ca/demo/rnnoise/
 - JTTY support = Ported to JS from https://wsjtx.github.io/wsjtx/index.html
 - Olivia support = Ported to JS from Pawel Jalocha's (SP9VRC) MFSK code in fldigi, https://github.com/w1hkj/fldigi
+- Feld-Hell support = Ported to JS from fldigi's Feld-Hell modem and font, https://github.com/w1hkj/fldigi
 
 ## Features
 
@@ -38,12 +39,15 @@ Several of the cooler features in this app are built on the work of others:
   codec through ALSA.
 - **Spectrum scope and waterfall** from the radio's CI-V scope data (opt-in).
 - **CW decoders**, including "CW 3" (DeepCW, a neural decoder) and an RTTY decoder.
-- **RTTY, JTTY and Olivia**: one "TTY" button selects RTTY, then cycles
-  through [JTTY](https://wsjt.sourceforge.io/) (WSJT-X's new text mode) and
-  [Olivia 8/250](https://en.wikipedia.org/wiki/Olivia_MFSK) (the robust
-  MFSK keyboard mode, compatible with fldigi), both ported to JavaScript
-  here. In all three, a text box and a Send button replace PTT, and received
-  text is decoded as it arrives. See [RTTY, JTTY and Olivia](#rtty-jtty-and-olivia).
+- **RTTY, JTTY, Olivia and Feld-Hell**: one "TTY" button selects RTTY, then
+  cycles through [JTTY](https://wsjt.sourceforge.io/) (WSJT-X's new text
+  mode), [Olivia 8/250](https://en.wikipedia.org/wiki/Olivia_MFSK) (the
+  robust MFSK keyboard mode) and
+  [Feld-Hell](https://en.wikipedia.org/wiki/Hellschreiber) (text sent as a
+  picture), all ported to JavaScript here and the last two compatible with
+  fldigi. In all four, a text box and a Send button replace PTT; received
+  text is decoded as it arrives, or for Feld-Hell painted in the scope. See
+  [RTTY, JTTY, Olivia and Feld-Hell](#rtty-jtty-olivia-and-feld-hell).
 - **FT8**: band-activity decoding, manual TX, and a guided QSO sequence that
   suggests each reply (you still send every message yourself). Optional PSK
   Reporter spotting.
@@ -370,7 +374,8 @@ All settings are environment variables. For the systemd service they go in
 | `JTTY_RX_LOW_HZ`, `JTTY_RX_HIGH_HZ` | `200`, `2900` | Audio range, in Hz, searched for JTTY signals. The default is the whole range the decoder supports. Two extra fixed channels at 1350 and 1650 Hz (±150 Hz) are always searched as well. A narrower range saves a little CPU. |
 | `JTTY_RX_QUALITY` | `economy` | JTTY decoder effort. `economy` uses about 40% of `full`'s CPU and decoded nearly as many weak signals in testing. `light` is in between, `full` matches WSJT-X's search exactly, and `auto` runs `full` but drops to `economy` when the Pi falls behind. |
 | `OLIVIA_FREQ_HZ` | `1500` | Olivia's default audio centre frequency, in Hz, for sending and receiving, until it is changed in the UI. The signal is 250 Hz wide; the receiver searches 125 Hz either side. |
-| `OLIVIA_SQUELCH` | on | `off` turns off PiRO's filtering of junk characters and decodes exactly as fldigi does with its squelch off. See [Olivia](#rtty-jtty-and-olivia). |
+| `OLIVIA_SQUELCH` | on | `off` turns off PiRO's filtering of junk characters and decodes exactly as fldigi does with its squelch off. See [Olivia](#rtty-jtty-olivia-and-feld-hell). |
+| `HELL_TONE_HZ` | `1000` | Feld-Hell's default audio tone, in Hz, for sending and receiving, until it is changed in the UI. The band frequencies the client tunes to assume the signal is at this tone. |
 | `STATION_CALLSIGN`, `STATION_GRID` | none | Your callsign and Maidenhead grid. They set the FT8 default message and guided QSO, and the FreeDV Reporter report. |
 | `TLS_CERT_PATH`, `TLS_KEY_PATH` | none | Set both to serve HTTPS and WSS. Needed for the microphone from other devices. |
 | `SOURCE_CODE_URL` | none | Link shown in the page footer. The AGPL asks you to offer the source to people who use your instance (see [Licence](#licence)). |
@@ -465,7 +470,9 @@ src/
                    bridge, and its decode worker-thread — see docs/ui-notes.md;
                    RTTY (rtty-decoder.js, rtty-encoder.js), Olivia
                    (olivia-dsp.js, olivia-tx.js, olivia-rx.js,
-                   olivia-decode-worker.js) and JTTY
+                   olivia-decode-worker.js), Feld-Hell (hell-font.js,
+                   hell-tx.js, hell-rx.js, fed by
+                   server/hell-decoder-bridge.js) and JTTY
                    (jtty-codec.js, jtty-tx.js, jtty-rx.js, jtty-tbcc-decode.js,
                    decimator.js, jtty-decode-worker.js); transmit is played
                    out by tty-bridge.js and receive is fed by
@@ -584,7 +591,7 @@ test/
                            encoder: the spec's 34-bit vectors, 401 reference
                            messages (all exchange profiles), a reference
                            waveform; see third_party/jtty/README.md
-  tty-bridge.test.js      RTTY/JTTY/Olivia transmit bridge: PTT, audio, status
+  tty-bridge.test.js      RTTY/JTTY/Olivia/Feld-Hell transmit bridge: PTT, audio, status
                            events, abort, refusals, stub radio and ALSA
   jtty-rx.test.js         JTTY receiver: list decoder, multi-frame messages,
                            two signals, noise, gaps, chunking, and WSJT-X's
@@ -596,6 +603,12 @@ test/
                            third_party/olivia/README.md
   olivia-decoder-bridge.test.js  Olivia receive bridge: arming, retuning, PTT,
                            decimation, spectrum, and a real worker end to end
+  hell.test.js            Feld-Hell port checked against fldigi's own transmit
+                           code (40 half-pixel sequences, a waveform), the
+                           font, and the received picture clean, in noise,
+                           off tune and via 48 kHz; see third_party/feldhell/README.md
+  hell-decoder-bridge.test.js  Feld-Hell receive bridge: arming, retuning, PTT,
+                           column frames, spectrum
   jtty-decoder-bridge.test.js  JTTY receive bridge: arming, PTT, decimation,
                            backlog dropping, broadcasts
   manual-tty-ui.js        optional browser test of the TTY button, text box and
@@ -914,7 +927,7 @@ polarity from the decoder's assumption previously decoded nothing at all;
 see `docs/ui-notes.md`'s "Real bug found" writeup for the full story.
 Unchecked by default.
 
-### RTTY, JTTY and Olivia
+### RTTY, JTTY, Olivia and Feld-Hell
 
 The mode row has one **TTY** button where the RTTY button used to be:
 
@@ -926,11 +939,16 @@ The mode row has one **TTY** button where the RTTY button used to be:
 3. The next click switches to **Olivia** (Olivia 8/250), and the button reads
    **Olivia**. Entering Olivia tunes to the band's Olivia calling frequency
    (e.g. 14.0715 MHz dial on 20 m), and band buttons then go to each band's.
-4. The next click goes back to **RTTY**, and so on round.
-5. Picking any other mode (LSB, USB, AM, FM, CW, FT8, FreeDV) puts the button
+4. The next click switches to **Feld-Hell**, and the button reads
+   **Feld-Hell**. Entering Feld-Hell tunes so a signal on the band's Feld-Hell
+   frequency (e.g. 14.063 MHz on 20 m) comes out at the audio tone (dial
+   14.062 MHz with the default 1000 Hz tone), and band buttons then go to
+   each band's.
+5. The next click goes back to **RTTY**, and so on round.
+6. Picking any other mode (LSB, USB, AM, FM, CW, FT8, FreeDV) puts the button
    back to **TTY**.
 
-While RTTY, JTTY or Olivia is selected, a text box and a **Send** button replace the
+While RTTY, JTTY, Olivia or Feld-Hell is selected, a text box and a **Send** button replace the
 PTT button. Enter in the text box also sends. While a message is going out,
 Send turns into **Stop**, which cuts the transmission short and releases PTT.
 The Space bar does not key the microphone in these modes. The text box starts
@@ -1014,6 +1032,36 @@ The Olivia modem is a JavaScript port of Pawel Jalocha's code in fldigi; see
 [`third_party/olivia/README.md`](third_party/olivia/README.md) for what was
 ported and how it was checked against a reference program built from
 fldigi's own source. It has not yet been tested over the air.
+
+**Feld-Hell** is the classic Hellschreiber mode: each character is drawn,
+column by column, from a 7-dot-high font and sent by keying a single tone on
+and off (17.5 columns a second, 122.5 baud, about 2.5 characters a second, a
+signal some 350 Hz wide). Nothing is decoded into text at the other end; the
+receiver paints the tone as a picture and you read it, which is why
+Feld-Hell copies through noise and fading that would garble a coded mode.
+Selecting Feld-Hell puts the radio on USB with DATA MODE on, as JTTY and
+Olivia do. The **Tone** box sets the audio frequency (1000 Hz by default,
+`HELL_TONE_HZ`), used both for sending and for receiving; click the spectrum
+on a signal to move it there (to the nearest 10 Hz). Transmissions are sent
+exactly as fldigi sends them, with its default font and 2 ms keying shape,
+and begin and end with "...". A message can be up to 400 characters (under
+three minutes); characters the font does not have are sent as a blank gap.
+
+**Feld-Hell receive.** While Feld-Hell is selected, the scope's upper part
+still shows the 0-3 kHz audio spectrum (with an amber marker at the tone),
+but its waterfall becomes the received picture, scrolling in from the right
+as it arrives. As in fldigi, each column is shown twice, one copy above the
+other (the previous column under the current one): Feld-Hell has no synchronisation, so text drifts up or down the
+picture, and this way a whole line of it is always in view. Text that slopes
+means the other station's timing is slightly off; it is still readable.
+The receiver listens about 150 Hz either side of the tone. It is cheap enough
+to run on the Pi's main thread, and only runs while Feld-Hell is selected and
+you are not transmitting.
+
+The Feld-Hell modem is a JavaScript port of fldigi's; see
+[`third_party/feldhell/README.md`](third_party/feldhell/README.md) for what was
+ported and how the transmitter was checked against fldigi's own code. It has
+not yet been tested over the air.
 
 Transmit is refused if the radio is already transmitting. The usual PTT
 watchdog (ten minutes) still applies.
@@ -1125,7 +1173,7 @@ shapes.
   `getNoiseBlanker`, `setNotch`, `getNotch`, `setFilter`, `getFilter`,
   `setTuner`, `getTuner`, `setTxPower`, `getTxPower`, `setRxGain`,
   `getRxGain`, `setFt8Active`, `sendFt8`, `sendTty`, `abortTty`, `setJttyActive`,
-  `setOliviaActive`)
+  `setOliviaActive`, `setHellActive`)
   correlated by `id`; events (`connected`, `frequency`, `mode`, `data-mode`, `ptt`,
   `ptt-timeout`, `cw-text`, `ft8-decodes`, `ft8-tx-status`, `tty-tx-status`,
   `jtty-text`, `olivia-text`, `rig-error`, `audio-error`, `scope-error`)
@@ -1141,7 +1189,7 @@ shapes.
   listening on, rather than always this app's one fixed calling
   frequency. See `src/server/protocol.js` for the exact
   `ft8-decodes`/`ft8-tx-status` payload shapes. `sendTty`
-  (`{mode: 'RTTY'|'JTTY'|'OLIVIA', text, freqHz?}`) encodes and transmits straight
+  (`{mode: 'RTTY'|'JTTY'|'OLIVIA'|'HELL', text, freqHz?}`) encodes and transmits straight
   away (none of these modes is slotted); progress arrives as `tty-tx-status`
   broadcasts (`sending` → `sent`/`aborted`/`error`), and `abortTty` cuts a
   running transmission short. `setJttyActive` (`{active}`) starts and stops
@@ -1152,6 +1200,9 @@ shapes.
   and sets the centre frequency (sending it again retunes); decoded text
   arrives as `olivia-text` broadcasts (`{text, snr, freqOffsetHz, centreHz,
   time}`, a block of up to three characters at a time).
+  `setHellActive` (`{active, toneHz?}`) starts and stops the Feld-Hell
+  receiver and sets its tone; the picture arrives as binary
+  `BINARY_TYPE.HELL_COLUMNS` frames (below).
 - **Audio (binary frames, tagged `BINARY_TYPE.AUDIO`)**: by default
   (`AUDIO_CODEC=pcm`), raw 16-bit PCM in both directions — no
   framing/codec requirement, chunk sizes are whatever arrives. With
@@ -1162,6 +1213,10 @@ shapes.
 - **Scope (binary frames, tagged `BINARY_TYPE.SCOPE_LINE`,
   server→client only)**: one reassembled spectrum line per frame — see
   `src/server/scope-bridge.js` for the exact header format.
+- **Feld-Hell picture (binary frames, tagged `BINARY_TYPE.HELL_COLUMNS`,
+  server→client only)**: received columns, about ten frames a second —
+  rows per column, column count, tone, then the columns' ink values; see
+  `src/server/protocol.js`.
 
 Note: every connected client currently has equal, unrestricted control,
 including sending TX audio — there's no access arbitration (e.g. locking

@@ -32,12 +32,18 @@
  *     RX audio, not a crop of the RF scope — see src/audio/ft8-bridge.js
  *     and docs/ui-notes.md). The client-side decoder mirrors this format
  *     in src/client/rpc.js — keep both in sync if this changes.
+ *   - HELL_COLUMNS: server->client only, received Feld-Hell picture
+ *     columns (see src/server/hell-decoder-bridge.js): byte 1 = rows per
+ *     column, byte 2 = column count, bytes 3-4 = the receive tone in Hz
+ *     (uint16 LE), then `count` columns of `rows` ink bytes (0-255), each
+ *     column bottom pixel first. Mirrored in src/client/rpc.js.
  */
 
 const BINARY_TYPE = {
   AUDIO: 0x01,
   SCOPE_LINE: 0x02,
   FT8_SPECTRUM: 0x03,
+  HELL_COLUMNS: 0x04,
 };
 
 const REQUEST = {
@@ -76,9 +82,10 @@ const REQUEST = {
   SET_FREEDV_VARIANT: 'setFreeDvVariant', // {variant: '700E'|'RADE'} -> switches the FreeDV mode button's variant (mirrors SET_FT8_VARIANT); see rade-bridge.js#setVariant
   SET_FREEDV_SPOT_ENABLED: 'setFreeDvSpotEnabled', // {enabled: boolean} -> the "FreeDV spot" checkbox; toggles reporting this station to qso.freedv.org while FreeDV is armed, see server/freedv-reporter.js. Unlike SET_PSK_SPOT_ENABLED, defaults to false (opt-in, not opt-out) per the original request.
   SET_FREEDV_MESSAGE: 'setFreeDvMessage', // {message: string} -> freeform status text relayed as FreeDV Reporter's message_update; empty string clears it. Persistent (cached in ControlServer.state.freeDvMessage and broadcast) — a standing status, not a one-off spot.
-  SEND_TTY: 'sendTty', // {mode: 'RTTY'|'JTTY'|'OLIVIA', text: string, freqHz?: number} -> encodes the text and transmits it immediately (none of these modes is slotted, unlike FT8): RTTY as 45.45-baud Baudot AFSK, JTTY as WSJT-X's 4-GFSK mode, OLIVIA as Olivia 8/250 MFSK; freqHz is the JTTY lowest-tone or the Olivia centre audio frequency (ignored for RTTY, whose tones are fixed). The outcome arrives as EVENT.TTY_TX_STATUS broadcasts; see audio/tty-bridge.js, audio/rtty-encoder.js and audio/jtty-tx.js.
+  SEND_TTY: 'sendTty', // {mode: 'RTTY'|'JTTY'|'OLIVIA'|'HELL', text: string, freqHz?: number} -> encodes the text and transmits it immediately (none of these modes is slotted, unlike FT8): RTTY as 45.45-baud Baudot AFSK, JTTY as WSJT-X's 4-GFSK mode, OLIVIA as Olivia 8/250 MFSK, HELL as Feld-Hell (an on-off keyed tone drawing the text); freqHz is the JTTY lowest-tone, the Olivia centre or the Feld-Hell tone audio frequency (ignored for RTTY, whose tones are fixed). The outcome arrives as EVENT.TTY_TX_STATUS broadcasts; see audio/tty-bridge.js, audio/rtty-encoder.js and audio/jtty-tx.js.
   SET_JTTY_ACTIVE: 'setJttyActive', // {active: boolean} -> arms/disarms JTTY receive (the client's TTY button is in JTTY); JTTY is an app-level mode layered on USB, so the radio's own mode can't say. Mirrors SET_FT8_ACTIVE; see server/jtty-decoder-bridge.js. Cleared automatically when the last client disconnects.
   SET_OLIVIA_ACTIVE: 'setOliviaActive', // {active: boolean, centreHz?: number} -> arms/disarms Olivia 8/250 receive (the client's TTY button is in Olivia) and sets the audio centre frequency it listens on (+/-125 Hz either side is searched); like JTTY, an app-level mode on USB. Sending it again with a new centreHz retunes. Cleared automatically when the last client disconnects. See server/olivia-decoder-bridge.js.
+  SET_HELL_ACTIVE: 'setHellActive', // {active: boolean, toneHz?: number} -> arms/disarms Feld-Hell receive (the client's TTY button is in Feld-Hell) and sets the audio tone it paints; sending it again with a new toneHz retunes. Received picture columns go out as BINARY_TYPE.HELL_COLUMNS frames. Cleared automatically when the last client disconnects. See server/hell-decoder-bridge.js.
   ABORT_TTY: 'abortTty', // {} -> cuts a SEND_TTY transmission short (discards the queued audio and releases PTT); see audio/tty-bridge.js#abort
   SET_RTTY_REVERSED: 'setRttyReversed', // {reversed: boolean} -> the "Reverse" checkbox shown while RTTY is active; swaps which tone (mark/space) the decoder treats as which — see audio/rtty-decoder.js#setReversed and its constructor doc comment for why this is needed (RTTY polarity isn't predictable from the radio's mode alone). Defaults to false.
   SET_RNNOISE_LEVEL: 'setRnnoiseLevel', // {level: integer, 0..ControlServer.state.rnnoiseLevelCount-1} -> the "RNN" cycling button (replaces the old Noise Blanker button, and before that a plain on/off checkbox); arms/disarms an RNNoise speech-denoiser on the RX audio actually broadcast to clients — see server/audio-bridge.js#setRnnoiseLevel and audio/rnnoise-filter.js. Deliberately never touches the raw capture stream CW/RTTY/FT8/RADE decode from — see audio-bridge.js's own doc comment for why. level 0 ("RNN Off") disarms the filter entirely; every level above that ("RNN 1", "RNN 2", ...) arms it at a configured original/denoised blend ratio — the ratios (and so the total number of levels) come from the RNNOISE_WET env var, a comma-separated list, e.g. "0.25, 0.5, 0.75, 1.0" for the original 4-level 25/50/75/100% default — see RNNOISE_WET_LEVELS in server/index.js and _rnnoiseWetLevels in audio-bridge.js. Defaults to 0; requires the rnnoise_demo binary (RNNOISE_BIN) to be installed separately, and is a no-op (with a logged/broadcast AUDIO_ERROR, and the level reset to 0) if it isn't. Mutually exclusive with SET_HAMNOISE_ENABLED — setting a level above 0 here forces HamNoise off (see that request's own doc comment and audio-bridge.js's class doc comment for why).
@@ -107,7 +114,7 @@ const EVENT = {
   FREEDV_MESSAGE: 'freedv-message', // broadcast when the FreeDV Reporter status message changes — see REQUEST.SET_FREEDV_MESSAGE / server/freedv-reporter.js
   JTTY_TEXT: 'jtty-text', // broadcast as a received JTTY message appears and grows, {id, freqHz, snr, text, status: 'growing'|'complete'|'expired', time, startTime} (time/startTime are epoch ms of the latest/first frame; the client updates its row for `id` in place) — see server/jtty-decoder-bridge.js and audio/jtty-rx.js
   OLIVIA_TEXT: 'olivia-text', // broadcast as Olivia characters are decoded, {text, snr, freqOffsetHz, centreHz, time}: text is the new characters only (a block of up to 3 at a time, every ~2 s), snr the receiver's S/N figure, freqOffsetHz how far the signal is from centreHz, time epoch ms — see server/olivia-decoder-bridge.js and audio/olivia-rx.js
-  TTY_TX_STATUS: 'tty-tx-status', // broadcast on RTTY/JTTY/Olivia TX lifecycle changes, {status: 'sending'|'sent'|'aborted'|'error', mode, text?, message?, nframes?, durationSec?, error?} — see audio/tty-bridge.js
+  TTY_TX_STATUS: 'tty-tx-status', // broadcast on RTTY/JTTY/Olivia/Feld-Hell TX lifecycle changes, {status: 'sending'|'sent'|'aborted'|'error', mode, text?, message?, nframes?, durationSec?, error?} — see audio/tty-bridge.js
   RTTY_REVERSED: 'rtty-reversed', // broadcast when the RTTY "Reverse" checkbox changes — see REQUEST.SET_RTTY_REVERSED / audio/rtty-decoder-bridge.js
   RNNOISE_LEVEL: 'rnnoise-level', // broadcast when the "RNN" button's level changes — see REQUEST.SET_RNNOISE_LEVEL / server/audio-bridge.js. Also broadcast with level 0 when AudioBridge forces RNNoise off because HamNoise was just enabled (mutual exclusion — see REQUEST.SET_HAMNOISE_ENABLED).
   HAMNOISE_ENABLED: 'hamnoise-enabled', // broadcast when the "HamNoise" button's state changes — see REQUEST.SET_HAMNOISE_ENABLED / server/audio-bridge.js. Also broadcast with enabled:false when AudioBridge forces HamNoise off because RNN was just set to a level above 0 (mutual exclusion), or after a load/processing failure (see audio-bridge.js#_handleHamNoiseError).

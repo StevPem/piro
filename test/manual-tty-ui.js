@@ -9,6 +9,8 @@ const { TtyBridge } = require(PKG + '/src/audio/tty-bridge');
 const { JttyDecoderBridge } = require(PKG + '/src/server/jtty-decoder-bridge');
 const { OliviaDecoderBridge } = require(PKG + '/src/server/olivia-decoder-bridge');
 const { encodeOlivia } = require(PKG + '/src/audio/olivia-tx');
+const { HellDecoderBridge } = require(PKG + '/src/server/hell-decoder-bridge');
+const { encodeFeldHell } = require(PKG + '/src/audio/hell-tx');
 const { encodeJtty } = require(PKG + '/src/audio/jtty-tx');
 const { upsampleFloatToPcm } = require(PKG + '/src/audio/resample');
 let chromium;
@@ -52,6 +54,8 @@ class Civ extends EventEmitter {
   jttyRx.start();
   const oliviaRx = new OliviaDecoderBridge({ controlServer: server, audioBridge });
   oliviaRx.start();
+  const hellRx = new HellDecoderBridge({ controlServer: server, audioBridge });
+  hellRx.start();
 
   const browser = await chromium.launch({ executablePath: process.env.CHROMIUM_PATH || undefined, args: ['--no-sandbox'] });
   const page = await browser.newPage({ viewport: { width: 430, height: 1100 } });
@@ -191,20 +195,96 @@ class Civ extends EventEmitter {
     check(civ.log.filter((e) => e[0] === 'setPtt').at(-1)[1] === false && oliviaRx.attached, 'Stop releases PTT and the receiver resumes');
   }
 
+  // click 4 -> Feld-Hell
+  {
+    const modeCalls = civ.log.filter((e) => e[0] === 'setMode' || e[0] === 'setDataMode').length;
+    await page.locator('#modes .chip', { hasText: /^Olivia$/ }).click();
+    await page.waitForFunction(() => [...document.querySelectorAll('#modes .chip')].some((c) => c.textContent === 'Feld-Hell'));
+    await sleep(150);
+    check(civ.mode === 'USB' && civ.dataMode === true && civ.log.filter((e) => e[0] === 'setMode' || e[0] === 'setDataMode').length === modeCalls, 'fourth click: Feld-Hell, radio left alone (USB, DATA MODE on)');
+    check(server.state.oliviaActive === false && !oliviaRx.attached && server.state.hellActive === true && hellRx.attached, 'Olivia receiver disarmed, Feld-Hell receiver armed');
+    check(civ.log.at(-1)[0] === 'setFrequency' && civ.log.at(-1)[1] === 14062000, 'entering Feld-Hell on 20m puts a 1000 Hz tone on 14.063 MHz (dial 14.062)');
+    check(!(await vis('#olivia-rx')) && !(await vis('#jtty-rx')) && (await vis('#tty-freq')) && (await page.locator('#tty-freq').inputValue()) === '1000', 'Feld-Hell: no text panel, tone box at 1000 Hz');
+    check(/^Tone/.test(await page.locator('#tty-freq-label').textContent()), 'the box is labelled "Tone"');
+    check((await page.locator('#ptt-hint').textContent()).includes('Feld-Hell'), 'hint text describes Feld-Hell');
+    check((await page.locator('#tty-input').evaluate((e) => getComputedStyle(e).textTransform)) === 'none', 'Feld-Hell: the text box shows the real case');
+
+    // receive: the picture scrolls in from the right of the waterfall area
+    const bright = () =>
+      page.locator('#scope-waterfall').evaluate((c) => {
+        const d = c.getContext('2d').getImageData(0, 0, c.width, c.height).data;
+        let left = 0;
+        let right = 0;
+        for (let y = 0; y < c.height; y++)
+          for (let x = 0; x < c.width; x++) {
+            if (d[(y * c.width + x) * 4 + 1] > 128) x < c.width / 2 ? left++ : right++;
+          }
+        return { left, right };
+      });
+    const enc = encodeFeldHell('CQ CQ DE K1ABC K1ABC K', { toneHz: 1000, amplitude: 0.3 });
+    const pcm = upsampleFloatToPcm(enc.samples, 8000, 48000);
+    const half = Math.floor((48000 * 1.2)) * 2; // the first 1.2 s: about 21 columns
+    for (let i = 0; i < half; i += 9600) capture.emit('data', pcm.subarray(i, Math.min(half, i + 9600)));
+    await sleep(400);
+    const b1 = await bright();
+    check(b1.right > 200 && b1.left === 0, `received picture starts at the right edge (${b1.right} lit pixels right, ${b1.left} left)`);
+    for (let i = half; i < pcm.length; i += 9600) capture.emit('data', pcm.subarray(i, i + 9600));
+    await sleep(400);
+    const b2 = await bright();
+    check(b2.left > 200, `and scrolls left as more arrives (${b2.left} lit pixels left)`);
+    check(/ Hz$/.test(await page.locator('#scope-range-hi').textContent()) && !(await vis('#scope-spans')), 'Feld-Hell: the trace shows the audio spectrum, RF spans hidden');
+    check(!(await vis('#scope-placeholder')), 'the "scope not enabled" notice does not cover the audio spectrum or the picture');
+
+    // clicking the spectrum sets the tone; clicking the picture does nothing
+    const box = await page.locator('#scope-trace').boundingBox();
+    const hi = Number((await page.locator('#scope-range-hi').textContent()).replace(/[^\d.]/g, ''));
+    await page.mouse.click(box.x + (box.width * 1500) / hi, box.y + box.height / 2);
+    await sleep(200);
+    const tone = Number(await page.locator('#tty-freq').inputValue());
+    check(Math.abs(tone - 1500) <= 10 && tone % 10 === 0 && server.state.hellToneHz === tone && hellRx._receiver.toneHz === tone, `clicking the spectrum sets the tone to the nearest 10 Hz (${tone}), receiver retuned`);
+    const wf = await page.locator('#scope-waterfall').boundingBox();
+    await page.mouse.click(wf.x + wf.width * 0.2, wf.y + wf.height / 2);
+    await sleep(200);
+    check(Number(await page.locator('#tty-freq').inputValue()) === tone, 'clicking the picture does not change the tone');
+
+    // send
+    const w = writes.length;
+    await page.locator('#tty-input').fill('VK2IO de K1ABC');
+    await page.locator('#tty-send-btn').click();
+    await page.waitForFunction(() => /Sending Feld-Hell/.test(document.getElementById('tty-status').textContent), null, { timeout: 8000 });
+    const st = await page.locator('#tty-status').textContent();
+    check(/Sending Feld-Hell: "VK2IO de K1ABC"/.test(st) && new RegExp(`tone ${tone} Hz`).test(st), 'Feld-Hell status line: ' + st);
+    check(writes.length === w + 1 && !hellRx.attached, 'Feld-Hell audio written, receiver paused while transmitting');
+    await page.locator('#tty-send-btn').click(); // Stop
+    await page.waitForFunction(() => /Stopped Feld-Hell/.test(document.getElementById('tty-status').textContent), null, { timeout: 8000 });
+    await sleep(100);
+    check(civ.log.filter((e) => e[0] === 'setPtt').at(-1)[1] === false && hellRx.attached, 'Stop releases PTT and the receiver resumes');
+  }
+
   // Enter key sends too; RTTY text via Enter
-  // click 4 -> back to RTTY
-  await page.locator('#modes .chip', { hasText: /^Olivia$/ }).click();
+  // click 5 -> back to RTTY
+  await page.locator('#modes .chip', { hasText: /^Feld-Hell$/ }).click();
   await page.waitForFunction(() => [...document.querySelectorAll('#modes .chip')].some((c) => c.textContent === 'RTTY'));
   await sleep(150);
-  check(civ.mode === 'RTTY' && civ.dataMode === false, 'fourth click: back to RTTY, DATA MODE off');
-  check(server.state.jttyActive === false && !jttyRx.attached && server.state.oliviaActive === false && !oliviaRx.attached, 'leaving Olivia disarms the receiver');
+  check(civ.mode === 'RTTY' && civ.dataMode === false, 'fifth click: back to RTTY, DATA MODE off');
+  check(server.state.jttyActive === false && !jttyRx.attached && server.state.oliviaActive === false && !oliviaRx.attached && server.state.hellActive === false && !hellRx.attached, 'leaving Feld-Hell disarms the receiver');
+  {
+    const lit = await page.locator('#scope-waterfall').evaluate((c) => {
+      const d = c.getContext('2d').getImageData(0, 0, c.width, c.height).data;
+      let n = 0;
+      for (let i = 1; i < d.length; i += 4) if (d[i] > 128) n++;
+      return n;
+    });
+    check(lit === 0, 'the picture is cleared on leaving Feld-Hell');
+  }
   check(!(await vis('#olivia-rx')) && !(await vis('#tty-freq')), 'RTTY: no Olivia panel, no frequency box');
+  check(await vis('#scope-placeholder'), 'back on the RF scope, its "not enabled" notice returns');
   check((await page.locator('#tty-input').evaluate((e) => getComputedStyle(e).textTransform)) === 'uppercase', 'RTTY: the text box shows capitals again');
   await page.locator('#tty-input').fill('test 73');
   await page.locator('#tty-input').press('Enter');
   await page.waitForFunction(() => /Sent RTTY/.test(document.getElementById('tty-status').textContent), null, { timeout: 8000 });
   check(true, 'Enter sends; RTTY status "Sent RTTY"');
-  check(writes.length === 3, 'RTTY audio written');
+  check(writes.length === 4, 'RTTY audio written');
 
   // typed text survives mode toggling
   await page.locator('#modes .chip', { hasText: /^RTTY$/ }).click();
@@ -258,6 +338,7 @@ class Civ extends EventEmitter {
   tty.stop();
   jttyRx.stop();
   oliviaRx.stop();
+  hellRx.stop();
   await server.close();
   console.log(failures ? `\n${failures} FAILED` : '\nAll UI checks passed');
   process.exit(failures ? 1 : 0);

@@ -1113,6 +1113,36 @@ async function run() {
     await oServer.close();
   }
 
+  // Feld-Hell receive arming (setHellActive), retuning, and release when the last client leaves.
+  {
+    const hServer = new ControlServer({ civ: new StubCivDriver(), port: 0 });
+    const hPort = await hServer.listen();
+    const events = [];
+    const sends = [];
+    hServer.on('hell-active', (e) => events.push(e));
+    hServer.on('tty-send', (e) => sends.push(e));
+    const c = await connect(hPort);
+    const hello = await nextMessage(c);
+    check(hello.data.hellActive === false && hello.data.hellToneHz === 1000, 'connected snapshot reports hellActive=false and the 1000 Hz tone');
+    c.send(JSON.stringify({ id: 'h1', type: 'setHellActive', active: 'yes' }));
+    const bad = await nextMessage(c);
+    check(bad.ok === false, 'setHellActive rejects a non-boolean');
+    c.send(JSON.stringify({ id: 'h2', type: 'setHellActive', active: true, toneHz: 1234.6 }));
+    const ok = await nextMessage(c);
+    check(ok.data.active === true && ok.data.toneHz === 1235, 'setHellActive replies with the (rounded) tone');
+    c.send(JSON.stringify({ id: 'h3', type: 'setHellActive', active: true, toneHz: 9000 }));
+    const high = await nextMessage(c);
+    check(high.data.toneHz === 2700 && hServer.state.hellToneHz === 2700, 'a tone above the passband is clamped to 2700 Hz');
+    check(events.length === 2 && events[0].toneHz === 1235 && events[1].toneHz === 2700, 'hell-active events carry the state and tone');
+    c.send(JSON.stringify({ id: 'h4', type: 'sendTty', mode: 'HELL', text: 'CQ', freqHz: 1000 }));
+    const sent = await nextMessage(c);
+    check(sent.data.accepted === true && sends[0]?.mode === 'HELL', 'sendTty accepts HELL and passes it on');
+    c.close();
+    await new Promise((r) => setTimeout(r, 100));
+    check(hServer.state.hellActive === false && events.at(-1).active === false, 'last client disconnecting disarms Feld-Hell');
+    await hServer.close();
+  }
+
   // PTT fail-safe watchdog (10-minute cutoff in production; a short
   // override here so the test doesn't take 10 real minutes — see
   // docs/civ-notes.md for why this lives server-side).

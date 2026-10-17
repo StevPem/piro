@@ -1,6 +1,7 @@
 'use strict';
 
 const { clampOliviaCentre } = require('../audio/olivia-dsp');
+const { clampHellTone } = require('../audio/hell-rx');
 const http = require('http');
 const https = require('https');
 const { EventEmitter } = require('events');
@@ -151,6 +152,11 @@ class ControlServer extends EventEmitter {
       // server/olivia-decoder-bridge.js). Same reasons as jttyActive.
       oliviaActive: false,
       oliviaCentreHz: 1500,
+      // Whether the client has Feld-Hell selected, and the audio tone it
+      // paints (see REQUEST.SET_HELL_ACTIVE / server/hell-decoder-bridge.js).
+      // Same reasons as jttyActive.
+      hellActive: false,
+      hellToneHz: 1000,
       // Which variant the FreeDV mode button is currently in — '700E' or
       // 'RADE' (see REQUEST.SET_FREEDV_VARIANT / src/server/rade-bridge.js).
       // Defaults to 'RADE' — the only variant the client's FreeDV chip
@@ -311,11 +317,19 @@ class ControlServer extends EventEmitter {
     this.emit('olivia-active', { active, centreHz: this.state.oliviaCentreHz });
   }
 
-  /** JTTY and Olivia decoding cost CPU: don't leave them running for a browser that has gone away. */
+  _setHellActive(active, toneHz) {
+    this.state.hellActive = active;
+    if (toneHz !== undefined) this.state.hellToneHz = toneHz;
+    // Handled by HellDecoderBridge (internal-only event, same pattern as 'olivia-active').
+    this.emit('hell-active', { active, toneHz: this.state.hellToneHz });
+  }
+
+  /** JTTY, Olivia and Feld-Hell receiving cost CPU: don't leave them running for a browser that has gone away. */
   _releaseJttyIfAlone() {
     if (this.clients.size !== 0) return;
     if (this.state.jttyActive) this._setJttyActive(false);
     if (this.state.oliviaActive) this._setOliviaActive(false);
+    if (this.state.hellActive) this._setHellActive(false);
   }
 
   async _handleMessage(ws, raw) {
@@ -436,6 +450,18 @@ class ControlServer extends EventEmitter {
           ws.send(makeResult(id, { active: msg.active, centreHz: this.state.oliviaCentreHz }));
           break;
         }
+        case REQUEST.SET_HELL_ACTIVE: {
+          if (typeof msg.active !== 'boolean') {
+            throw new Error('"active" must be a boolean');
+          }
+          if (msg.toneHz !== undefined && (typeof msg.toneHz !== 'number' || !Number.isFinite(msg.toneHz))) {
+            throw new Error('"toneHz" must be a number (Hz) if provided');
+          }
+          const toneHz = msg.toneHz === undefined ? undefined : clampHellTone(msg.toneHz);
+          this._setHellActive(msg.active, toneHz);
+          ws.send(makeResult(id, { active: msg.active, toneHz: this.state.hellToneHz }));
+          break;
+        }
         case REQUEST.SEND_FT8: {
           if (typeof msg.message !== 'string' || msg.message.trim() === '') {
             throw new Error('"message" must be a non-empty string');
@@ -460,8 +486,8 @@ class ControlServer extends EventEmitter {
           break;
         }
         case REQUEST.SEND_TTY: {
-          if (msg.mode !== 'RTTY' && msg.mode !== 'JTTY' && msg.mode !== 'OLIVIA') {
-            throw new Error('"mode" must be "RTTY", "JTTY" or "OLIVIA"');
+          if (!['RTTY', 'JTTY', 'OLIVIA', 'HELL'].includes(msg.mode)) {
+            throw new Error('"mode" must be "RTTY", "JTTY", "OLIVIA" or "HELL"');
           }
           if (typeof msg.text !== 'string' || msg.text.trim() === '') {
             throw new Error('"text" must be a non-empty string');

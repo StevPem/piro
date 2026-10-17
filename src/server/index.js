@@ -11,6 +11,8 @@ const { RttyDecoderBridge } = require('./rtty-decoder-bridge');
 const { JttyDecoderBridge } = require('./jtty-decoder-bridge');
 const { OliviaDecoderBridge } = require('./olivia-decoder-bridge');
 const { clampOliviaCentre } = require('../audio/olivia-dsp');
+const { HellDecoderBridge } = require('./hell-decoder-bridge');
+const { clampHellTone } = require('../audio/hell-rx');
 const { Ft8Bridge } = require('../audio/ft8-bridge');
 const { TtyBridge } = require('../audio/tty-bridge');
 const { RadeBridge } = require('./rade-bridge');
@@ -259,6 +261,7 @@ let ft8Bridge;
 let ttyBridge;
 let jttyDecoderBridge;
 let oliviaDecoderBridge;
+let hellDecoderBridge;
 let radeBridge;
 let freeDvReporterBridge;
 
@@ -457,14 +460,19 @@ async function main() {
     // for both transmit and receive, until a client picks another.
     const oliviaFreqHz = clampOliviaCentre(process.env.OLIVIA_FREQ_HZ ?? 1500);
     controlServer.state.oliviaCentreHz = oliviaFreqHz;
+    // HELL_TONE_HZ likewise sets Feld-Hell's default audio tone (1000 Hz,
+    // the tone the band frequencies in the client assume).
+    const hellToneHz = clampHellTone(Number(process.env.HELL_TONE_HZ ?? 1000) || 1000);
+    controlServer.state.hellToneHz = hellToneHz;
     ttyBridge = new TtyBridge({
       controlServer,
       audioBridge,
       jttyFreqHz: process.env.JTTY_TX_FREQ_HZ ? Number(process.env.JTTY_TX_FREQ_HZ) : undefined,
       oliviaFreqHz,
+      hellToneHz,
     });
     ttyBridge.start();
-    console.log('RTTY/JTTY/Olivia transmit ready (Send button in those modes).');
+    console.log('RTTY/JTTY/Olivia/Feld-Hell transmit ready (Send button in those modes).');
 
     // JTTY receive: decodes in a worker thread while the client has JTTY
     // selected. JTTY_RX_LOW_HZ / JTTY_RX_HIGH_HZ set the audio band searched
@@ -490,6 +498,14 @@ async function main() {
     });
     oliviaDecoderBridge.start();
     console.log('Olivia receive ready (decodes while Olivia is selected).');
+
+    // Feld-Hell receive: paints the received tone as a scrolling picture
+    // while the client has Feld-Hell selected (no text decoding; the
+    // operator reads it). Cheap enough to run on the main thread. See
+    // server/hell-decoder-bridge.js.
+    hellDecoderBridge = new HellDecoderBridge({ controlServer, audioBridge });
+    hellDecoderBridge.start();
+    console.log('Feld-Hell receive ready (paints while Feld-Hell is selected).');
 
     // RADE (FreeDV's neural-vocoder mode) is likewise a hard dependency
     // on AudioBridge — same reasoning as FT8 immediately above, since
@@ -551,6 +567,7 @@ async function shutdown(signal) {
     if (ttyBridge) ttyBridge.stop();
     if (jttyDecoderBridge) jttyDecoderBridge.stop();
     if (oliviaDecoderBridge) oliviaDecoderBridge.stop();
+    if (hellDecoderBridge) hellDecoderBridge.stop();
     if (radeBridge) radeBridge.stop();
     if (freeDvReporterBridge) freeDvReporterBridge.stop();
     if (audioBridge) audioBridge.stop();
