@@ -3566,3 +3566,11 @@ model for how to approach that.
   that never takes it); civ-driver (setFilter with DATA mode on/off).
   Service-worker cache bumped to v80.
 
+
+### SSTV tag twice the size (v81)
+
+- On request, the SSTV callsign tag (callsign, second line and box) is
+  twice its former size: `drawSstvTag()` fits it within half the picture's
+  width and half its height instead of a quarter (160 × 128 at most in
+  Scottie 1; "VK2IO" / "UR 595" now comes out 160 × 93, was 80 × 48).
+  Browser test updated. Service-worker cache bumped to v81.

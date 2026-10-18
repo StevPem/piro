@@ -12,7 +12,7 @@ Hamlib, no separate audio server and no extra apps.
 Written by VK3TR. Licensed AGPL-3.0-only (see
 [Licence](#licence)).
 
-**Current build: v80.** This is the version the app shows next to its title.
+**Current build: v81.** This is the version the app shows next to its title.
 It is the `CACHE_NAME` number in `src/client/sw.js`, which goes up with every
 change to the web app.
 
@@ -1222,8 +1222,8 @@ will be sent (320 × 256 for the default Scottie 1), filling the frame:
 * the **callsign** (from `STATION_CALLSIGN`, editable) and an optional
   **second line** (for example a report, "UR 595", or a locator) are drawn
   in white with a dark outline on a translucent box, in the **corner** you
-  choose. The tag is made as large as fits within a quarter of the
-  picture's width and a quarter of its height, box included (80 × 64 pixels
+  choose. The tag is made as large as fits within half the picture's
+  width and half its height, box included (160 × 128 pixels
   at most in Scottie 1);
 * **Send** shows the mode and how long it takes (about 1 minute 56 seconds
   for Scottie 1 with the IDs). What is in the preview is exactly what is
