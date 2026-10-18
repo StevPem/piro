@@ -1,5 +1,6 @@
 'use strict';
 
+const { ensureDataMode } = require('../civ/data-mode-guard');
 const path = require('node:path');
 const { Worker } = require('node:worker_threads');
 const { encodeFT8, encodeFT4 } = require('@e04/ft8ts');
@@ -145,6 +146,7 @@ class Ft8Bridge {
     spectrumIntervalMs,
     pttReleaseMarginMs,
     pskReporter,
+    dataSettleMs,
   }) {
     if (!civ) throw new Error('Ft8Bridge requires opts.civ');
     if (!controlServer) throw new Error('Ft8Bridge requires opts.controlServer');
@@ -152,6 +154,7 @@ class Ft8Bridge {
     this.civ = civ;
     this.controlServer = controlServer;
     this.audioBridge = audioBridge;
+    this.dataSettleMs = dataSettleMs; // see civ/data-mode-guard.js
     // Keyed the same way as PROTOCOLS/this._protocol above, so
     // _transmitNow() can just do this._encodeFns[this._protocol]. Kept as
     // a map (rather than a single this.encodeFn reassigned by
@@ -546,6 +549,9 @@ class Ft8Bridge {
       });
       const pcm = upsampleFloatToPcm(floatSamples, FT8_SAMPLE_RATE, this.audioBridge.sampleRate);
 
+      // The FT8 button turned DATA mode on; make sure it still is before
+      // keying (a quick read when it is; see civ/data-mode-guard.js).
+      await ensureDataMode(this.civ, true, { settleMs: this.dataSettleMs });
       await this.controlServer.setPttFromServer(true);
       this.audioBridge.playback.write(pcm);
 

@@ -340,7 +340,8 @@ class Civ extends EventEmitter {
   await page.locator('#tty-input').fill('test 73');
   await page.locator('#tty-input').press('Enter');
   await page.waitForFunction(() => /Sending RTTY/.test(document.getElementById('tty-status').textContent), null, { timeout: 8000 });
-  await sleep(150);
+  // the dial moves once DATA mode is confirmed (and has settled: civ/data-mode-guard.js)
+  for (let t = Date.now(); civ.freq !== 7052125 && Date.now() - t < 2000; ) await sleep(20);
   {
     const st = await page.locator('#tty-status').textContent();
     check(/AFSK on LSB-D, mark 2125 Hz \/ space 2295 Hz/.test(st), 'RTTY on 40m goes out as AFSK on LSB-D: ' + st);

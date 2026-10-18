@@ -160,6 +160,23 @@ be **USB** for PiRO's transmissions now that DATA mode really comes on.
 Also note that the plain mode command (`06`) turns DATA mode off on Icom
 radios, so DATA mode is always set after the mode.
 
+**Confirmed before PTT, and watched (v80).** With the right command, SSTV
+still sometimes went out with no output and a faint carrier: PTT was keyed
+a few milliseconds after the `1A 06` OK, and the radio could start
+transmitting from its DATA OFF source and stay on it for the whole
+picture. Whether it happened depended on timing. Now
+`civ/data-mode-guard.js#ensureDataMode()` reads DATA mode back after
+setting it (sending the command again, up to three times, if the radio
+still reports it off), waits 300 ms for it to take, and only then does the
+transmitter key PTT. If it is already on, the check is one read and no
+wait. SSTV, RTTY AFSK, JTTY, Olivia, Feld-Hell and FT8 all do this before
+keying. During SSTV and TTY transmissions `watchDataMode()` reads it every
+3 s and turns it back on if anything has turned it off, with a warning to
+every browser. `CivDriver#setFilter()` now puts DATA mode back on after the
+mode command it uses (which cleared it), so changing the filter in FT8 or
+JTTY no longer silences the next transmission. This hasn't been tested on
+air yet, and the 300 ms settle time is a guess.
+
 ### The original write-up (superseded)
 
 A user reported RX working well but never completing a single FT8 QSO

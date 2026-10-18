@@ -98,15 +98,47 @@ async function testFilter() {
     transport.sendFrame({ cmd: CMD.SEND_MODE, data: Buffer.from([MODE.USB, 1]) });
 
     await new Promise((resolve) => setImmediate(resolve));
+    // Then it reads DATA mode (the mode command clears it): off here.
+    const dataRead = [...transport.written[transport.written.length - 1]];
+    check(dataRead[4] === CMD.OPTIONAL && dataRead[5] === OPTIONAL_SUBCMD.DATA_MODE && dataRead.length === 7, 'setFilter() then reads DATA mode');
+    transport.sendFrame({ cmd: CMD.OPTIONAL, subCmd: OPTIONAL_SUBCMD.DATA_MODE, data: Buffer.from([0x00, 0x00]) });
+
+    await new Promise((resolve) => setImmediate(resolve));
     // Second: setMode(USB, 2) — mode preserved, filter changed.
     const secondFrame = [...transport.written[transport.written.length - 1]];
     check(
       secondFrame[4] === CMD.SET_MODE && secondFrame[5] === MODE.USB && secondFrame[6] === 2,
       `setFilter(2) resends the current mode (USB) with the new filter byte (2), got frame [${secondFrame.join(',')}]`
     );
+    const before = transport.written.length;
     transport.sendFrame({ cmd: CMD.OK });
     await promise;
+    check(transport.written.length === before, 'with DATA mode off, nothing more is sent');
 
+    await driver.close();
+  }
+
+  // With DATA mode on (FT8, JTTY...), setFilter() turns it back on after the mode command, with the new filter.
+  {
+    const transport = new FakeTransport();
+    const driver = new CivDriver({ path: '/fake', radioAddr: RADIO_ADDR, transport });
+    await driver.open();
+    const promise = driver.setFilter(3);
+    const step = () => new Promise((resolve) => setImmediate(resolve));
+    await step();
+    transport.sendFrame({ cmd: CMD.SEND_MODE, data: Buffer.from([MODE.USB, 1]) });
+    await step();
+    transport.sendFrame({ cmd: CMD.OPTIONAL, subCmd: OPTIONAL_SUBCMD.DATA_MODE, data: Buffer.from([0x01, 0x01]) });
+    await step();
+    transport.sendFrame({ cmd: CMD.OK }); // the mode command
+    await step();
+    const last = [...transport.written[transport.written.length - 1]];
+    check(
+      last[4] === CMD.OPTIONAL && last[5] === OPTIONAL_SUBCMD.DATA_MODE && last[6] === 0x01 && last[7] === 3,
+      `setFilter(3) in DATA mode puts DATA mode back on with filter 3 (1A 06 01 03), got [${last.join(',')}]`
+    );
+    transport.sendFrame({ cmd: CMD.OK });
+    await promise;
     await driver.close();
   }
 
@@ -347,6 +379,8 @@ async function testSetModeEmitsModeEvent() {
     const promise = driver.setFilter(2);
     await new Promise((resolve) => setImmediate(resolve));
     transport.sendFrame({ cmd: CMD.SEND_MODE, data: Buffer.from([MODE.USB, 1]) });
+    await new Promise((resolve) => setImmediate(resolve));
+    transport.sendFrame({ cmd: CMD.OPTIONAL, subCmd: OPTIONAL_SUBCMD.DATA_MODE, data: Buffer.from([0x00, 0x00]) }); // DATA mode off
     await new Promise((resolve) => setImmediate(resolve));
     transport.sendFrame({ cmd: CMD.OK });
     await promise;
