@@ -923,6 +923,8 @@ link.addEventListener('connected', (event) => {
   // syncAppModesOnConnect().
 
   pttBtn.disabled = false;
+  notesSendBtn.disabled = false;
+  renderNotes(data.notes); // no chime: nothing new, just what's there
   ttySendBtn.disabled = false;
   tunerBtn.disabled = false;
   tuneBtn.disabled = false;
@@ -3880,6 +3882,114 @@ async function syncRxGain() {
     // transient — next poll will retry
   }
 }
+
+// --- Notes ---
+// Short messages operators leave each other ("VK3ABC: on 40 m until 16:30"),
+// kept on the Pi and shown in every browser: the three most recent, newest
+// first, each with its time (this device's clock). When someone else adds
+// one, this browser chimes and the screen flashes (or, if the device is set
+// to reduce motion, just the notes light up). Nothing happens on connecting.
+// The Pi clears them after an hour with no new note, or a couple of minutes
+// after the last browser leaves. See REQUEST.POST_NOTE.
+const notesEl = document.getElementById('notes');
+const notesListEl = document.getElementById('notes-list');
+const notesForm = document.getElementById('notes-form');
+const notesInput = document.getElementById('notes-input');
+const notesSendBtn = document.getElementById('notes-send');
+const screenFlashEl = document.getElementById('screen-flash');
+
+function renderNotes(notes) {
+  notesListEl.replaceChildren(
+    ...[...(notes || [])].reverse().map((n) => {
+      const li = document.createElement('li');
+      li.className = 'notes__item';
+      const t = document.createElement('time');
+      t.className = 'notes__time';
+      const d = new Date(n.time);
+      t.dateTime = d.toISOString();
+      t.textContent = `${String(d.getHours()).padStart(2, '0')}:${String(d.getMinutes()).padStart(2, '0')}`;
+      const text = document.createElement('span');
+      text.textContent = n.text;
+      li.append(t, text);
+      return li;
+    })
+  );
+}
+
+// The chime is made with Web Audio. Browsers only allow sound after the page
+// has been touched, so the audio context is created on the first tap or key.
+let chimeCtx = null;
+function unlockChime() {
+  try {
+    chimeCtx = chimeCtx || new (window.AudioContext || window.webkitAudioContext)();
+    if (chimeCtx.state === 'suspended') chimeCtx.resume().catch(() => {});
+  } catch {
+    chimeCtx = null;
+  }
+}
+window.addEventListener('pointerdown', unlockChime, { capture: true });
+window.addEventListener('keydown', unlockChime, { capture: true });
+
+/** Two soft rising notes, about half a second in all. */
+function playChime() {
+  notesEl.dataset.chimes = String(Number(notesEl.dataset.chimes || 0) + 1);
+  if (!chimeCtx || chimeCtx.state !== 'running') return;
+  const t0 = chimeCtx.currentTime + 0.01;
+  [
+    [880, 0],
+    [1318.5, 0.16],
+  ].forEach(([hz, at]) => {
+    const osc = chimeCtx.createOscillator();
+    const gain = chimeCtx.createGain();
+    osc.type = 'sine';
+    osc.frequency.value = hz;
+    gain.gain.setValueAtTime(0.0001, t0 + at);
+    gain.gain.exponentialRampToValueAtTime(0.25, t0 + at + 0.015);
+    gain.gain.exponentialRampToValueAtTime(0.0001, t0 + at + 0.45);
+    osc.connect(gain).connect(chimeCtx.destination);
+    osc.start(t0 + at);
+    osc.stop(t0 + at + 0.5);
+  });
+}
+
+/** One flash of the whole screen, dark to light and back (just the notes, with reduced motion). */
+function flashScreen() {
+  const reduce = window.matchMedia?.('(prefers-reduced-motion: reduce)').matches;
+  const el = reduce ? notesEl : screenFlashEl;
+  const cls = reduce ? 'notes--flash' : 'screen-flash--on';
+  el.classList.remove(cls);
+  void el.offsetWidth; // restart the animation if one is still running
+  el.classList.add(cls);
+  screenFlashEl.dataset.flashes = String(Number(screenFlashEl.dataset.flashes || 0) + 1);
+}
+screenFlashEl.addEventListener('animationend', () => screenFlashEl.classList.remove('screen-flash--on'));
+notesEl.addEventListener('animationend', () => notesEl.classList.remove('notes--flash'));
+
+link.addEventListener('notes', (event) => {
+  const { notes, posted } = event.detail || {};
+  renderNotes(notes);
+  if (posted) {
+    playChime();
+    flashScreen();
+  }
+});
+
+notesForm.addEventListener('submit', (event) => {
+  event.preventDefault();
+  const text = notesInput.value.trim();
+  if (!text) return;
+  notesSendBtn.disabled = true;
+  link
+    .request('postNote', { text })
+    .then(({ notes }) => {
+      renderNotes(notes);
+      notesInput.value = '';
+    })
+    .catch((err) => showError(`Couldn't send the note: ${err.message}`))
+    .finally(() => {
+      notesSendBtn.disabled = false;
+    });
+});
 
 // --- PTT ---
 function updatePttVisual(on) {

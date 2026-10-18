@@ -338,10 +338,22 @@
         <p class="ptt__hint" id="ptt-hint">Hold to transmit (or hold Space). First use will ask for microphone access.</p>
       </section>
 
+      <!-- Operator notes: short messages shared with everyone using the
+           radio (the three most recent, newest first). A new one chimes and
+           flashes the screen in the other browsers. See app.js "Notes". -->
+      <section class="notes" id="notes" aria-label="Notes for other operators">
+        <ol class="notes__list" id="notes-list" aria-live="polite"></ol>
+        <form class="notes__form" id="notes-form" autocomplete="off">
+          <input type="text" class="notes__input" id="notes-input" maxlength="200" enterkeyhint="send" placeholder="Note to other operators" aria-label="Note to other operators" />
+          <button class="chip notes__send" id="notes-send" type="submit" disabled>Send</button>
+        </form>
+      </section>
+
       <p class="error-line" id="error-line" hidden></p>
     </div>
   </main>
 
+  <div class="screen-flash" id="screen-flash" aria-hidden="true"></div>
   <script type="module" src="/app.js"></script>
 </body>
 </html>

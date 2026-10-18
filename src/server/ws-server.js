@@ -9,6 +9,12 @@ const { WebSocketServer } = require('ws');
 const { REQUEST, EVENT, makeResult, makeError, makeEvent } = require('./protocol');
 const { createStaticHandler } = require('./static-server');
 
+// Operator notes (REQUEST.POST_NOTE)
+const NOTES_KEEP = 3;
+const NOTE_MAX_CHARS = 200;
+const NOTES_IDLE_MS = 60 * 60 * 1000; // cleared after an hour with no new note
+const NOTES_EMPTY_GRACE_MS = 2 * 60 * 1000; // ...or two minutes after the last browser leaves
+
 /**
  * Bridges the (single, shared) CI-V driver to any number of WebSocket
  * clients on the LAN. Each client request is served directly and
@@ -56,6 +62,8 @@ class ControlServer extends EventEmitter {
     rnnoiseLevelCount = 5,
     sourceCodeUrl,
     pttWatchdogMs = 10 * 60 * 1000,
+    notesIdleMs = NOTES_IDLE_MS,
+    notesEmptyGraceMs = NOTES_EMPTY_GRACE_MS,
   }) {
     super();
     this.civ = civ;
@@ -77,6 +85,14 @@ class ControlServer extends EventEmitter {
     // real minutes for the timeout to fire — see docs/civ-notes.md.
     this.pttWatchdogMs = pttWatchdogMs;
     this._pttWatchdogTimer = null;
+    // Operator notes (REQUEST.POST_NOTE): cleared after notesIdleMs with no
+    // new note, or once nobody has been connected for notesEmptyGraceMs (a
+    // grace period, so one person reloading the page doesn't wipe them).
+    this.notesIdleMs = notesIdleMs;
+    this.notesEmptyGraceMs = notesEmptyGraceMs;
+    this._notesIdleTimer = null;
+    this._notesEmptyTimer = null;
+    this._noteId = 0;
 
     const staticHandler = staticDir ? createStaticHandler(staticDir) : null;
     const requestHandler = (req, res) => {
@@ -261,6 +277,10 @@ class ControlServer extends EventEmitter {
       // model). null (the default) shows no link client-side — static
       // for the process lifetime, same as screenTitle/appVersion above.
       sourceCodeUrl: sourceCodeUrl || null,
+      // Short text notes operators leave each other (the bar under the PTT
+      // button): the NOTES_KEEP most recent, newest last, each {id, text,
+      // time} with time in epoch ms. See REQUEST.POST_NOTE.
+      notes: [],
     };
 
     this._wireCivEvents();
@@ -285,6 +305,10 @@ class ControlServer extends EventEmitter {
   _wireWsConnections() {
     this.wss.on('connection', (ws) => {
       this.clients.add(ws);
+      if (this._notesEmptyTimer) {
+        clearTimeout(this._notesEmptyTimer);
+        this._notesEmptyTimer = null;
+      }
       ws.send(makeEvent(EVENT.CONNECTED, { ...this.state }));
       this.emit('client-connected', ws);
 
@@ -362,10 +386,42 @@ class ControlServer extends EventEmitter {
   /** JTTY, Olivia, Feld-Hell and SSTV receiving cost CPU: don't leave them running for a browser that has gone away. */
   _releaseJttyIfAlone() {
     if (this.clients.size !== 0) return;
+    // Notes are for the people using the radio now: once nobody has been
+    // here for a little while, they go.
+    if (this.state.notes.length && !this._notesEmptyTimer) {
+      this._notesEmptyTimer = setTimeout(() => {
+        this._notesEmptyTimer = null;
+        if (this.clients.size === 0) this._clearNotes('empty');
+      }, this.notesEmptyGraceMs);
+      this._notesEmptyTimer.unref?.();
+    }
     if (this.state.jttyActive) this._setJttyActive(false);
     if (this.state.oliviaActive) this._setOliviaActive(false);
     if (this.state.hellActive) this._setHellActive(false);
     if (this.state.sstvActive) this._setSstvActive(false);
+  }
+
+  /** Adds an operator note, broadcasts it (the other browsers chime), and restarts the idle clock. */
+  _postNote(text, except) {
+    const note = { id: ++this._noteId, text, time: Date.now() };
+    const notes = [...this.state.notes, note].slice(-NOTES_KEEP);
+    this.state.notes = notes;
+    if (this._notesIdleTimer) clearTimeout(this._notesIdleTimer);
+    this._notesIdleTimer = setTimeout(() => {
+      this._notesIdleTimer = null;
+      this._clearNotes('idle');
+    }, this.notesIdleMs);
+    this._notesIdleTimer.unref?.();
+    this._broadcast(makeEvent(EVENT.NOTES, { notes, posted: note }), except);
+    return notes;
+  }
+
+  _clearNotes(reason) {
+    if (this._notesIdleTimer) clearTimeout(this._notesIdleTimer);
+    this._notesIdleTimer = null;
+    if (!this.state.notes.length) return;
+    this.state.notes = [];
+    this._broadcast(makeEvent(EVENT.NOTES, { notes: [], cleared: reason }));
   }
 
   async _handleMessage(ws, raw) {
@@ -535,6 +591,15 @@ class ControlServer extends EventEmitter {
         case REQUEST.ABORT_SSTV: {
           this.emit('sstv-abort');
           ws.send(makeResult(id, { accepted: true }));
+          break;
+        }
+        case REQUEST.POST_NOTE: {
+          if (typeof msg.text !== 'string') throw new Error('"text" must be a string');
+          const text = msg.text.replace(/\s+/g, ' ').trim();
+          if (!text) throw new Error('"text" must not be empty');
+          if (text.length > NOTE_MAX_CHARS) throw new Error(`A note can be at most ${NOTE_MAX_CHARS} characters`);
+          const notes = this._postNote(text, ws);
+          ws.send(makeResult(id, { notes }));
           break;
         }
         case REQUEST.GET_SSTV_PICTURES: {
@@ -1051,6 +1116,8 @@ class ControlServer extends EventEmitter {
   }
 
   close() {
+    clearTimeout(this._notesIdleTimer);
+    clearTimeout(this._notesEmptyTimer);
     if (this._pttWatchdogTimer) {
       clearTimeout(this._pttWatchdogTimer);
       this._pttWatchdogTimer = null;

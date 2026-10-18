@@ -133,6 +133,8 @@ function connect(port) {
   });
 }
 
+const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
+
 function nextMessage(ws) {
   if (ws._msgQueue.length) return Promise.resolve(ws._msgQueue.shift());
   return new Promise((resolve) => ws._msgWaiters.push(resolve));
@@ -1234,6 +1236,56 @@ async function run() {
     c.close();
     await new Promise((r) => setTimeout(r, 100));
     await aServer.close();
+  }
+
+  // Operator notes: the 3 most recent shared with every browser; cleared when idle or nobody is left.
+  {
+    const nServer = new ControlServer({ civ: new StubCivDriver(), port: 0, notesIdleMs: 400, notesEmptyGraceMs: 150 });
+    const nPort = await nServer.listen();
+    const a = await connect(nPort);
+    const b = await connect(nPort);
+    check((await nextMessage(a)).data.notes.length === 0, 'connected snapshot has no notes to start with');
+    await nextMessage(b);
+    a.send(JSON.stringify({ id: 'n1', type: 'postNote', text: '  VK3ABC:   on 40 m  ' }));
+    const r1 = await nextMessage(a);
+    check(r1.id === 'n1' && r1.data.notes.length === 1 && r1.data.notes[0].text === 'VK3ABC: on 40 m', 'postNote replies with the notes (spaces tidied)');
+    const e1 = await nextMessage(b);
+    check(e1.type === 'notes' && e1.data.posted?.text === 'VK3ABC: on 40 m' && e1.data.notes.length === 1 && Number.isFinite(e1.data.posted.time), 'the other browser gets it, marked as just posted (it chimes)');
+    for (const [i, t] of ['two', 'three', 'four'].entries()) {
+      b.send(JSON.stringify({ id: `n${i + 2}`, type: 'postNote', text: t }));
+      await nextMessage(b);
+      await nextMessage(a);
+    }
+    check(nServer.state.notes.map((n) => n.text).join() === 'two,three,four', 'only the three most recent are kept, oldest first: ' + nServer.state.notes.map((n) => n.text).join());
+    a.send(JSON.stringify({ id: 'n5', type: 'postNote', text: '   ' }));
+    check((await nextMessage(a)).ok === false, 'an empty note is refused');
+    a.send(JSON.stringify({ id: 'n6', type: 'postNote', text: 'x'.repeat(201) }));
+    check((await nextMessage(a)).ok === false, 'a note over 200 characters is refused');
+    a.send(JSON.stringify({ id: 'n7', type: 'postNote', text: 42 }));
+    check((await nextMessage(a)).ok === false, 'a non-string note is refused');
+    const c = await connect(nPort);
+    const helloC = await nextMessage(c);
+    check(helloC.data.notes.length === 3 && helloC.data.notes[2].text === 'four', 'a browser that connects later sees them in its snapshot');
+    await sleep(60);
+    check(a._msgQueue.length === 0 && b._msgQueue.length === 0, 'nothing is sent to the others when a browser connects (no chime)');
+    // an hour (here 400 ms) with no new note: cleared, everyone told
+    const cleared = await nextMessage(a);
+    check(cleared.type === 'notes' && cleared.data.notes.length === 0 && cleared.data.cleared === 'idle' && !cleared.data.posted && nServer.state.notes.length === 0, 'cleared after the idle time, everyone told (no chime)');
+    await nextMessage(b);
+    await nextMessage(c);
+    // the last browser leaving: cleared after the grace period, unless someone comes back first
+    a.send(JSON.stringify({ id: 'n8', type: 'postNote', text: 'back soon' }));
+    await nextMessage(a);
+    a.close();
+    b.close();
+    c.close();
+    await sleep(80);
+    const d = await connect(nPort);
+    check((await nextMessage(d)).data.notes.length === 1, 'someone reconnecting within the grace period still sees the notes');
+    d.close();
+    await sleep(300);
+    check(nServer.state.notes.length === 0, 'with nobody connected for the grace period, the notes are cleared');
+    await nServer.close();
   }
 
   // PTT fail-safe watchdog (10-minute cutoff in production; a short

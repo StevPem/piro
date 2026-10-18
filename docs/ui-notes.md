@@ -3574,3 +3574,25 @@ model for how to approach that.
   width and half its height instead of a quarter (160 × 128 at most in
   Scottie 1; "VK2IO" / "UR 595" now comes out 160 × 93, was 80 × 48).
   Browser test updated. Service-worker cache bumped to v81.
+
+### Operator notes (v82)
+
+- A shared notes box under the PTT button (`#notes`): the three most
+  recent notes, newest first, with this device's local time; a text box
+  and Send (Enter works too). Kept in `ControlServer.state.notes` (in the
+  connect snapshot); `postNote` adds one (whitespace tidied, 1-200
+  characters) and broadcasts `notes` with `posted` to the other browsers.
+- A new note from someone else: a two-note Web Audio chime (880 Hz then
+  1318.5 Hz, about half a second; the audio context is unlocked on the
+  first tap or key, as browsers require) and one 0.6 s full-screen flash
+  (`.screen-flash`, a fixed overlay fading to light and back), or with
+  `prefers-reduced-motion`, a highlight of the notes box only. No chime for
+  the sender, on connecting, or when notes are cleared.
+- Cleared after 60 minutes with no new note (`notesIdleMs`), or 2 minutes
+  after the last browser disconnects (`notesEmptyGraceMs`; a browser coming
+  back within that keeps them).
+- Tests: ws-server (sharing, three kept, validation, snapshot, no event on
+  connect, idle and empty clearing, the grace period); headless Chromium
+  (below the PTT button, the other browser chimes and flashes and the
+  sender doesn't, Space in the box doesn't key PTT, newest first, a later
+  browser sees them silently). Service-worker cache bumped to v82.
