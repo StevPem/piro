@@ -18,6 +18,7 @@ const CMD = {
   PTT: 0x1c, // paired with SUBCMD.PTT
   FUNCTION: 0x16, // various RX function toggles; see FUNCTION_SUBCMD
   OPTIONAL: 0x1a, // Icom's large "optional command" group: extended settings and DATA mode — see OPTIONAL_SUBCMD
+  SEND_CW: 0x17, // send text with the radio's own CW keyer (up to 30 characters per command; FF = stop). See CivDriver#sendCw
   SCOPE: 0x27, // spectrum scope; see SCOPE_SUBCMD and src/civ/scope.js
 
   // Reply-only pseudo-commands: the rig echoes the original command byte
@@ -49,6 +50,7 @@ const CMD = {
  */
 const LEVEL_SUBCMD = {
   CW_PITCH: 0x09, // 0000=300Hz, 0128=600Hz, 0255=900Hz; linear, 5Hz steps
+  KEY_SPEED: 0x0c, // the CW keyer's speed, 0000=6 WPM to 0255=48 WPM (see KEY_SPEED_TABLE)
   RF_GAIN: 0x02, // "RF gain" position — this project's RX gain control
   RF_PWR: 0x0a, // 00 00=max CCW (min power), 02 55=max CW (max power)
 };
@@ -123,7 +125,34 @@ const FUNCTION_SUBCMD = {
   NOISE_REDUCTION: 0x40, // 00=OFF, 01=ON
   AUTO_NOTCH: 0x41, // 00=OFF, 01=ON — see note above on NOTCH vs MANUAL_NOTCH
   MANUAL_NOTCH: 0x48, // 00=OFF, 01=ON — not used by this project's UI, kept for reference
+  BREAK_IN: 0x47, // CW break-in: 00=OFF, 01=semi, 02=full. The radio only transmits CI-V CW (CMD.SEND_CW) with it on
 };
+
+/**
+ * The CW keyer speed's 0-255 values for 6-48 WPM, as Hamlib's Icom backend
+ * has them (rigs/icom/icom.c `cw_lookup`): [raw, wpm]. Nearly linear, but
+ * not exactly, so the table is used rather than a formula.
+ */
+const KEY_SPEED_TABLE = [
+  [0, 6], [7, 7], [12, 8], [19, 9], [25, 10], [31, 11], [37, 12], [43, 13], [49, 14], [55, 15], [61, 16],
+  [67, 17], [73, 18], [79, 19], [84, 20], [91, 21], [97, 22], [103, 23], [108, 24], [114, 25], [121, 26],
+  [128, 27], [134, 28], [140, 29], [144, 30], [151, 31], [156, 32], [164, 33], [169, 34], [175, 35], [182, 36],
+  [188, 37], [192, 38], [199, 39], [203, 40], [211, 41], [215, 42], [224, 43], [229, 44], [234, 45], [239, 46],
+  [244, 47], [250, 48],
+];
+
+/** WPM (6-48, rounded and clamped) -> the radio's 0-255 key speed value. */
+function wpmToKeySpeed(wpm) {
+  const w = Math.max(6, Math.min(48, Math.round(Number(wpm) || 6)));
+  return KEY_SPEED_TABLE[w - 6][0];
+}
+
+/** The radio's 0-255 key speed value -> the nearest WPM. */
+function keySpeedToWpm(raw) {
+  let best = KEY_SPEED_TABLE[0];
+  for (const e of KEY_SPEED_TABLE) if (Math.abs(e[0] - raw) < Math.abs(best[0] - raw)) best = e;
+  return best[1];
+}
 
 /**
  * Sub-commands under CMD.OPTIONAL (0x1A), a large model-specific group.
@@ -228,4 +257,7 @@ module.exports = {
   MODE_NAMES,
   DEFAULT_CONTROLLER_ADDR,
   KNOWN_RADIO_ADDR,
+  KEY_SPEED_TABLE,
+  wpmToKeySpeed,
+  keySpeedToWpm,
 };

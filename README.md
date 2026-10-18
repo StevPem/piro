@@ -12,7 +12,7 @@ Hamlib, no separate audio server and no extra apps.
 Written by VK3TR. Licensed AGPL-3.0-only (see
 [Licence](#licence)).
 
-**Current build: v82.** This is the version the app shows next to its title.
+**Current build: v83.** This is the version the app shows next to its title.
 It is the `CACHE_NAME` number in `src/client/sw.js`, which goes up with every
 change to the web app.
 
@@ -621,6 +621,9 @@ test/
   tty-bridge.test.js      RTTY/JTTY/Olivia/Feld-Hell transmit bridge (incl. the
                            RTTY LSB-D/USB-D AFSK switching): PTT, audio, status
                            events, abort, refusals, stub radio and ALSA
+  cw-tx-bridge.test.js    CW text through the radio's keyer: speed and
+                           break-in set and put back, 30-character pieces,
+                           buffer-full retries, Stop, refusals, timing
   jtty-rx.test.js         JTTY receiver: list decoder, multi-frame messages,
                            two signals, noise, gaps, chunking, and WSJT-X's
                            own 10-frame sample recording
@@ -897,6 +900,31 @@ defense-in-depth session timer that closes a real gap in the PTT
 watchdog below (a stuck paddle producing continuous keying wouldn't
 otherwise trip it, since each element's brief gap resets the server-side
 timer).
+
+**CW text**: above the Dot/Dash buttons in CW mode is a text box and
+**Send**. Type a message (or use the CQ it starts with) and press Send or
+Enter: PiRO hands the text to the radio's own CW keyer (CI-V command `17`),
+which sends it at the speed in the **WPM** box (6–48 WPM on the radio's
+keyer). Because the radio does the keying, the timing is exact at any
+speed, unlike the paddle. For each message PiRO:
+
+* checks that the radio is in CW or CW-R;
+* sets the keyer to the WPM box's speed;
+* turns semi break-in on if it was off (the radio only transmits CI-V CW
+  with break-in on);
+* gives the keyer the text 30 characters at a time, retrying while the
+  radio's buffer is full;
+* waits until the radio has finished transmitting, then puts the keyer
+  speed and break-in back as they were.
+
+Send turns into **Stop** while it goes out, which stops the radio's keyer
+at once. Every browser sees the progress. Letters, digits and
+`/ ? . , : ' ( ) = + " @ -` can be sent; `^` joins the next two letters
+into one prosign (`^AR`, `^SK`), as on the radio's own keyer memories.
+Anything else is left out, and the status line says what was dropped.
+Messages are limited to 300 characters and under 9 minutes. PTT isn't used,
+so the 10-minute PTT cut-off doesn't apply; the length limit stands in for
+it. Not yet tested on air.
 
 **PTT fail-safe (10-minute automatic cutoff)**: enforced server-side,
 required for this style of remote operation under the Australian
@@ -1421,6 +1449,10 @@ shapes.
   to the other browsers after any `setFt8Active`, `setFreeDvActive`,
   `setJttyActive`, `setOliviaActive`, `setHellActive` or `setSstvActive`, so
   they show the same mode; the connect snapshot has the same fields.
+  `sendCw` (`{text, wpm?}`) sends text with the radio's CW keyer;
+  progress arrives as `cw-tx-status` broadcasts (`sending` →
+  `sent`/`aborted`/`error`, with the text as sent, `wpm`, `durationSec`
+  and any `dropped` characters), and `abortCw` stops it.
   `postNote` (`{text}`, up to 200 characters) adds an operator note; the
   connect snapshot's `notes` and the `notes` broadcast (`{notes, posted?,
   cleared?}`) carry the three most recent (`{id, text, time}`, newest

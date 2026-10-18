@@ -593,6 +593,32 @@ async function run() {
     server.off('tty-abort', onAbort);
   }
 
+  // --- sendCw / abortCw: passed on to CwTxBridge ---
+  {
+    const sends = [];
+    let aborts = 0;
+    const onSend = (e) => sends.push(e);
+    const onAbort = () => aborts++;
+    server.on('cw-send', onSend);
+    server.on('cw-abort', onAbort);
+    clientA.send(JSON.stringify({ id: 'cw1', type: 'sendCw', text: 'CQ DE VK2IO', wpm: 22 }));
+    const ok = await nextMessage(clientA);
+    check(ok.id === 'cw1' && ok.data.accepted === true && sends[0]?.text === 'CQ DE VK2IO' && sends[0].wpm === 22, "sendCw acks and passes the text and WPM on as 'cw-send'");
+    for (const [id, bad, why] of [
+      ['cw2', { text: '  ' }, 'blank text'],
+      ['cw3', { text: 'X', wpm: 'fast' }, 'a non-numeric wpm'],
+      ['cw4', { text: 'X'.repeat(1001) }, 'over-long text'],
+    ]) {
+      clientA.send(JSON.stringify({ id, type: 'sendCw', ...bad }));
+      const r = await nextMessage(clientA);
+      check(r.id === id && r.ok === false, `sendCw rejects ${why}`);
+    }
+    clientA.send(JSON.stringify({ id: 'cw5', type: 'abortCw' }));
+    check((await nextMessage(clientA)).ok === true && aborts === 1 && sends.length === 1, "abortCw acks and emits 'cw-abort'");
+    server.off('cw-send', onSend);
+    server.off('cw-abort', onAbort);
+  }
+
   // --- setPskSpotEnabled: the "PSK Spot" checkbox — internal event for Ft8Bridge/psk-reporter.js, plus state + broadcast like setDataMode ---
   {
     check(server.state.pskSpotEnabled === true, 'pskSpotEnabled defaults to true, per the original "enabled by default" request');

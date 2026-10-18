@@ -14,6 +14,7 @@ const { encodeFeldHell } = require(PKG + '/src/audio/hell-tx');
 const { SstvDecoderBridge } = require(PKG + '/src/server/sstv-decoder-bridge');
 const { encodeSstv } = require(PKG + '/src/audio/sstv-tx');
 const { SstvTxBridge } = require(PKG + '/src/server/sstv-tx-bridge');
+const { CwTxBridge } = require(PKG + '/src/server/cw-tx-bridge');
 const { encodePng } = require(PKG + '/src/server/png');
 const { encodeJtty } = require(PKG + '/src/audio/jtty-tx');
 const { upsampleFloatToPcm } = require(PKG + '/src/audio/resample');
@@ -43,6 +44,14 @@ class Civ extends EventEmitter {
   async getPreamp() { return 0; } async getNoiseReduction() { return false; } async getNoiseBlanker() { return false; }
   async getNotch() { return false; } async getTuner() { return 0; } async getFilter() { return 1; }
   async getTxPower() { return 100; } async getRxGain() { return 255; }
+  // CW keyer (CI-V 17): each piece "takes" 5 s to send
+  async getKeySpeed() { return this.keySpeed ?? 15; }
+  async setKeySpeed(w) { this.log.push(['setKeySpeed', w]); this.keySpeed = w; return w; }
+  async getBreakIn() { return this.breakIn ?? 0; }
+  async setBreakIn(v) { this.log.push(['setBreakIn', v]); this.breakIn = v; return true; }
+  async sendCw(t) { this.log.push(['sendCw', t]); this.cwUntil = Date.now() + 5000; return true; }
+  async stopCw() { this.log.push(['stopCw']); this.cwUntil = 0; return true; }
+  async getTransmitting() { return Date.now() < (this.cwUntil || 0); }
 }
 
 (async () => {
@@ -64,6 +73,8 @@ class Civ extends EventEmitter {
   sstvRx.start();
   const sstvTx = new SstvTxBridge({ controlServer: server, audioBridge, callsign: 'VK2IO', pttReleaseMarginMs: 20 });
   sstvTx.start();
+  const cwTx = new CwTxBridge({ controlServer: server });
+  cwTx.start();
 
   const browser = await chromium.launch({ executablePath: process.env.CHROMIUM_PATH || undefined, args: ['--no-sandbox'] });
   const page = await browser.newPage({ viewport: { width: 430, height: 1100 } });
@@ -423,6 +434,25 @@ class Civ extends EventEmitter {
   await page.locator('#modes .chip', { hasText: /^CW/ }).click();
   await page.waitForFunction(() => [...document.querySelectorAll('#modes .chip')].some((c) => c.textContent === 'TTY'));
   check(!(await vis('#tty-composer')) && !(await vis('#ptt-btn')) && (await vis('#cw-paddle')), 'RTTY -> CW: composer gone, CW paddle shown, PTT hidden');
+  // CW text: a box and Send above DOT/WPM/DASH, sent by the radio's keyer at the WPM set
+  {
+    const box = await page.locator('#cw-composer').boundingBox();
+    const paddle = await page.locator('#cw-paddle').boundingBox();
+    check((await vis('#cw-composer')) && box.y + box.height <= paddle.y + 1, 'CW: a text box and Send above the DOT/WPM/DASH buttons');
+    check((await page.locator('#cw-text-input').inputValue()) === 'CQ CQ DE VK2IO VK2IO K', 'pre-filled with a CW CQ');
+    check(!(await page.locator('#cw-dot-btn').isDisabled()) && !(await page.locator('#cw-dash-btn').isDisabled()), 'the DOT and DASH buttons can be pressed (they were left disabled before)');
+    await page.locator('#cw-wpm-input').fill('25');
+    civ.log.length = 0;
+    await page.locator('#cw-text-input').fill('cq test de vk2io k');
+    await page.locator('#cw-send-btn').click();
+    await page.waitForFunction(() => /^Sending CW at 25 WPM: "CQ TEST DE VK2IO K"/.test(document.getElementById('cw-status').textContent), null, { timeout: 5000 });
+    check(civ.log.map((e) => e.join(' ')).join(' | ') === 'setKeySpeed 25 | setBreakIn 1 | sendCw CQ TEST DE VK2IO K', 'Send: keyer speed 25 WPM (from the WPM box), semi break-in on, the text to the keyer: ' + civ.log.map((e) => e.join(' ')).join(' | '));
+    check((await page.locator('#cw-send-btn').textContent()) === 'Stop' && !civ.log.some((e) => e[0] === 'setPtt'), 'Send became Stop; PTT is not used (the radio keys itself)');
+    check(await pageB.waitForFunction(() => /^Sending CW at 25 WPM/.test(document.getElementById('cw-status').textContent), null, { timeout: 3000 }).then(() => true, () => false), 'the second browser shows it being sent');
+    await page.locator('#cw-send-btn').click();
+    await page.waitForFunction(() => document.getElementById('cw-status').textContent === 'Stopped.', null, { timeout: 5000 });
+    check(civ.log.some((e) => e[0] === 'stopCw') && civ.log.slice(-2).map((e) => e.join(' ')).join(' | ') === 'setBreakIn 0 | setKeySpeed 15' && (await page.locator('#cw-send-btn').textContent()) === 'Send', 'Stop: the keyer stopped, break-in and speed put back, Send again');
+  }
 
   // Olivia -> LSB: leaves Olivia, DATA MODE off, PTT back
   await page.locator('#modes .chip', { hasText: /^TTY$/ }).click();
@@ -609,6 +639,7 @@ class Civ extends EventEmitter {
   hellRx.stop();
   sstvRx.stop();
   sstvTx.stop();
+  cwTx.stop();
   await server.close();
   console.log(failures ? `\n${failures} FAILED` : '\nAll UI checks passed');
   process.exit(failures ? 1 : 0);

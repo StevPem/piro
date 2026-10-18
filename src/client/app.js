@@ -441,6 +441,10 @@ const cwPaddleEl = document.getElementById('cw-paddle');
 const cwDotBtn = document.getElementById('cw-dot-btn');
 const cwDashBtn = document.getElementById('cw-dash-btn');
 const cwWpmInput = document.getElementById('cw-wpm-input');
+const cwComposerEl = document.getElementById('cw-composer');
+const cwTextInput = document.getElementById('cw-text-input');
+const cwSendBtn = document.getElementById('cw-send-btn');
+const cwStatusEl = document.getElementById('cw-status');
 const cwTickerSectionEl = document.getElementById('cw-ticker-section');
 const cwTickerEl = document.getElementById('cw-ticker');
 const cwTickerTextEl = document.getElementById('cw-ticker-text');
@@ -924,6 +928,11 @@ link.addEventListener('connected', (event) => {
 
   pttBtn.disabled = false;
   notesSendBtn.disabled = false;
+  cwSendBtn.disabled = false;
+  // The paddle's buttons start disabled in the page like PTT; nothing ever
+  // enabled them, so DOT and DASH could never be pressed.
+  cwDotBtn.disabled = false;
+  cwDashBtn.disabled = false;
   renderNotes(data.notes); // no chime: nothing new, just what's there
   ttySendBtn.disabled = false;
   tunerBtn.disabled = false;
@@ -3251,8 +3260,10 @@ function setCwPaddleVisible(visible) {
   }
   pttBtn.hidden = visible;
   cwPaddleEl.hidden = !visible;
+  cwComposerEl.hidden = !visible;
+  if (visible && !cwTextInput.value && stationCallsign) cwTextInput.value = `CQ CQ DE ${stationCallsign} ${stationCallsign} K`;
   pttHintEl.textContent = visible
-    ? 'Hold Dot/Dash to key CW (iambic — hold both to alternate). CI-V round-trip latency may make timing less precise than a hardware keyer.'
+    ? "Type text and press Send (or Enter): the radio's own keyer sends it at the WPM set below. Or hold Dot/Dash to key by hand (iambic — hold both to alternate; CI-V round-trip latency makes that timing less precise than a hardware keyer)."
     : 'Hold to transmit (or hold Space). First use will ask for microphone access.';
 
   cwTickerSectionEl.hidden = !visible;
@@ -3882,6 +3893,64 @@ async function syncRxGain() {
     // transient — next poll will retry
   }
 }
+
+// --- CW text ---
+// Typed text sent as CW by the radio's own keyer (server/cw-tx-bridge.js),
+// at the speed in the WPM box. The radio does the timing, so unlike the
+// DOT/DASH paddle it isn't affected by the CI-V round trip. Send becomes
+// Stop while it is going out; every browser shows the progress.
+let cwTxBusy = false;
+let cwTxTimer = null;
+
+function sendCwText() {
+  if (cwTxBusy) {
+    link.request('abortCw').catch((err) => showError(`Couldn't stop the CW: ${err.message}`));
+    return;
+  }
+  const text = cwTextInput.value.trim();
+  if (!text) return;
+  const wpm = Math.max(6, Math.min(48, Math.round(Number(cwWpmInput.value) || 20)));
+  link.request('sendCw', { text, wpm }).catch((err) => showError(`Couldn't send: ${err.message}`));
+}
+cwSendBtn.addEventListener('click', sendCwText);
+cwTextInput.addEventListener('keydown', (event) => {
+  if (event.key !== 'Enter' || event.isComposing) return;
+  event.preventDefault();
+  if (!cwTxBusy) sendCwText();
+});
+
+link.addEventListener('cw-tx-status', (event) => {
+  const { status, text, wpm, durationSec, dropped, error } = event.detail || {};
+  clearInterval(cwTxTimer);
+  cwTxBusy = status === 'sending';
+  cwSendBtn.textContent = cwTxBusy ? 'Stop' : 'Send';
+  cwSendBtn.classList.toggle('ptt--active', cwTxBusy);
+  cwStatusEl.hidden = false;
+  const left = dropped?.length ? ` (left out: ${dropped.join(' ')})` : '';
+  switch (status) {
+    case 'sending': {
+      const t0 = Date.now();
+      const tick = () => {
+        const el = Math.min(durationSec, (Date.now() - t0) / 1000);
+        cwStatusEl.textContent = `Sending CW at ${wpm} WPM: "${text}"${left} · ${mmss(el)} of ${mmss(durationSec)}`;
+      };
+      tick();
+      cwTxTimer = setInterval(tick, 500);
+      break;
+    }
+    case 'sent':
+      cwStatusEl.textContent = `Sent CW at ${wpm} WPM: "${text}"${left}`;
+      break;
+    case 'aborted':
+      cwStatusEl.textContent = 'Stopped.';
+      break;
+    case 'error':
+      cwStatusEl.textContent = `Couldn't send: ${error || 'unknown error'}`;
+      break;
+    default:
+      cwStatusEl.hidden = true;
+  }
+});
 
 // --- Notes ---
 // Short messages operators leave each other ("VK3ABC: on 40 m until 16:30"),

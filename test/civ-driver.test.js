@@ -79,6 +79,64 @@ async function testBasicRequestReply() {
   check(hz === 14195000, 'getFrequency() resolves with the value from the simulated reply');
 }
 
+async function testCwKeyer() {
+  console.log('\n-- CW keyer: key speed, break-in, sending text (17), stop, transmit state --');
+  const transport = new FakeTransport();
+  const driver = new CivDriver({ path: '/fake', radioAddr: RADIO_ADDR, transport });
+  await driver.open();
+  const step = () => new Promise((resolve) => setImmediate(resolve));
+  const last = () => [...transport.written[transport.written.length - 1]];
+
+  let p = driver.setKeySpeed(20);
+  await step();
+  check(last().slice(4, 8).join() === [CMD.LEVEL, LEVEL_SUBCMD.KEY_SPEED, 0x00, 0x84].join(), `setKeySpeed(20) sends 14 0C 00 84 (Hamlib's table: 20 WPM = 84), got [${last().join(',')}]`);
+  transport.sendFrame({ cmd: CMD.OK });
+  check((await p) === 20, 'and resolves with the speed set');
+
+  p = driver.getKeySpeed();
+  await step();
+  transport.sendFrame({ cmd: CMD.LEVEL, subCmd: LEVEL_SUBCMD.KEY_SPEED, data: Buffer.from([0x02, 0x50]) });
+  check((await p) === 48, 'getKeySpeed() reads 02 50 as 48 WPM');
+
+  p = driver.getBreakIn();
+  await step();
+  check(last().slice(4, 6).join() === [CMD.FUNCTION, FUNCTION_SUBCMD.BREAK_IN].join() && last().length === 7, 'getBreakIn() reads 16 47');
+  transport.sendFrame({ cmd: CMD.FUNCTION, subCmd: FUNCTION_SUBCMD.BREAK_IN, data: Buffer.from([0x00]) });
+  check((await p) === 0, 'break-in off reads as 0');
+
+  p = driver.setBreakIn(1);
+  await step();
+  check(last().slice(4, 7).join() === [CMD.FUNCTION, FUNCTION_SUBCMD.BREAK_IN, 0x01].join(), 'setBreakIn(1) sends 16 47 01 (semi)');
+  transport.sendFrame({ cmd: CMD.OK });
+  await p;
+
+  p = driver.sendCw('CQ DE VK2IO');
+  await step();
+  check(Buffer.from(last().slice(4, -1)).toString('latin1') === '\x17CQ DE VK2IO', 'sendCw() sends 17 and the text');
+  transport.sendFrame({ cmd: CMD.OK });
+  check((await p) === true, 'accepted: true');
+  p = driver.sendCw('MORE');
+  await step();
+  transport.sendFrame({ cmd: CMD.NG });
+  check((await p) === false, 'buffer full (NG): false, not an error');
+  let threw = false;
+  await driver.sendCw('X'.repeat(31)).catch(() => (threw = true));
+  check(threw, 'more than 30 characters at once is refused before anything is sent');
+
+  p = driver.stopCw();
+  await step();
+  check(last().slice(4, 6).join() === [0x17, 0xff].join(), 'stopCw() sends 17 FF');
+  transport.sendFrame({ cmd: CMD.OK });
+  await p;
+
+  p = driver.getTransmitting();
+  await step();
+  check(last().slice(4, 6).join() === [CMD.PTT, SUBCMD.PTT].join() && last().length === 7, 'getTransmitting() reads 1C 00');
+  transport.sendFrame({ cmd: CMD.PTT, subCmd: SUBCMD.PTT, data: Buffer.from([0x01]) });
+  check((await p) === true, 'and reports transmitting');
+  await driver.close();
+}
+
 async function testFilter() {
   console.log('\n-- setFilter()/getFilter() read/preserve mode via the mode-set command\'s filter byte --');
 
@@ -1132,6 +1190,7 @@ async function run() {
   await testSetTuner();
   await testFunctionAndTunerGetters();
   await testDataMode();
+  await testCwKeyer();
   await testUsbAudioLevels();
   await testTuneScopeToRange();
   await testCenterScope();
