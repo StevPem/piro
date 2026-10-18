@@ -12,7 +12,7 @@ Hamlib, no separate audio server and no extra apps.
 Written by VK3TR. Licensed AGPL-3.0-only (see
 [Licence](#licence)).
 
-**Current build: v81.** This is the version the app shows next to its title.
+**Current build: v82.** This is the version the app shows next to its title.
 It is the `CACHE_NAME` number in `src/client/sw.js`, which goes up with every
 change to the web app.
 
@@ -1421,6 +1421,11 @@ shapes.
   to the other browsers after any `setFt8Active`, `setFreeDvActive`,
   `setJttyActive`, `setOliviaActive`, `setHellActive` or `setSstvActive`, so
   they show the same mode; the connect snapshot has the same fields.
+  `postNote` (`{text}`, up to 200 characters) adds an operator note; the
+  connect snapshot's `notes` and the `notes` broadcast (`{notes, posted?,
+  cleared?}`) carry the three most recent (`{id, text, time}`, newest
+  last). `posted` is set only for a newly added note, which the browsers
+  chime for.
 - **Audio (binary frames, tagged `BINARY_TYPE.AUDIO`)**: by default
   (`AUDIO_CODEC=pcm`), raw 16-bit PCM in both directions — no
   framing/codec requirement, chunk sizes are whatever arrives. With
@@ -1448,6 +1453,19 @@ a browser opened later starts in the same mode. What stays with each
 browser is work in progress there: text typed but not sent, the FT8 QSO
 being worked and its transmit frequency, and a picture being cropped for
 SSTV.
+
+**Notes.** Under the PTT button is a box for short notes to the other
+people using the radio, for example "VK3ABC: on 40 m FT8 until 16:30" or
+"can I have it after the net?". Type one and press Enter or Send; it
+appears in every browser with the time, and the three most recent are
+shown, newest first. In the other browsers a new note plays a short chime
+and flashes the screen once (on a device set to reduce motion, only the
+notes light up). Opening or reconnecting PiRO makes no sound. Nobody signs
+in, so put your callsign in the note. The notes are kept on the Pi (a
+browser opened later sees them) and cleared after an hour with no new
+note, or two minutes after the last browser closes. Browsers only play
+sound once the page has been tapped, and a phone that is locked or has the
+browser in the background usually won't chime at all.
 
 Note: every connected client currently has equal, unrestricted control,
 including sending TX audio — there's no access arbitration (e.g. locking

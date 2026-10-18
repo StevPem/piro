@@ -105,6 +105,44 @@ class Civ extends EventEmitter {
     check(chips[0].on && chips.slice(1).every((c) => !c.on), 'only the SSB chip is lit');
   }
 
+  // Operator notes: under the PTT button, shared, the newest three; a new one chimes and flashes the other browsers
+  {
+    const notesBox = await page.locator('#notes').boundingBox();
+    const pttBox = await page.locator('#ptt-btn').boundingBox();
+    check(notesBox && pttBox && notesBox.y > pttBox.y + pttBox.height, 'the notes box is below the PTT button');
+    const counts = (p) => p.evaluate(() => ({ chimes: Number(document.getElementById('notes').dataset.chimes || 0), flashes: Number(document.getElementById('screen-flash').dataset.flashes || 0) }));
+    const pttCalls = civ.log.filter((e) => e[0] === 'setPtt').length;
+    await page.locator('#notes-input').fill('VK2IO: testing on 20 m');
+    await page.locator('#notes-input').press('Space');
+    await page.locator('#notes-input').press('Enter');
+    check(await bFollows(() => /^\d\d:\d\dVK2IO: testing on 20 m$/.test(document.querySelector('#notes-list li')?.textContent || '')), 'Enter sends the note; the second browser shows it with its time');
+    await sleep(100);
+    const cb = await counts(pageB);
+    const ca = await counts(page);
+    check(cb.chimes === 1 && cb.flashes === 1, `the second browser chimes and flashes (${cb.chimes} chime, ${cb.flashes} flash)`);
+    check(ca.chimes === 0 && ca.flashes === 0 && (await page.locator('#notes-input').inputValue()) === '' && (await page.locator('#notes-list li').count()) === 1, 'the sender: the note shown, the box cleared, no chime of its own');
+    check(civ.log.filter((e) => e[0] === 'setPtt').length === pttCalls, 'typing a space in the note box does not key PTT');
+    await pageB.waitForFunction(() => !document.getElementById('screen-flash').classList.contains('screen-flash--on'), null, { timeout: 3000 }).catch(() => {});
+    for (const t of ['two', 'three', 'four']) {
+      await pageB.locator('#notes-input').fill(t);
+      await pageB.locator('#notes-send').click();
+      await page.waitForFunction((x) => document.querySelector('#notes-list li span')?.textContent === x, t, { timeout: 3000 });
+    }
+    const items = await page.locator('#notes-list li span').allTextContents();
+    check(items.join() === 'four,three,two', 'three most recent kept, newest first: ' + items.join(' | '));
+    check((await counts(page)).chimes === 3 && (await counts(pageB)).chimes === 1, 'each new note chimes in the other browser only');
+    const pageC = await browser.newPage({ viewport: { width: 430, height: 1100 } });
+    pageC.on('pageerror', (e) => errors.push('C: ' + e.message));
+    await pageC.goto(`http://localhost:${port}/`);
+    await pageC.waitForFunction(() => document.querySelectorAll('#notes-list li').length === 3, null, { timeout: 8000 }).catch(() => {});
+    await sleep(200);
+    const cc = await counts(pageC);
+    check((await pageC.locator('#notes-list li span').allTextContents()).join() === 'four,three,two' && cc.chimes === 0 && cc.flashes === 0, 'a browser opened later sees the notes, with no chime');
+    check((await counts(page)).chimes === 3 && (await counts(pageB)).chimes === 1, 'and nobody chimes when it connects');
+    if (process.env.UI_SHOTS) await page.screenshot({ path: process.env.UI_SHOTS + '/notes.png', fullPage: true, clip: { x: 0, y: Math.max(0, pttBox.y - 20), width: 430, height: pttBox.height + 220 } });
+    await pageC.close();
+  }
+
   let labels = await ttyLabel();
   check(labels.includes('TTY') && !labels.includes('RTTY'), 'mode row shows "TTY" (no separate RTTY chip): ' + labels.join(' '));
   check(!(await vis('#tty-composer')) && (await vis('#ptt-btn')), 'initially: PTT button visible, no text entry');

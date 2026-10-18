@@ -1413,3 +1413,109 @@ button {
 .sstv-tx__progress-detail {
   margin-top: 4px;
 }
+
+/* Operator notes, under the PTT button: the three most recent (newest
+   first, each with its local time), then a box to add one. */
+.notes {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  padding-top: 10px;
+  border-top: 1px solid var(--panel-border);
+  border-radius: 4px;
+}
+
+.notes__list {
+  margin: 0;
+  padding: 0;
+  list-style: none;
+  display: flex;
+  flex-direction: column;
+  gap: 3px;
+  font-size: 0.85rem;
+}
+
+.notes__list:empty {
+  display: none;
+}
+
+.notes__item {
+  display: flex;
+  gap: 8px;
+  overflow-wrap: anywhere;
+}
+
+.notes__item:first-child {
+  color: var(--text);
+  font-weight: 600;
+}
+
+.notes__item:not(:first-child) {
+  color: var(--text-muted);
+}
+
+.notes__time {
+  flex: 0 0 auto;
+  font-family: var(--font-mono);
+  font-variant-numeric: tabular-nums;
+  font-weight: 400;
+  color: var(--text-muted);
+}
+
+.notes__form {
+  display: flex;
+  gap: 6px;
+}
+
+.notes__input {
+  flex: 1;
+  min-width: 0;
+  padding: 6px 8px;
+  background: var(--panel-raised);
+  color: var(--text);
+  border: 1px solid var(--panel-border);
+  border-radius: 4px;
+  font-size: 0.85rem;
+}
+
+/* A new note from someone else: the whole screen flashes light and back. */
+.screen-flash {
+  position: fixed;
+  inset: 0;
+  z-index: 100;
+  background: #f4f2ea;
+  opacity: 0;
+  pointer-events: none;
+}
+
+.screen-flash--on {
+  animation: screen-flash 0.6s ease-out;
+}
+
+@keyframes screen-flash {
+  0% {
+    opacity: 0;
+  }
+  20% {
+    opacity: 0.85;
+  }
+  100% {
+    opacity: 0;
+  }
+}
+
+/* For people who have asked their device to reduce motion: no full-screen
+   flash, just the notes themselves lit briefly. */
+.notes--flash {
+  animation: notes-flash 1.2s ease-out;
+}
+
+@keyframes notes-flash {
+  0% {
+    background: var(--led-amber);
+  }
+  100% {
+    background: transparent;
+  }
+}
+
