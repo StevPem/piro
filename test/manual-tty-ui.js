@@ -485,7 +485,7 @@ class Civ extends EventEmitter {
       return { w: c.width, h: c.height, x0, y0, tw: x1 - x0 + 1, th: y1 - y0 + 1, centreRed: d[mid(c.height / 2)] > 200 && d[mid(c.height / 2) + 1] < 80 };
     });
     check(tag.w === 320 && tag.h === 256 && tag.centreRed, `photo cropped and scaled to 320 x 256 (the red square in the middle)`);
-    check(tag.tw <= 80 && tag.th <= 64 && tag.x0 < 10 && tag.y0 < 10, `callsign tag in the top left, ${tag.tw} x ${tag.th}: within a quarter of the width (80) and height (64)`);
+    check(tag.tw <= 160 && tag.th <= 128 && tag.tw > 140 && tag.x0 < 10 && tag.y0 < 10, `callsign tag in the top left, ${tag.tw} x ${tag.th}: twice the old size, within half the width (160) and height (128)`);
     await page.locator('#sstv-tx-corner').selectOption('br');
     const br = await page.locator('#sstv-tx-canvas').evaluate((c) => {
       const d = c.getContext('2d').getImageData(c.width - 5, c.height - 5, 1, 1).data;

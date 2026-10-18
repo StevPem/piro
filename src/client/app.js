@@ -2254,8 +2254,8 @@ sstvCanvas.addEventListener('click', () => {
 // Take a photo (the phone's camera) or choose an image, crop it to the
 // server's SSTV_TX_MODE shape by dragging and zooming, tag it with the
 // callsign (and an optional second line) in a corner, and send it. The
-// tag, with its backing box, is kept within a quarter of the picture's
-// width and a quarter of its height. The FSK ID and CW ID are added by the
+// tag, with its backing box, is kept within half the picture's width and
+// half its height (it was a quarter of each until v81; doubled on request). The FSK ID and CW ID are added by the
 // server.
 const sstvTxEl = document.getElementById('sstv-tx');
 const sstvTxEditor = document.getElementById('sstv-tx-editor');
@@ -2318,13 +2318,13 @@ function drawSstvTx() {
 
 /**
  * The callsign tag: bold white text with a dark outline on a translucent
- * box, in a corner, sized as large as fits in a quarter of the width and a
- * quarter of the height (box included). Returns the box drawn.
+ * box, in a corner, sized as large as fits in half the width and half the
+ * height (box included). Returns the box drawn.
  */
 function drawSstvTag(ctx, W, H, call, line2, corner) {
   if (!call && !line2) return null;
-  const maxW = Math.floor(W / 4);
-  const maxH = Math.floor(H / 4);
+  const maxW = Math.floor(W / 2);
+  const maxH = Math.floor(H / 2);
   const pad = Math.max(2, Math.round(Math.min(W, H) / 80));
   const font = (px) => `bold ${px}px system-ui, -apple-system, "Segoe UI", Roboto, sans-serif`;
   const ratio2 = 0.6; // second line size, relative to the callsign
