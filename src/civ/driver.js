@@ -18,6 +18,8 @@ const {
   MODE,
   MODE_NAMES,
   DEFAULT_CONTROLLER_ADDR,
+  wpmToKeySpeed,
+  keySpeedToWpm,
 } = require('./commands');
 
 const BROADCAST_ADDR = 0x00;
@@ -505,6 +507,64 @@ class CivDriver extends EventEmitter {
   async setPtt(on) {
     const frame = await this._send(CMD.PTT, SUBCMD.PTT, Buffer.from([on ? 1 : 0]));
     this._throwIfNG(frame, 'set PTT');
+    return true;
+  }
+
+  /**
+   * Whether the radio is transmitting now (a bare 1C 00 read). This sees
+   * transmissions the radio starts itself, e.g. CW break-in, not only PTT
+   * keyed over CI-V.
+   */
+  async getTransmitting() {
+    return (await this._readSingleByteSetting(CMD.PTT, SUBCMD.PTT, 'transmit state')) === 1;
+  }
+
+  // ---- CW keyer (sending text) ----
+
+  /** Sets the radio's CW keyer speed (6-48 WPM); returns the WPM set. */
+  async setKeySpeed(wpm) {
+    const raw = wpmToKeySpeed(wpm);
+    const frame = await this._send(CMD.LEVEL, LEVEL_SUBCMD.KEY_SPEED, this._encodeMeterValue(raw));
+    this._throwIfNG(frame, 'set CW key speed');
+    return keySpeedToWpm(raw);
+  }
+
+  /** Reads the radio's CW keyer speed, in WPM. */
+  async getKeySpeed() {
+    const frame = await this._send(CMD.LEVEL, LEVEL_SUBCMD.KEY_SPEED);
+    this._throwIfNG(frame, 'read CW key speed');
+    return keySpeedToWpm(this._decodeMeterReply(frame, 'CW key speed'));
+  }
+
+  /** CW break-in: 0 = off, 1 = semi, 2 = full. */
+  async getBreakIn() {
+    return this._readSingleByteSetting(CMD.FUNCTION, FUNCTION_SUBCMD.BREAK_IN, 'break-in');
+  }
+
+  async setBreakIn(value) {
+    if (![0, 1, 2].includes(value)) throw new Error('break-in must be 0 (off), 1 (semi) or 2 (full)');
+    const frame = await this._send(CMD.FUNCTION, FUNCTION_SUBCMD.BREAK_IN, Buffer.from([value]));
+    this._throwIfNG(frame, 'set break-in');
+    return true;
+  }
+
+  /**
+   * Gives the radio's CW keyer up to 30 characters to send (CI-V 17). The
+   * radio sends them at its key speed, transmitting by itself if break-in
+   * is on. Resolves false if the radio refused them (NG), which it does
+   * when its buffer is still full of earlier text: try again shortly.
+   */
+  async sendCw(text) {
+    const t = String(text);
+    if (!t.length || t.length > 30) throw new Error('CW text must be 1 to 30 characters per command');
+    const frame = await this._send(CMD.SEND_CW, undefined, Buffer.from(t, 'latin1'));
+    return frame.cmd !== CMD.NG;
+  }
+
+  /** Stops the radio's CW keyer, dropping whatever is left to send (CI-V 17 FF). */
+  async stopCw() {
+    const frame = await this._send(CMD.SEND_CW, undefined, Buffer.from([0xff]));
+    this._throwIfNG(frame, 'stop CW');
     return true;
   }
 

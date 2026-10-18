@@ -652,6 +652,20 @@ class ControlServer extends EventEmitter {
           ws.send(makeResult(id, { accepted: true }));
           break;
         }
+        case REQUEST.SEND_CW: {
+          if (typeof msg.text !== 'string' || msg.text.trim() === '') throw new Error('"text" must be a non-empty string');
+          if (msg.text.length > 1000) throw new Error('"text" is too long');
+          if (msg.wpm !== undefined && (typeof msg.wpm !== 'number' || !Number.isFinite(msg.wpm))) throw new Error('"wpm" must be a number if provided');
+          // Like SEND_TTY, this only starts it; progress arrives as EVENT.CW_TX_STATUS (see cw-tx-bridge.js).
+          this.emit('cw-send', { text: msg.text, wpm: msg.wpm });
+          ws.send(makeResult(id, { accepted: true }));
+          break;
+        }
+        case REQUEST.ABORT_CW: {
+          this.emit('cw-abort');
+          ws.send(makeResult(id, { accepted: true }));
+          break;
+        }
         case REQUEST.ABORT_TTY: {
           this.emit('tty-abort');
           ws.send(makeResult(id, { accepted: true }));

@@ -18,6 +18,7 @@ const { MODES: SSTV_MODES } = require('../audio/sstv-modes');
 const { clampHellTone } = require('../audio/hell-rx');
 const { Ft8Bridge } = require('../audio/ft8-bridge');
 const { TtyBridge } = require('../audio/tty-bridge');
+const { CwTxBridge } = require('./cw-tx-bridge');
 const { RadeBridge } = require('./rade-bridge');
 const { FreeDvReporterBridge } = require('./freedv-reporter');
 
@@ -262,6 +263,7 @@ let cwDecoderBridge;
 let rttyDecoderBridge;
 let ft8Bridge;
 let ttyBridge;
+let cwTxBridge;
 let jttyDecoderBridge;
 let oliviaDecoderBridge;
 let hellDecoderBridge;
@@ -572,6 +574,11 @@ async function main() {
     );
   }
 
+  // CW text: the radio's own keyer does the sending, so no audio is needed.
+  cwTxBridge = new CwTxBridge({ controlServer });
+  cwTxBridge.start();
+  console.log('CW text sending ready (the Send button in CW mode).');
+
   if (SCOPE_ENABLED) {
     scopeBridge = new ScopeBridge({ civ, controlServer });
     try {
@@ -600,6 +607,7 @@ async function shutdown(signal) {
     if (rttyDecoderBridge) rttyDecoderBridge.stop();
     if (ft8Bridge) ft8Bridge.stop();
     if (ttyBridge) ttyBridge.stop();
+    if (cwTxBridge) cwTxBridge.stop();
     if (jttyDecoderBridge) jttyDecoderBridge.stop();
     if (oliviaDecoderBridge) oliviaDecoderBridge.stop();
     if (hellDecoderBridge) hellDecoderBridge.stop();

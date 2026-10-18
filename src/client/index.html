@@ -303,6 +303,25 @@
 
       <section class="ptt-section">
         <button class="ptt" id="ptt-btn" type="button" disabled>PUSH TO TALK</button>
+        <!-- CW text: typed text sent by the radio's own keyer at the WPM
+             below (see app.js "CW text" and server/cw-tx-bridge.js). Shown
+             with the paddle while the radio is in CW. -->
+        <div class="tty-composer cw-composer" id="cw-composer" hidden>
+          <input
+            type="text"
+            class="tty-composer__input"
+            id="cw-text-input"
+            placeholder="CQ CQ DE VK2IO VK2IO K"
+            maxlength="300"
+            autocapitalize="characters"
+            autocomplete="off"
+            spellcheck="false"
+            enterkeyhint="send"
+            aria-label="Text to send as CW"
+          />
+          <button class="ptt tty-composer__send" id="cw-send-btn" type="button" disabled>Send</button>
+          <p class="ft8-status" id="cw-status" hidden></p>
+        </div>
         <div class="cw-paddle" id="cw-paddle" hidden>
           <button class="cw-paddle__btn" id="cw-dot-btn" type="button" disabled>&middot; DOT</button>
           <label class="cw-paddle__wpm">

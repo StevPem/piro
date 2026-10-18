@@ -3596,3 +3596,31 @@ model for how to approach that.
   (below the PTT button, the other browser chimes and flashes and the
   sender doesn't, Space in the box doesn't key PTT, newest first, a later
   browser sees them silently). Service-worker cache bumped to v82.
+
+### CW text sending (v83)
+
+- CW mode now has a text box and Send (`#cw-composer`) above the DOT/WPM/
+  DASH paddle, pre-filled with "CQ CQ DE <call> <call> K". `sendCw {text,
+  wpm}` (wpm from the WPM box, kept to the keyer's 6-48) goes to the new
+  `CwTxBridge` (`server/cw-tx-bridge.js`). It uses the radio's own keyer
+  (CI-V 17, up to 30 characters a command, NG when its buffer is full,
+  17 FF to stop) rather than PTT toggling, so the timing is the keyer's.
+  The sequence: CW or CW-R required; key speed (14 0C, Hamlib's 6-48 WPM
+  table) and break-in (16 47; semi if it was off; CI-V CW only transmits
+  with break-in on) set; pieces handed over a few seconds before the radio
+  runs out, retried every 250 ms on NG; then wait for the PARIS estimate
+  and for the radio to report receive (1C 00 read) for 0.8 s; speed and
+  break-in put back. Stop, or the last browser leaving, stops the keyer.
+  Messages are limited to 300 characters and under 9 minutes (no PTT, so
+  the PTT watchdog doesn't cover it). Status `cw-tx-status` goes to every
+  browser; Send becomes Stop.
+- New driver methods: `setKeySpeed`/`getKeySpeed`, `getBreakIn`/
+  `setBreakIn`, `sendCw` (false on NG), `stopCw`, `getTransmitting`.
+- Real bug fixed on the way: the DOT and DASH buttons are `disabled` in
+  the page and nothing ever enabled them, so the paddle couldn't be
+  pressed. They are now enabled on connecting, like PTT.
+- Tests: civ-driver (the frames), cw-tx-bridge.test.js (new), ws-server
+  (sendCw/abortCw), headless Chromium (layout, pre-fill, the radio
+  sequence at the WPM box's speed, no PTT, the second browser sees it,
+  Stop puts things back, DOT/DASH enabled). Not tested on air.
+  Service-worker cache bumped to v83.
