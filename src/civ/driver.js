@@ -340,7 +340,18 @@ class CivDriver extends EventEmitter {
       throw new Error(`Invalid filter "${filterNum}" — must be 1, 2, or 3`);
     }
     const current = await this.getMode();
-    return this.setMode(current.mode, filterNum);
+    // The mode command (06) also turns DATA mode off, so a filter change in
+    // FT8, JTTY and the like would leave the next transmission with no
+    // output (the radio back on its DATA OFF source): put it back on.
+    let dataOn = false;
+    try {
+      dataOn = await this.getDataMode();
+    } catch {
+      // no answer: carry on as before
+    }
+    const result = await this.setMode(current.mode, filterNum);
+    if (dataOn) await this.setDataMode(true, filterNum);
+    return result;
   }
 
   /** Read the current receive filter slot (1, 2, or 3) — see setFilter(). */

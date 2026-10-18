@@ -134,6 +134,55 @@ const statuses = (cs) => cs.broadcasts.filter((b) => b.type === EVENT.SSTV_TX_ST
     check(!late.some((l) => l.ws === 'after'), 'nothing is sent to a page opened after it ended');
   }
   {
+    // DATA mode is confirmed before PTT: a radio that ignores the first command is sent it again, and PTT waits
+    class SlowCiv extends StubCiv {
+      constructor() {
+        super();
+        this.ignoreNext = true;
+      }
+      async setDataMode(on) {
+        this.log.push(`data ${on}`);
+        if (on && this.ignoreNext) this.ignoreNext = false;
+        else this.dataMode = on;
+      }
+      async getDataMode() {
+        this.log.push('read data');
+        return this.dataMode;
+      }
+    }
+    const civ = new SlowCiv();
+    const { controlServer, bridge } = setup({ mode: 'M1', civ, dataSettleMs: 0, dataWatchMs: 30 });
+    const p = bridge.send({ rgb: new Uint8Array(320 * 256 * 3).fill(60), width: 320, height: 256 });
+    while (statuses(controlServer).at(-1)?.status !== 'sending') await sleep(5);
+    check(civ.log.join(' | ') === 'read data | data true | read data | data true | read data | ptt true', 'DATA mode read back before PTT, sent again when the radio had not taken it: ' + civ.log.join(' | '));
+    // something turns DATA mode off part-way: it is turned back on, and everyone is told
+    civ.dataMode = false;
+    await sleep(80);
+    const warned = controlServer.broadcasts.filter((b) => b.type === EVENT.AUDIO_ERROR);
+    check(civ.dataMode === true && warned.length === 1 && /DATA mode was turned off during the SSTV transmission/.test(warned[0].data.message), 'DATA mode lost while sending: turned back on, with a warning');
+    bridge.abort();
+    await p;
+    const n = civ.log.length;
+    await sleep(80);
+    check(civ.log.length === n && civ.log.at(-1) === 'data false', 'after the transmission: no more checks, DATA mode off');
+  }
+  {
+    // the radio never takes DATA mode: refused with a clear error, nothing keyed
+    class DeafCiv extends StubCiv {
+      async setDataMode(on) {
+        this.log.push(`data ${on}`);
+      }
+      async getDataMode() {
+        return false;
+      }
+    }
+    const civ = new DeafCiv();
+    const { controlServer, bridge } = setup({ mode: 'M1', civ, dataSettleMs: 0 });
+    await bridge.send({ rgb: new Uint8Array(320 * 256 * 3).fill(60), width: 320, height: 256 }).catch(() => {});
+    const last = statuses(controlServer).at(-1);
+    check(last.status === 'error' && /did not turn DATA mode on/.test(last.error) && !civ.log.includes('ptt true'), 'a radio that will not go into DATA mode: error, never keyed: ' + last.error);
+  }
+  {
     // the last browser going away stops the transmission
     const { controlServer, bridge, civ } = setup({ mode: 'M1' });
     controlServer.clients = new Set(['a']);

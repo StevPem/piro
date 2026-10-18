@@ -5,6 +5,7 @@ const { Worker } = require('worker_threads');
 const { EVENT } = require('./protocol');
 const { MODES, videoSeconds, isScottie } = require('../audio/sstv-modes');
 const { encodePng } = require('./png');
+const { ensureDataMode, watchDataMode } = require('../civ/data-mode-guard');
 
 const DEFAULT_SSTV_TX_MODE = 'S1';
 const PTT_RELEASE_MARGIN_MS = 300; // as tty-bridge.js: let the last of the audio leave the pipe
@@ -79,8 +80,10 @@ class SstvTxBridge {
    * @param {number} [opts.amplitude]
    * @param {(job: object) => Promise<{pcm: Buffer, durationSec: number}>} [opts.encode] - injectable for testing
    * @param {() => number} [opts.now]
+   * @param {number} [opts.dataSettleMs] - wait after turning DATA mode on, before PTT (civ/data-mode-guard.js)
+   * @param {number} [opts.dataWatchMs] - how often DATA mode is checked while sending
    */
-  constructor({ controlServer, audioBridge, mode = DEFAULT_SSTV_TX_MODE, callsign, fskId = true, cwId = true, txPowerW, pttReleaseMarginMs, amplitude, encode, now } = {}) {
+  constructor({ controlServer, audioBridge, mode = DEFAULT_SSTV_TX_MODE, callsign, fskId = true, cwId = true, txPowerW, pttReleaseMarginMs, amplitude, encode, now, dataSettleMs, dataWatchMs } = {}) {
     if (!controlServer) throw new Error('SstvTxBridge requires opts.controlServer');
     if (!audioBridge) throw new Error('SstvTxBridge requires opts.audioBridge');
     if (!MODES[mode]) throw new Error(`Unknown SSTV mode "${mode}"`);
@@ -95,6 +98,8 @@ class SstvTxBridge {
     this.amplitude = amplitude ?? DEFAULT_TX_AMPLITUDE;
     this.encode = encode ?? encodeInWorker;
     this.now = now ?? Date.now;
+    this.dataSettleMs = dataSettleMs;
+    this.dataWatchMs = dataWatchMs;
     this._tx = null;
     this._picId = 0x8000; // own pictures, apart from received ones
     const m = MODES[mode];
@@ -175,6 +180,7 @@ class SstvTxBridge {
     let dataOn = false;
     let prevPower = null;
     let keyed = false;
+    let stopWatch = null;
     try {
       const radioMode = civ ? (await civ.getMode()).mode : null;
       if (civ && radioMode !== 'LSB' && radioMode !== 'USB') throw new Error('Put the radio on LSB or USB first (the SSTV button does this).');
@@ -197,10 +203,14 @@ class SstvTxBridge {
       }
       if (this.controlServer.state?.ptt) throw new Error('The radio is already transmitting.');
       if (civ) {
-        await civ.setDataMode(true);
+        // Confirmed by reading it back, and given a moment to take, before
+        // PTT: keyed too soon, the radio can transmit from its DATA OFF
+        // source (the microphone) for the whole picture.
         dataOn = true;
+        await ensureDataMode(civ, true, { settleMs: this.dataSettleMs });
         if (this.txPowerW) {
-          prevPower = await civ.getTxPower();
+          const p = await civ.getTxPower();
+          prevPower = Number.isFinite(p) && p > 0 ? p : null;
           await civ.setTxPower(this.txPowerW);
         }
       }
@@ -219,6 +229,12 @@ class SstvTxBridge {
       }
       if (!tx.aborted) {
         this.audioBridge.playback.write(pcm);
+        if (civ) {
+          stopWatch = watchDataMode(civ, {
+            intervalMs: this.dataWatchMs,
+            onLost: () => this._warn('DATA mode was turned off during the SSTV transmission (no output while it was off); turned it back on.'),
+          });
+        }
         const ms = (pcm.length / 2 / this.audioBridge.sampleRate) * 1000;
         await new Promise((resolve) => {
           tx.wake = resolve;
@@ -226,6 +242,8 @@ class SstvTxBridge {
         });
       }
       tx.timer = null;
+      if (stopWatch) await stopWatch();
+      stopWatch = null;
       if (keyed) await this.controlServer.setPttFromServer(false);
       keyed = false;
       await this._restore(civ, dataOn, prevPower);
@@ -235,6 +253,7 @@ class SstvTxBridge {
       this._status({ status: tx.aborted ? 'aborted' : 'sent', durationSec });
       if (!tx.aborted) this._addOwnPicture(rgb, width, height);
     } catch (err) {
+      if (stopWatch) await stopWatch().catch(() => {});
       if (keyed) {
         try {
           await this.controlServer.setPttFromServer(false);
@@ -251,6 +270,11 @@ class SstvTxBridge {
       this._status({ status: 'error', error: err.message });
       throw err;
     }
+  }
+
+  _warn(message) {
+    console.warn(`SSTV transmit: ${message}`);
+    this.controlServer.broadcastJsonEvent(EVENT.AUDIO_ERROR, { message: `SSTV transmit: ${message}` });
   }
 
   async _restore(civ, dataOn, prevPower) {

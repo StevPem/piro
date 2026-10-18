@@ -12,7 +12,7 @@ Hamlib, no separate audio server and no extra apps.
 Written by VK3TR. Licensed AGPL-3.0-only (see
 [Licence](#licence)).
 
-**Current build: v79.** This is the version the app shows next to its title.
+**Current build: v80.** This is the version the app shows next to its title.
 It is the `CACHE_NAME` number in `src/client/sw.js`, which goes up with every
 change to the web app.
 
@@ -442,7 +442,12 @@ one hard refresh (Ctrl+Shift+R, or Cmd+Shift+R on a Mac).
   LSB-D while it transmits; PiRO turns DATA mode on with CI-V `1A 06`
   (before v78 it sent the wrong command, so DATA mode never came on). Then
   check on the radio: Menu > Set > Connectors > MOD Input > **DATA MOD**
-  must be **USB**, and USB MOD Level not 0.
+  must be **USB**, and USB MOD Level not 0. If it only happens sometimes,
+  update to v80 or later: PTT used to follow the DATA mode command so
+  closely that the radio could transmit from the microphone instead. PiRO
+  now confirms DATA mode, and waits for it to take, before keying. A
+  warning saying DATA mode was turned off during a transmission means
+  something changed the radio's mode while it was sending.
 - **FT8 decodes nothing or at the wrong times.** Check the system clock with
   `timedatectl`. It must show "System clock synchronized: yes".
 - **The microphone is blocked in the browser.** Use HTTPS (see
@@ -515,6 +520,8 @@ test/
                            transport: request/reply matching (incl. the
                            subCmd disambiguation fix), scope-line wiring,
                            and scope span/mode/band-range commands
+  data-mode-guard.test.js DATA mode confirmed before PTT (read back, retried,
+                           settle time) and watched during a transmission
   ws-server.test.js       integration test for the control layer, stubbed
                            CivDriver, no hardware needed
   pcm-framer.test.js      unit tests for PCM frame accumulation

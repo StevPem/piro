@@ -1,5 +1,6 @@
 'use strict';
 
+const { ensureDataMode, watchDataMode } = require('../civ/data-mode-guard');
 const { EVENT } = require('../server/protocol');
 const { encodeRtty } = require('./rtty-encoder');
 const { encodeJtty, sampleRateSupported, JTTY_BASE_RATE, JTTY_BAUD } = require('./jtty-tx');
@@ -97,7 +98,7 @@ class TtyBridge {
    * @param {number} [opts.pttReleaseMarginMs] - injectable for testing
    * @param {number} [opts.amplitude]
    */
-  constructor({ controlServer, audioBridge, jttyFreqHz, oliviaFreqHz, hellToneHz, pttReleaseMarginMs, amplitude } = {}) {
+  constructor({ controlServer, audioBridge, jttyFreqHz, oliviaFreqHz, hellToneHz, pttReleaseMarginMs, amplitude, dataSettleMs, dataWatchMs } = {}) {
     if (!controlServer) throw new Error('TtyBridge requires opts.controlServer');
     if (!audioBridge) throw new Error('TtyBridge requires opts.audioBridge');
     this.controlServer = controlServer;
@@ -107,6 +108,9 @@ class TtyBridge {
     this.hellToneHz = clampHellTone(hellToneHz ?? DEFAULT_HELL_TONE_HZ);
     this.pttReleaseMarginMs = pttReleaseMarginMs ?? PTT_RELEASE_MARGIN_MS;
     this.amplitude = amplitude ?? DEFAULT_TX_AMPLITUDE;
+    // see civ/data-mode-guard.js: the wait after a DATA mode change before PTT, and how often it is checked while sending
+    this.dataSettleMs = dataSettleMs;
+    this.dataWatchMs = dataWatchMs;
     this._tx = null; // the in-flight transmission, if any
     this._onSend = (req) => {
       // Errors are reported as EVENT.TTY_TX_STATUS inside send(); nothing to add here.
@@ -134,6 +138,11 @@ class TtyBridge {
     this.controlServer.broadcastJsonEvent(EVENT.TTY_TX_STATUS, data);
   }
 
+  _warn(message) {
+    console.warn(`TTY transmit: ${message}`);
+    this.controlServer.broadcastJsonEvent(EVENT.AUDIO_ERROR, { message });
+  }
+
   /** Reads the radio's mode and frequency and works out how to send RTTY (see rttyAfskPlan()). */
   async _rttyPlan() {
     const civ = this.controlServer.civ;
@@ -146,7 +155,8 @@ class TtyBridge {
   async _enterRttyAfsk(plan) {
     const civ = this.controlServer.civ;
     await civ.setMode(plan.sideband, 1); // FIL1: the widest SSB filter, so both tones pass
-    await civ.setDataMode(true);
+    // read back, and given a moment to take before PTT (see civ/data-mode-guard.js)
+    await ensureDataMode(civ, true, { settleMs: this.dataSettleMs });
     await civ.setFrequency(plan.dialHz);
   }
 
@@ -275,15 +285,26 @@ class TtyBridge {
     if (built.freqHz !== undefined) info.freqHz = built.freqHz;
     if (built.note) info.note = built.note;
     let switched = false;
+    let stopWatch = null;
     try {
       this._status({ status: 'sending', ...info });
       if (rttyPlan?.switchMode && !tx.aborted) {
         switched = true;
         await this._enterRttyAfsk(rttyPlan);
       }
+      // JTTY, Olivia and Feld-Hell rely on the TTY button having turned DATA
+      // mode on; make sure it still is (the radio's own RTTY mode needs it off).
+      const civ = this.controlServer.civ;
+      if (civ && mode !== 'RTTY' && !tx.aborted) await ensureDataMode(civ, true, { settleMs: this.dataSettleMs });
       if (!tx.aborted) await this.controlServer.setPttFromServer(true);
       if (!tx.aborted) {
         this.audioBridge.playback.write(built.pcm);
+        if (civ && (mode !== 'RTTY' || switched)) {
+          stopWatch = watchDataMode(civ, {
+            intervalMs: this.dataWatchMs,
+            onLost: () => this._warn(`DATA mode was turned off during the ${mode} transmission (no output while it was off); turned it back on.`),
+          });
+        }
         const durationMs = (built.pcm.length / 2 / this.audioBridge.sampleRate) * 1000;
         await new Promise((resolve) => {
           tx.wake = resolve;
@@ -291,6 +312,8 @@ class TtyBridge {
         });
       }
       tx.timer = null;
+      if (stopWatch) await stopWatch();
+      stopWatch = null;
       await this.controlServer.setPttFromServer(false);
       if (switched) {
         switched = false;
@@ -298,6 +321,7 @@ class TtyBridge {
       }
       this._status({ status: tx.aborted ? 'aborted' : 'sent', ...info });
     } catch (err) {
+      if (stopWatch) await stopWatch().catch(() => {});
       try {
         await this.controlServer.setPttFromServer(false);
       } catch {

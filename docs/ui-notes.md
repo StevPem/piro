@@ -3547,3 +3547,22 @@ model for how to approach that.
   part-way, and the screen returns to the last picture after Stop.
   Service-worker cache bumped to v79.
 
+### DATA mode confirmed before transmitting (v80)
+
+- Real bug: SSTV sometimes went out with no output and a faint carrier.
+  `SstvTxBridge` keyed PTT a few milliseconds after the DATA mode command,
+  and the radio could stay on its DATA OFF (microphone) source for the
+  whole transmission. New `civ/data-mode-guard.js`: `ensureDataMode()`
+  (read back, retry up to 3 times, 300 ms settle after a change; one read
+  if it is already right) before PTT in SSTV, RTTY AFSK, JTTY, Olivia,
+  Feld-Hell and FT8; `watchDataMode()` every 3 s during SSTV and TTY
+  transmissions, turning it back on with an `audio-error` warning if it
+  was lost. A radio that never confirms gets a clear error, and PTT is never
+  keyed.
+- `CivDriver#setFilter()` restores DATA mode after its mode command (the
+  Filter button in FT8/JTTY used to turn it off).
+- Tests: data-mode-guard.test.js (new, in `npm test`); sstv-tx-bridge (a
+  radio that ignores the first command, DATA mode lost mid-picture, a radio
+  that never takes it); civ-driver (setFilter with DATA mode on/off).
+  Service-worker cache bumped to v80.
+
