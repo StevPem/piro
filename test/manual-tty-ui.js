@@ -111,7 +111,7 @@ class Civ extends EventEmitter {
   // Mode rows: SSB AM FM CW on top, TTY DIGI FreeDV SSTV below
   {
     const chips = await page.locator('#modes .chip').evaluateAll((els) => els.map((e) => ({ t: e.textContent, top: e.offsetTop, on: e.classList.contains('chip--active') })));
-    check(chips.map((c) => c.t).join(' ') === 'LSB AM FM CW 1 TTY DIGI FreeDV SSTV', 'mode chips: ' + chips.map((c) => c.t).join(' ') + ' (the SSB chip reads LSB: the radio is on LSB)');
+    check(chips.map((c) => c.t).join(' ') === 'LSB AM FM CW TTY DIGI FreeDV SSTV', 'mode chips: ' + chips.map((c) => c.t).join(' ') + ' (the SSB chip reads LSB: the radio is on LSB)');
     check(chips.slice(0, 4).every((c) => c.top === chips[0].top) && chips.slice(4).every((c) => c.top === chips[4].top) && chips[4].top > chips[0].top, 'two rows of four');
     check(chips[0].on && chips.slice(1).every((c) => !c.on), 'only the SSB chip is lit');
   }
@@ -152,6 +152,13 @@ class Civ extends EventEmitter {
     check((await counts(page)).chimes === 3 && (await counts(pageB)).chimes === 1, 'and nobody chimes when it connects');
     if (process.env.UI_SHOTS) await page.screenshot({ path: process.env.UI_SHOTS + '/notes.png', fullPage: true, clip: { x: 0, y: Math.max(0, pttBox.y - 20), width: 430, height: pttBox.height + 220 } });
     await pageC.close();
+  }
+
+  // RNN is hidden for now (RNNOISE_IN_UI in app.js); HamNoise takes its place after NR.
+  {
+    const ids = await page.locator('#function-controls > *').evaluateAll((els) => els.map((e) => e.id || e.textContent.trim().split(/\s+/)[0]));
+    const nr = ids.findIndex((x) => /^NR/.test(x));
+    check(!(await page.locator('#rnnoise-button').count()) && ids[nr + 1] === 'hamnoise-button', 'no RNN button; HamNoise straight after NR: ' + ids.join(' '));
   }
 
   let labels = await ttyLabel();
@@ -434,6 +441,13 @@ class Civ extends EventEmitter {
   await page.locator('#modes .chip', { hasText: /^CW/ }).click();
   await page.waitForFunction(() => [...document.querySelectorAll('#modes .chip')].some((c) => c.textContent === 'TTY'));
   check(!(await vis('#tty-composer')) && !(await vis('#ptt-btn')) && (await vis('#cw-paddle')), 'RTTY -> CW: composer gone, CW paddle shown, PTT hidden');
+  // The CW chip: plain "CW", and only the DeepCW decoder (CW1 and CW2 are hidden for now)
+  {
+    check((await page.locator('#modes .chip', { hasText: /^CW$/ }).count()) === 1 && server.state.cwDecoderVariant === 'CW3', 'the CW chip reads "CW" and the server decodes with CW3 (DeepCW)');
+    await page.locator('#modes .chip', { hasText: /^CW$/ }).click();
+    await sleep(200);
+    check((await page.locator('#modes .chip', { hasText: /^CW$/ }).count()) === 1 && server.state.cwDecoderVariant === 'CW3', 'a second click on CW changes nothing (no decoder cycling)');
+  }
   // CW text: a box and Send above DOT/WPM/DASH, sent by the radio's keyer at the WPM set
   {
     const box = await page.locator('#cw-composer').boundingBox();

@@ -3624,3 +3624,21 @@ model for how to approach that.
   sequence at the WPM box's speed, no PTT, the second browser sees it,
   Stop puts things back, DOT/DASH enabled). Not tested on air.
   Service-worker cache bumped to v83.
+
+### One CW decoder and no RNN button in the UI (v84)
+
+- On request, the CW chip now offers only the DeepCW decoder ("CW3"),
+  labelled plain "CW"; a second click no longer cycles decoders. CW1 and
+  CW2 are kept, in the server and the client: `CW_DECODERS_IN_UI` in
+  `app.js` lists what the chip offers (`['CW3']`); with more than one
+  entry the chip reads "CW 1/2/3" and cycles as before. The server's
+  default `cwDecoderVariant` is now `CW3` (it was `CW1`), since the
+  server holds the canonical setting, and `CwDecoderBridge` falls back to
+  CW3 to match.
+- On request, the RNN button is hidden (`RNNOISE_IN_UI = false` in
+  `app.js`); the button code and the server's RNNoise support are kept.
+  HamNoise moves into its place, after NR.
+- Tests: cw-decoder-bridge (its stub server now selects CW1 explicitly;
+  the CW3 fallback); headless Chromium (chip labels, a second CW click
+  changes nothing, the server on CW3, no RNN button, HamNoise after NR).
+  Service-worker cache bumped to v84.

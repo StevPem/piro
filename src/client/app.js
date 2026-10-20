@@ -549,7 +549,14 @@ let ft8Variant = 'FT8';
 // ws-server.js/cw-decoder-bridge.js) — kept in sync the same "broadcast,
 // don't assume" way as ft8Variant above (see the 'cw-decoder-variant'
 // listener and 'connected' handler below).
-let cwDecoderVariant = 'CW1';
+let cwDecoderVariant = 'CW3';
+
+// Which CW decoders the CW chip offers. Only the DeepCW one ('CW3') for
+// now, so the chip just reads "CW" and a second click does nothing. The
+// other two are kept, server-side and here: to offer them again, put them
+// back in this list (['CW1', 'CW2', 'CW3']) and the chip reads "CW 1" /
+// "CW 2" / "CW 3" and cycles through them on a second click again.
+const CW_DECODERS_IN_UI = ['CW3'];
 
 /** The calling-frequency table for whichever protocol is currently active. */
 function ft8FrequencyTable() {
@@ -593,16 +600,15 @@ function updateFt8VariantUi() {
  * (re-)enter), so the label always reflects cwDecoderVariant.
  */
 function updateCwVariantUi() {
-  if (cwModeBtn) {
-    cwModeBtn.textContent = cwDecoderVariant === 'CW2' ? 'CW 2' : cwDecoderVariant === 'CW3' ? 'CW 3' : 'CW 1';
-  }
+  if (!cwModeBtn) return;
+  if (CW_DECODERS_IN_UI.length < 2) cwModeBtn.textContent = 'CW';
+  else cwModeBtn.textContent = cwDecoderVariant === 'CW2' ? 'CW 2' : cwDecoderVariant === 'CW3' ? 'CW 3' : 'CW 1';
 }
 
-/** CW1 -> CW2 -> CW3 -> CW1 — see updateCwVariantUi()'s doc comment. */
+/** The next decoder the CW chip offers (CW1 -> CW2 -> CW3 -> CW1 when all are in CW_DECODERS_IN_UI). */
 function nextCwDecoderVariant(variant) {
-  if (variant === 'CW1') return 'CW2';
-  if (variant === 'CW2') return 'CW3';
-  return 'CW1';
+  const i = CW_DECODERS_IN_UI.indexOf(variant);
+  return CW_DECODERS_IN_UI[(i + 1) % CW_DECODERS_IN_UI.length];
 }
 
 // --- FreeDV state ---
@@ -1326,7 +1332,7 @@ for (const entry of MODE_CHIPS) {
   } else if (entry === 'CW') {
     cwModeBtn = btn;
     // Starts labeled for whichever decoder variant is currently selected
-    // (CW1 by default) — see updateCwVariantUi()'s doc comment for why,
+    // (CW3 by default, shown as plain "CW") — see updateCwVariantUi()'s doc comment for why,
     // unlike the FT8 chip, there's no neutral unselected label to fall
     // back to.
     updateCwVariantUi();
@@ -1348,7 +1354,7 @@ for (const entry of MODE_CHIPS) {
           .request('setMode', { mode: 'CW' })
           .then(() => updateModeButtons('CW'))
           .catch((err) => showError(err.message));
-      } else {
+      } else if (CW_DECODERS_IN_UI.length > 1) {
         cwDecoderVariant = nextCwDecoderVariant(cwDecoderVariant);
         updateCwVariantUi();
         link
@@ -3421,6 +3427,10 @@ if (notchControl && notchControl.buttonEl) {
 }
 
 // --- "RNN" N-state cycling button (replaces the old Noise Blanker/"NB" button, in its exact former slot) ---
+// Not shown for now (RNNOISE_IN_UI); the button and the server's RNNoise
+// support are kept, so setting this to true brings it back.
+const RNNOISE_IN_UI = false;
+
 // Arms/disarms an RNNoise speech-denoiser on the RX audio path — see
 // server/audio-bridge.js#setRnnoiseLevel for the full server-side
 // mechanics, and its own doc comment for why this deliberately does NOT
@@ -3494,10 +3504,12 @@ rnnoiseButton.addEventListener('click', () => {
 // Blanker support — setNoiseBlanker/getNoiseBlanker — is untouched, only
 // this UI control is gone, per the original request).
 const nrControl = FUNCTION_CONTROLS.find((c) => c.key === 'nr');
-if (nrControl && nrControl.buttonEl) {
-  nrControl.buttonEl.insertAdjacentElement('afterend', rnnoiseButton);
-} else {
-  functionControlsEl.appendChild(rnnoiseButton);
+if (RNNOISE_IN_UI) {
+  if (nrControl && nrControl.buttonEl) {
+    nrControl.buttonEl.insertAdjacentElement('afterend', rnnoiseButton);
+  } else {
+    functionControlsEl.appendChild(rnnoiseButton);
+  }
 }
 
 // HamNoise toggle — a BSRNN-based denoiser (see server/audio-bridge.js's
@@ -3530,8 +3542,10 @@ hamnoiseButton.addEventListener('click', () => {
     .catch((err) => showError(`Couldn't update HamNoise noise reduction: ${err.message}`));
 });
 
-// Beneath the RNN button, per the request this implements.
-rnnoiseButton.insertAdjacentElement('afterend', hamnoiseButton);
+// Beneath the RNN button, per the request this implements (in its place, after NR, while RNN is hidden).
+if (RNNOISE_IN_UI) rnnoiseButton.insertAdjacentElement('afterend', hamnoiseButton);
+else if (nrControl && nrControl.buttonEl) nrControl.buttonEl.insertAdjacentElement('afterend', hamnoiseButton);
+else functionControlsEl.appendChild(hamnoiseButton);
 
 /**
  * Fetches one function control's actual current value from the radio and
