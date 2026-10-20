@@ -31,9 +31,12 @@ class StubCiv extends EventEmitter {
 }
 
 class StubControlServer extends EventEmitter {
-  constructor() {
+  // Most of these tests exercise the original decoder, so the stub server
+  // has CW1 selected (the real server's default is CW3; see the check below).
+  constructor(cwDecoderVariant = 'CW1') {
     super();
     this.broadcasts = [];
+    this.state = cwDecoderVariant ? { cwDecoderVariant } : undefined;
   }
   broadcastJsonEvent(type, data) {
     this.broadcasts.push({ type, data });
@@ -193,8 +196,10 @@ async function run() {
     await bridge.start();
     await flush();
 
-    check(bridge.variant === 'CW1', 'defaults to the CW1 variant');
-    check(bridge.decoder === decoder1, 'the "decoder" getter returns the active (CW1) decoder by default');
+    check(bridge.variant === 'CW1', "starts on the server's selected variant (CW1 here)");
+    check(bridge.decoder === decoder1, 'the "decoder" getter returns the active (CW1) decoder');
+    const fallback = new CwDecoderBridge({ civ, controlServer: new StubControlServer(null), audioBridge: makeStubAudioBridge(), decoder: new StubDecoder(), decoder2: new StubDecoder(), decoder3: new StubDecoder() });
+    check(fallback.variant === 'CW3', 'with no server setting it falls back to CW3, the server\'s own default');
 
     decoder1.emit('char', 'E');
     decoder2.emit('char', 'X'); // the inactive decoder's output must never reach the ticker

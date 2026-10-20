@@ -268,7 +268,9 @@ class ControlServer extends EventEmitter {
       // and the chip shows the right label immediately, and broadcast on
       // change so other connected clients stay in sync — same pattern as
       // ft8Variant/rttyReversed above.
-      cwDecoderVariant: 'CW1',
+      // CW3 (DeepCW) by default: the only one the client offers for now
+      // (CW_DECODERS_IN_UI in app.js); CW1 and CW2 are kept.
+      cwDecoderVariant: 'CW3',
       // Where this running instance's corresponding source is published
       // — see server/index.js's SOURCE_CODE_URL doc comment for why this
       // is operator-configured rather than a hardcoded repo URL, and

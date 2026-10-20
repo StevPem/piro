@@ -67,11 +67,11 @@ class CwDecoderBridge {
     // Mirrors controlServer.state.cwDecoderVariant (see ws-server.js) so
     // a server that's already been running with a non-default variant
     // selected (e.g. this bridge recreated without the control server
-    // itself restarting) stays in sync; falls back to 'CW1' the same way
+    // itself restarting) stays in sync; falls back to 'CW3' the same way
     // state's own default does.
     this.variant = VARIANTS.includes(controlServer.state && controlServer.state.cwDecoderVariant)
       ? controlServer.state.cwDecoderVariant
-      : 'CW1';
+      : 'CW3';
     this._attached = false; // currently listening to the PCM stream
     this._inCwMode = false;
     this._pttActive = false;

@@ -12,7 +12,7 @@ Hamlib, no separate audio server and no extra apps.
 Written by VK3TR. Licensed AGPL-3.0-only (see
 [Licence](#licence)).
 
-**Current build: v83.** This is the version the app shows next to its title.
+**Current build: v84.** This is the version the app shows next to its title.
 It is the `CACHE_NAME` number in `src/client/sw.js`, which goes up with every
 change to the web app.
 
@@ -39,7 +39,7 @@ Several of the cooler features in this app are built on the work of others:
 - **Audio** both ways in the browser, using the radio's built-in USB sound
   codec through ALSA.
 - **Spectrum scope and waterfall** from the radio's CI-V scope data (opt-in).
-- **CW decoders**, including "CW 3" (DeepCW, a neural decoder) and an RTTY decoder.
+- **A CW decoder** (DeepCW, a neural decoder) and an RTTY decoder.
 - **RTTY, JTTY, Olivia and Feld-Hell**: one "TTY" button selects RTTY, then
   cycles through [JTTY](https://wsjt.sourceforge.io/) (WSJT-X's new text
   mode), [Olivia 8/250](https://en.wikipedia.org/wiki/Olivia_MFSK) (the
@@ -60,8 +60,8 @@ Several of the cooler features in this app are built on the work of others:
   Reporter spotting.
 - **FreeDV RADE** digital voice, with optional reporting to the
   [FreeDV Reporter](https://qso.freedv.org) map.
-- **Two noise reducers for received audio**: "RNN" (RNNoise) and "HamNoise"
-  (a neural denoiser trained on HF signals).
+- **A noise reducer for received audio**: "HamNoise" (a neural denoiser
+  trained on HF signals). RNNoise is also supported but hidden for now.
 
 PiRO is made for Icom radios with a USB CI-V port and USB audio codec. The
 CI-V address table covers the IC-7300, IC-7610, IC-9700, IC-705, IC-7100,
@@ -193,10 +193,15 @@ nothing and an error is shown) if its part is missing.
 |---|---|---|
 | CW decoders, RTTY, FT8, scope, "HamNoise" button | Nothing extra: they are bundled and installed by `npm install` | |
 | "CW 3" decoder (DeepCW) | The bundled model and `onnxruntime-node` (installed by `npm install`) | [DeepCW](#deepcw-cw-3-decoder) |
-| "RNN" button | A patched `rnnoise_demo` that you build | [RNNoise](#rnnoise-rnn-button) |
+| "RNN" button (hidden for now) | A patched `rnnoise_demo` that you build | [RNNoise](#rnnoise-rnn-button) |
 | FreeDV RADE mode | `rade_c` built and installed | [FreeDV RADE](#freedv-rade) |
 
 ### RNNoise ("RNN" button)
+
+**Hidden for now.** The RNN button is not shown in the app (since v84);
+the server's RNNoise support is unchanged. To show it again, set
+`RNNOISE_IN_UI` to `true` near the top of the RNN section in
+`src/client/app.js`. The rest of this section describes it when shown.
 
 [RNNoise](https://github.com/xiph/rnnoise) is a small neural network that
 removes noise from speech. PiRO runs RNNoise's example program,
@@ -257,7 +262,8 @@ and FreeDV decoders always read the raw audio. It requires
 signals, with separate CW and voice models. Its WebAssembly models are
 bundled in `models/hamnoise/`, so there is nothing to install. PiRO picks the
 CW or voice model to match the radio's mode. It is switched on with the
-"HamNoise" button under "RNN", and the two are mutually exclusive.
+"HamNoise" button after "NR" (or under "RNN" when that is shown; the two are
+mutually exclusive).
 
 HamNoise has two model generations. PiRO defaults to `classic`, which is light
 enough for a Raspberry Pi. HamNoise's own newer `v2` models use roughly 36 to
@@ -273,8 +279,9 @@ more likely to mute them.
 
 The model is bundled in `models/deepcw/` and runs in Node through
 `onnxruntime-node`, which `npm install` fetches. It needs a 64-bit OS on a Pi.
-If `onnxruntime-node` cannot load, only the "CW 3" decoder is unavailable. The
-other CW decoders still work.
+If `onnxruntime-node` cannot load, the "CW 3" decoder is unavailable, and
+since v84 that is the only CW decoder the app shows. The other two still
+work: show them again with `CW_DECODERS_IN_UI` (see the CW section).
 
 ### FreeDV RADE
 
@@ -956,10 +963,12 @@ it. Worth being direct about realistic expectations: like any CW
 decoder, weak or noisy signals degrade it, sometimes significantly —
 this is a genuinely useful aid for clean-to-moderate signals, not a
 guarantee of accurate copy in poor conditions, the same caveat that
-applies to dedicated hardware/software CW decoders generally. Three
-decoder algorithms are available, switched via the CW mode chip itself
-(its label reads "CW 1"/"CW 2"/"CW 3"; click it again while already in CW
-mode to cycle CW1 -> CW2 -> CW3 -> CW1) — "CW1" is the original decoder
+applies to dedicated hardware/software CW decoders generally. The app
+uses "CW3", the DeepCW decoder, and the mode chip just reads "CW". Two
+other decoders are kept but hidden for now (since v84): to offer them
+again, set `CW_DECODERS_IN_UI` in `src/client/app.js` to
+`['CW1', 'CW2', 'CW3']`; the chip then reads "CW 1"/"CW 2"/"CW 3" and a
+click while already in CW cycles CW1 -> CW2 -> CW3 -> CW1. "CW1" is the original decoder
 described above, "CW2" is a from-scratch port of Jonathan Dawson's
 "Hamfist" decoder (https://github.com/dawsonjon/HamFist): an FFT-based
 design that decodes across several frequency channels at once (no pitch
