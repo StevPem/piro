@@ -637,6 +637,10 @@ class Civ extends EventEmitter {
     await bFollows(() => [...document.querySelectorAll('#modes .chip')].some((c) => c.textContent === 'USB' && c.classList.contains('chip--active')) && document.getElementById('sstv-rx').hidden),
     'the second browser leaves SSTV for USB too: ' + (await bChips()).join(' ')
   );
+  // In plain SSB, the 80m band chip goes to 3.600 MHz on LSB
+  await page.locator('#bands .chip', { hasText: /^80m$/ }).click();
+  await sleep(300);
+  check(civ.freq === 3600000 && civ.mode === 'LSB', `the 80m band chip tunes to 3.600 MHz LSB (${civ.freq} ${civ.mode})`);
   {
     // Following must never drive the radio. (Seeing the radio leave a TTY
     // mode's sideband, it may repeat a "leave" the first browser also sent.)

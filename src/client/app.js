@@ -72,7 +72,7 @@ document.addEventListener('visibilitychange', () => {
 // scope directly; it just needs to retune the VFO.
 const BANDS = [
   { name: '160m', hz: 1900000 },
-  { name: '80m', hz: 3750000 },
+  { name: '80m', hz: 3600000 },
   { name: '40m', hz: 7150000 },
   { name: '30m', hz: 10125000 },
   { name: '20m', hz: 14175000 },

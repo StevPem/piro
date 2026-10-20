@@ -3642,3 +3642,11 @@ model for how to approach that.
   the CW3 fallback); headless Chromium (chip labels, a second CW click
   changes nothing, the server on CW3, no RNN button, HamNoise after NR).
   Service-worker cache bumped to v84.
+
+### 80 m band button at 3.600 MHz (v85)
+
+- On request, the 80m band button now tunes to 3.600 MHz (was 3.750 MHz),
+  on LSB as before. Only the plain band frequency changed (`BANDS` in
+  `app.js`); the per-mode tables (FT8, RTTY, JTTY, Olivia, Feld-Hell)
+  keep their own 80 m frequencies. Browser test checks it. Service-worker
+  cache bumped to v85.
