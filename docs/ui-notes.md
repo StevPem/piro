@@ -3688,3 +3688,67 @@ model for how to approach that.
   headless Chromium (panel shown in Feld-Hell, the received signal read in
   both browsers, own transmission inline). Not tested on off-air signals.
   Service-worker cache bumped to v86.
+
+### WSPR receive and transmit (v87)
+
+- WSPR is the third choice of the DIGI button: FT8 -> FT4 -> WSPR -> FT8.
+  It is an app-level mode (`wsprActive` in `appModes()`), on USB with DATA
+  MODE on, at the band's WSPR dial frequency (the same table client and
+  server: `WSPR_FREQUENCIES` in app.js, `WSPR_DIAL_HZ` in wspr-bridge.js).
+  Going FT4 -> WSPR or WSPR -> FT8 keeps DATA MODE on (`keepDataMode`).
+- `audio/wspr-codec.js`: packing, the K=32 r=1/2 code, interleaver, sync
+  vector, Fano decoder, unpacking (types 1-3, with the callsign hash
+  table), and continuous-phase 4-FSK audio. `audio/wspr-rx.js`: a port of
+  WSJT-X's `wsprd.c` (baseband conversion, candidate search, sync and
+  demodulation, block soft symbols, Fano, subtraction, three passes). See
+  `third_party/wsjtx-wsprd/README.md` for what was ported and what differs.
+- Checked against a `wsprd` and `wsprsim` built from WSJT-X: the encoder
+  matches `wsprsim -c` symbol for symbol; on the same .c2 and WAV files
+  both decoders gave the same messages, passes, SNR and dt, and the same
+  decode rate near the threshold (14/15 at -30 dB, 2/20 at -32 dB).
+- Speed: a slot takes about 1-2 s on a desktop CPU; JavaScript is about 2x
+  `wsprd` here. Slow slots are ones with many noise candidates, where
+  failed Fano runs (10000 cycles per bit) take nearly all the time. The
+  bridge gives each decode a 60 s deadline, after which the Fano limit
+  drops to 200 cycles per bit (strongest candidates go first). It runs in a
+  worker thread (`audio/wspr-decode-worker.js`).
+- A first speed test looked far worse (45 s a slot, in C too). The cause
+  was the test noise, not the decoder: an LCG computed in doubles lost
+  precision, so the "noise" had spectral structure and made 65 candidates
+  instead of 1. Tests now use mulberry32.
+- A false decode ("9P7/LC0 60") showed up once in pass 3. Fano had
+  converged on noise to a callsign with a space in the middle, which wsprd
+  prints cut at the space. Such calls are now dropped: a packed call only
+  has spaces at its ends.
+- `server/wspr-bridge.js`: 2-minute slots (SlotClock, even UTC minutes).
+  Capture is decimated to 12 kHz as it arrives; a slot is decoded if its
+  audio started within 20 s of the slot start (the gap is zero-filled) and
+  the dial didn't change. Decodes are broadcast (`wspr-decodes`), kept (last
+  100, sent to a page that connects), and uploaded (`server/wsprnet.js`, the
+  form fields of WSJT-X's `wsprnet.cpp`; "wsprstat" when nothing was heard).
+  `WSPR_UPLOAD=off` turns uploads off.
+- Transmit: off until ticked. A slot ahead, each slot adds 0.2 credit; with
+  a whole credit it transmits at random (for certain at 1.6), never twice
+  running: 20% of slots on average. Before keying: radio on USB, power read
+  (cut to 5 W if higher), message built with that power in dBm, DATA MODE
+  confirmed with `ensureDataMode()`. PTT at the slot start, audio at +1 s,
+  110.6 s long, full scale like FT8. DATA MODE is watched during it.
+  Unticking Transmit, leaving WSPR, or the last browser leaving stops it.
+- Power: while WSPR is on the server holds the radio at 5 W or less and
+  puts the earlier power back when WSPR goes off. The client's power menu
+  shows 1-5 W in WSPR and the usual list otherwise; it shows nothing
+  selected if the radio is at a power the menu doesn't list.
+- Unattended receive (`WSPR_UNATTENDED=on`, off by default): 10 minutes
+  after the last browser leaves (or after start-up with nobody connected),
+  the bridge saves frequency, mode, filter and DATA mode, sets USB, DATA on
+  and the band's WSPR frequency, and receives and uploads. A browser
+  connecting stops it and puts the radio back (mode, then DATA mode, then
+  frequency; the browsers are told the frequency). It never transmits.
+- Server state is canonical: `state.wspr` (connect snapshot) and
+  `wspr-status` carry transmit on/off, audio frequency, phase, next
+  transmit, upload result. The client only shows it.
+- Tests: wspr.test.js and wspr-bridge.test.js (new, in `npm test`),
+  ws-server (setWsprActive, setWsprTx, off when the last browser leaves),
+  and headless Chromium (DIGI cycle, panel, 1-5 W menu, transmit and audio
+  frequency shared between browsers, spots listed, power put back). Not
+  tested on air. Service-worker cache bumped to v87.

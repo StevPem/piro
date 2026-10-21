@@ -1214,6 +1214,39 @@ async function run() {
     await sServer.close();
   }
 
+  // WSPR: setWsprActive (an app mode, shared), setWsprTx (passed to the bridge), off when the last client leaves.
+  {
+    const wServer = new ControlServer({ civ: new StubCivDriver(), port: 0 });
+    const wPort = await wServer.listen();
+    const active = [];
+    const tx = [];
+    wServer.on('wspr-active', (e) => active.push(e));
+    wServer.on('wspr-tx', (e) => tx.push(e));
+    const a = await connect(wPort);
+    const b = await connect(wPort);
+    const helloA = await nextMessage(a);
+    await nextMessage(b);
+    check(helloA.data.wsprActive === false && 'wspr' in helloA.data, 'connected snapshot reports wsprActive=false and the WSPR state');
+    a.send(JSON.stringify({ id: 'w1', type: 'setWsprActive', active: 1 }));
+    check((await nextMessage(a)).ok === false, 'setWsprActive rejects a non-boolean');
+    a.send(JSON.stringify({ id: 'w2', type: 'setWsprActive', active: true }));
+    const ok = await nextMessage(a);
+    const toB = await nextMessage(b);
+    check(ok.data.active === true && wServer.state.wsprActive === true && active.join() === 'true', 'setWsprActive turns WSPR on');
+    check(toB.type === 'app-modes' && toB.data.wsprActive === true && toB.data.ft8Active === false, 'another browser hears WSPR selected');
+    a.send(JSON.stringify({ id: 'w3', type: 'setWsprTx', enabled: true, txHz: 1520 }));
+    check((await nextMessage(a)).ok === true && tx[0].enabled === true && tx[0].txHz === 1520, 'setWsprTx is passed on');
+    a.send(JSON.stringify({ id: 'w4', type: 'setWsprTx', txHz: 'high' }));
+    check((await nextMessage(a)).ok === false, 'setWsprTx rejects a frequency that is not a number');
+    a.close();
+    await new Promise((r) => setTimeout(r, 50));
+    check(wServer.state.wsprActive === true, 'WSPR stays on while a browser is still connected');
+    b.close();
+    await new Promise((r) => setTimeout(r, 100));
+    check(wServer.state.wsprActive === false && active.at(-1) === false, 'last client disconnecting turns WSPR off');
+    await wServer.close();
+  }
+
   // App-level modes are shared: every change reaches the other browsers as
   // app-modes (not echoed to the one that asked), with the audio frequencies.
   {
