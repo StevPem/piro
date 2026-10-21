@@ -435,6 +435,8 @@ const sstvStripEl = document.getElementById('sstv-strip');
 const sstvStopBtn = document.getElementById('sstv-stop-btn');
 const sstvSaveBtn = document.getElementById('sstv-save-btn');
 const oliviaRxTextEl = document.getElementById('olivia-rx-text');
+const hellRxEl = document.getElementById('hell-rx');
+const hellRxTextEl = document.getElementById('hell-rx-text');
 const oliviaSignalEl = document.getElementById('olivia-signal');
 const oliviaTuneBtn = document.getElementById('olivia-tune-btn');
 const cwPaddleEl = document.getElementById('cw-paddle');
@@ -1847,7 +1849,7 @@ const TTY_HINT = {
   OLIVIA:
     'Type your text and press Send (or Enter). Olivia 8/250 sends about 1.5 characters a second. Received text appears above; click the spectrum to set the centre frequency (the receiver searches 125 Hz either side). The radio is on USB with DATA MODE on.',
   HELL:
-    'Type your text and press Send (or Enter). Feld-Hell sends about 2.5 characters a second, drawn rather than coded. Received signals are painted in the scope as they arrive; read them there. Click the spectrum on a signal to set the tone. The radio is on USB with DATA MODE on.',
+    'Type your text and press Send (or Enter). Feld-Hell sends about 2.5 characters a second, drawn rather than coded. Received signals are painted in the scope as they arrive, and the text read from the picture appears below it (on weak signals, trust the picture). Click the spectrum on a signal to set the tone. The radio is on USB with DATA MODE on.',
 };
 const TTY_PLACEHOLDER = { RTTY: 'CQ CQ DE VK2IO K', JTTY: 'CQ VK2IO CQ', OLIVIA: 'CQ CQ CQ DE VK2IO VK2IO K', HELL: 'CQ CQ DE VK2IO VK2IO K' };
 const TTY_MAX_CHARS = { RTTY: 200, JTTY: 80, OLIVIA: 300, HELL: 400 }; // Olivia/Feld-Hell: match OLIVIA_MAX_CHARS/HELL_MAX_CHARS in audio/tty-bridge.js
@@ -1886,6 +1888,7 @@ function updateTtyUi() {
   ttyFreqLabelEl.hidden = !freqMode;
   jttyRxEl.hidden = mode !== 'JTTY';
   oliviaRxEl.hidden = mode !== 'OLIVIA';
+  hellRxEl.hidden = mode !== 'HELL';
   // JTTY, Olivia and Feld-Hell show the 0-3 kHz audio spectrum (like FT8/FT4), so the RF span buttons don't apply.
   scopeSpansEl.hidden = ft8Active || freqMode || sstvActive;
   sstvRxEl.hidden = !sstvActive;
@@ -2079,8 +2082,12 @@ link.addEventListener('jtty-text', (event) => {
 // It is shown as a running transcript, with this station's own
 // transmissions shown inline so the conversation reads in order.
 const OLIVIA_RX_MAX_CHARS = 4000;
-function appendOliviaText(text, { own = false } = {}) {
-  const box = oliviaRxTextEl;
+function appendOliviaText(text, opts) {
+  appendRxText(oliviaRxTextEl, text, opts);
+}
+
+/** A running receive transcript (Olivia, Feld-Hell), with this station's own transmissions inline. */
+function appendRxText(box, text, { own = false } = {}) {
   const stick = box.scrollTop + box.clientHeight >= box.scrollHeight - 8;
   const clean = text.replace(/\r\n?/g, '\n');
   let last = box.lastElementChild;
@@ -2103,6 +2110,17 @@ function appendOliviaText(text, { own = false } = {}) {
   }
   if (stick) box.scrollTop = box.scrollHeight;
 }
+
+// --- Feld-Hell text ---
+// The server reads the received picture as text (audio/hell-ocr.js) and
+// sends it a few seconds behind the picture; a page that has just connected
+// is sent the recent text with replace: true.
+link.addEventListener('hell-text', (event) => {
+  const u = event.detail;
+  if (!u || typeof u.text !== 'string') return;
+  if (u.replace) hellRxTextEl.replaceChildren();
+  appendRxText(hellRxTextEl, u.text);
+});
 
 link.addEventListener('olivia-text', (event) => {
   const u = event.detail;
@@ -2731,6 +2749,7 @@ link.addEventListener('tty-tx-status', (event) => {
       if (mode === 'HELL' && freqHz) detail.push(`tone ${freqHz} Hz`);
       if (mode === 'RTTY' && afsk) detail.push(`AFSK on ${afsk.sideband}-D, mark ${afsk.markHz} Hz / space ${afsk.spaceHz} Hz`);
       if (mode === 'OLIVIA') appendOliviaText(`${message || ''}\n`, { own: true });
+      if (mode === 'HELL') appendRxText(hellRxTextEl, `${message || ''}\n`, { own: true });
       ttyStatusEl.textContent = `Sending ${TTY_CHIP_LABEL[mode] ?? mode}: "${shown}"${detail.length ? ` (${detail.join(', ')})` : ''}…${note ? ` ${note}.` : ''}`;
       break;
     }

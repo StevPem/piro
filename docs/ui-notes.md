@@ -3650,3 +3650,41 @@ model for how to approach that.
   `app.js`); the per-mode tables (FT8, RTTY, JTTY, Olivia, Feld-Hell)
   keep their own 80 m frequencies. Browser test checks it. Service-worker
   cache bumped to v85.
+
+### Feld-Hell text, read from the picture (v86)
+
+- New `audio/hell-ocr.js` (`HellTextReader`): reads the received Feld-Hell
+  picture as text by matching it against fldigi's "hell 12" font
+  (`hell-font.js`). HellReceiver turns each transmitted column into exactly
+  `rows` (20) samples, so the picture is one stream of samples and a
+  character is its font columns with a blank either side, starting at any
+  sample; vertical position needs no separate search. Each of the 100
+  distinct font columns is scored at every sample against a threshold
+  halfway between the paper (25th percentile) and ink (90th, at least half
+  the 99th) levels of the last 20 columns; dynamic programming finds the
+  best sequence of characters, blank columns and penalised one-sample skips
+  or overlaps (slant). The best reading is read out 40 columns (about 2.3 s)
+  behind. Printing is gated: a squelch opens on two substantial characters
+  in a row with quality >= 0.55 and closes when the last three average under
+  0.4 or after 12 empty columns; while open a character needs quality >= 0.4,
+  within 0.25 of its neighbours, and its ink must actually be inked (ink
+  quality >= 0.3). Three blank columns make a space.
+- Real bugs found while tuning: an overlapped sample was counted twice,
+  which paid for "letters" on blank paper; a character overlapping the last
+  one was skipped at read-out; levels measured over 6 s lagged a starting
+  signal, inflating quality.
+- `HellDecoderBridge` feeds the reader the same columns as the picture,
+  broadcasts `hell-text` with the columns, reads out the rest when it
+  detaches (PTT, leaving Feld-Hell), and sends the last 2000 characters to a
+  page that connects (`replace: true`). Client: a "Feld-Hell text" panel
+  below the picture (Olivia's transcript code, now `appendRxText()`), own
+  transmissions inline in amber.
+- Measured (through PiRO's transmitter and receiver, random text, 20
+  messages per cell): 0.6% wrong at 10 dB, 1.3% at 0 dB, 5.5% at -3 dB, 33%
+  at -6 dB, 95% at -9 dB (S/N in 3 kHz); +/-0.1% timing makes no
+  difference; no false characters in 5 minutes of noise. About 5 ms per
+  second of audio on a desktop CPU.
+- Tests: hell-ocr.test.js (new, in `npm test`), hell-decoder-bridge, and
+  headless Chromium (panel shown in Feld-Hell, the received signal read in
+  both browsers, own transmission inline). Not tested on off-air signals.
+  Service-worker cache bumped to v86.

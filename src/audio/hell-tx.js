@@ -14,8 +14,8 @@
  * "half-pixels" (the 7-dot font, each dot two half-pixels high). A single
  * tone is keyed on for ink and off for paper at 245 half-pixels a second
  * (17.5 columns a second, 122.5 baud), so about 2.5 characters a second.
- * The receiver paints the tone's strength as an image; there is no
- * decoding into characters.
+ * The receiver paints the tone's strength as an image (hell-rx.js); there
+ * is no code to decode, though hell-ocr.js reads the picture as text.
  */
 
 const { FONT_ROWS } = require('./hell-font');

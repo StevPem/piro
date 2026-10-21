@@ -112,6 +112,30 @@ function feed(capture, pcm, chunkBytes = 1920) {
   bridge.stop();
 }
 
+{
+  // the picture is also read as text; the text so far goes to a page that opens later
+  const { controlServer, capture, bridge } = setup();
+  controlServer.emit('hell-active', { active: true, toneHz: 1000 });
+  const enc = encodeFeldHell('CQ CQ DE VK3TR VK3TR K', { toneHz: 1000, amplitude: 0.3 });
+  const quiet = new Float32Array(8000);
+  feed(capture, upsampleFloatToPcm(Float32Array.from([...quiet, ...enc.samples, ...quiet, ...quiet, ...quiet]), 8000, 48000));
+  bridge._flushColumns();
+  const read = controlServer.broadcasts.filter((b) => b.type === EVENT.HELL_TEXT).map((b) => b.data.text).join('');
+  // fldigi's ". . ." postamble is really sent (and read); the preamble's dots are too small to open the squelch
+  check(read.trim() === 'CQ CQ DE VK3TR VK3TR K...', `the picture is read as text: ${JSON.stringify(read)}`);
+  const sent = [];
+  controlServer.sendJsonEvent = (ws, type, data) => sent.push({ ws, type, data });
+  controlServer.emit('client-connected', 'late');
+  check(sent[0]?.type === EVENT.HELL_TEXT && sent[0].data.replace === true && sent[0].data.text === bridge.backlog && /VK3TR K/.test(sent[0].data.text), 'a page that opens later is sent the text so far');
+  // deselecting Feld-Hell reads out whatever is left
+  controlServer.broadcasts.length = 0;
+  feed(capture, upsampleFloatToPcm(Float32Array.from([...encodeFeldHell('TNX 73', { toneHz: 1000, amplitude: 0.3, preamble: false }).samples, ...new Float32Array(2000)]), 8000, 48000));
+  controlServer.emit('hell-active', { active: false });
+  const tail = controlServer.broadcasts.filter((b) => b.type === EVENT.HELL_TEXT).map((b) => b.data.text).join('');
+  check(/TNX 73$/.test(tail), `leaving Feld-Hell reads out the rest at once: ${JSON.stringify(tail)}`);
+  bridge.stop();
+}
+
 if (failures) {
   console.error(`\n${failures} failure(s)`);
   process.exit(1);

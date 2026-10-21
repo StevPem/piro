@@ -12,7 +12,7 @@ Hamlib, no separate audio server and no extra apps.
 Written by VK3TR. Licensed AGPL-3.0-only (see
 [Licence](#licence)).
 
-**Current build: v85.** This is the version the app shows next to its title.
+**Current build: v86.** This is the version the app shows next to its title.
 It is the `CACHE_NAME` number in `src/client/sw.js`, which goes up with every
 change to the web app.
 
@@ -47,7 +47,8 @@ Several of the cooler features in this app are built on the work of others:
   [Feld-Hell](https://en.wikipedia.org/wiki/Hellschreiber) (text sent as a
   picture), all ported to JavaScript here and the last two compatible with
   fldigi. In all four, a text box and a Send button replace PTT; received
-  text is decoded as it arrives, or for Feld-Hell painted in the scope. See
+  text is decoded as it arrives, or for Feld-Hell painted in the scope and
+  read from the picture as text. See
   [RTTY, JTTY, Olivia and Feld-Hell](#rtty-jtty-olivia-and-feld-hell).
 - **SSTV**: receive pictures in 25 modes (Martin, Scottie, Robot, PD,
   Wraase, Pasokon), recognised automatically from their VIS header, drawn as
@@ -646,7 +647,11 @@ test/
                            font, and the received picture clean, in noise,
                            off tune and via 48 kHz; see third_party/feldhell/README.md
   hell-decoder-bridge.test.js  Feld-Hell receive bridge: arming, retuning, PTT,
-                           column frames, spectrum
+                           column frames, spectrum, the text read and sent
+                           to a page that opens later
+  hell-ocr.test.js        Feld-Hell text reader: clean, in noise (error-rate
+                           limits), timing errors, off tune, no characters
+                           from noise alone, a long stream
   sstv.test.js            SSTV receiver: all 25 modes, whole pictures, PySSTV
                            audio, mistuning, clock error (slant), noise, no
                            false pictures, signal loss; see third_party/sstv/README.md
@@ -1157,9 +1162,10 @@ fldigi's own source. It has not yet been tested over the air.
 **Feld-Hell** is the classic Hellschreiber mode: each character is drawn,
 column by column, from a 7-dot-high font and sent by keying a single tone on
 and off (17.5 columns a second, 122.5 baud, about 2.5 characters a second, a
-signal some 350 Hz wide). Nothing is decoded into text at the other end; the
+signal some 350 Hz wide). There is no code to decode at the other end; the
 receiver paints the tone as a picture and you read it, which is why
 Feld-Hell copies through noise and fading that would garble a coded mode.
+PiRO also reads the picture as text for you (see below).
 Selecting Feld-Hell puts the radio on USB with DATA MODE on, as JTTY and
 Olivia do. The **Tone** box sets the audio frequency (1000 Hz by default,
 `HELL_TONE_HZ`), used both for sending and for receiving; click the spectrum
@@ -1178,6 +1184,36 @@ means the other station's timing is slightly off; it is still readable.
 The receiver listens about 150 Hz either side of the tone. It is cheap enough
 to run on the Pi's main thread, and only runs while Feld-Hell is selected and
 you are not transmitting.
+
+**Feld-Hell text.** Below the picture, a **Feld-Hell text** panel shows what
+PiRO reads from it. It matches the picture against the font fldigi (and
+PiRO) send with, letter by letter, allowing for where each letter sits up or
+down the picture and for slant, and prints what it reads about two seconds
+behind the picture. Your own transmissions appear in amber, as in Olivia's
+panel, and a browser opened later is sent the recent text. In tests through
+PiRO's own transmitter and receiver, with random callsign-like text:
+
+| Signal (S/N in 3 kHz) | 10 dB | 3 dB | 0 dB | −3 dB | −6 dB | −9 dB |
+|---|---|---|---|---|---|---|
+| Characters wrong | 0.6% | 0.3% | 1.3% | 5.5% | 33% | 95% |
+
+Timing errors of ±0.1% (text sloping in the picture) make no difference.
+To keep noise from being printed as letters, it waits for a run of good
+matches before printing anything: no false characters were printed in five
+minutes of noise alone. So on a weak signal it may print nothing, or only
+part of it, while you can still read the picture. Trust the picture.
+
+Limits:
+* It only reads fldigi's default Feld-Hell font ("hell 12"). Another font,
+  "wide" Hell (each column sent twice) or hand-sent Hell won't read.
+* Several lower-case letters are drawn exactly like capitals in this font,
+  so they read as capitals; the ones drawn differently (such as e and k)
+  read as lower case.
+* fldigi's opening "..." isn't printed: dots are too small to start the
+  text, because noise fits them too easily. The closing "..." is.
+* Deep fading loses the faded part, as it does for your eye.
+* It costs a few percent of a Pi's CPU while Feld-Hell is selected. It has
+  not yet been tested on real off-air signals.
 
 The Feld-Hell modem is a JavaScript port of fldigi's; see
 [`third_party/feldhell/README.md`](third_party/feldhell/README.md) for what was
@@ -1436,7 +1472,9 @@ shapes.
   time}`, a block of up to three characters at a time).
   `setHellActive` (`{active, toneHz?}`) starts and stops the Feld-Hell
   receiver and sets its tone; the picture arrives as binary
-  `BINARY_TYPE.HELL_COLUMNS` frames (below).
+  `BINARY_TYPE.HELL_COLUMNS` frames (below), and the text read from it as
+  `hell-text` broadcasts (`{text, time}`: the new characters; with
+  `replace: true`, sent to a page that has just connected, the recent text).
   `setSstvActive` (`{active}`) starts and stops the SSTV receiver. A
   picture is announced by an `sstv-start` broadcast (`{id, mode, name,
   width, lines, lineHeight, shiftHz, time}`), its lines follow as binary
