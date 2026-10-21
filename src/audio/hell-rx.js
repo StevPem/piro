@@ -10,7 +10,7 @@
  * (fldigi's display AGC). Each finished column is handed back as `rows`
  * ink values, 0 (no signal) to 255 (full signal), earliest first, which on
  * the page is bottom to top, since Feld-Hell scans each column upwards.
- * There is nothing to decode: the operator reads the picture.
+ * The operator reads the picture; hell-ocr.js also reads it as text.
  *
  * One difference from fldigi, for a Raspberry Pi: fldigi filters at 8 kHz
  * with an FFT filter after a Hilbert transform. Here the mixer output is

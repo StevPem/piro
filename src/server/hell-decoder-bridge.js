@@ -6,6 +6,10 @@ const { FT8_SPECTRUM_MAX_HZ, FT8_SPECTRUM_INTERVAL_MS, encodeFt8SpectrumFrame, _
 const { computeMagnitudeSpectrum } = require('../audio/fft');
 const { HELL_SAMPLE_RATE } = require('../audio/hell-tx');
 const { HellReceiver, clampHellTone, DEFAULT_ROWS, DEFAULT_TONE_HZ } = require('../audio/hell-rx');
+const { HellTextReader } = require('../audio/hell-ocr');
+
+// Read text kept for a page that opens later (EVENT.HELL_TEXT with replace).
+const TEXT_BACKLOG_CHARS = 2000;
 
 // Same 0-3 kHz audio spectrum as Olivia's: 2048 points at 8 kHz.
 const SPECTRUM_FFT_SIZE = 2048;
@@ -34,11 +38,14 @@ function encodeHellColumnsFrame(columns, rows, toneHz) {
  * capture stream, active only while the operator has Feld-Hell selected
  * (REQUEST.SET_HELL_ACTIVE) and the radio is not transmitting.
  *
- * Feld-Hell is not decoded into text: the receiver (audio/hell-rx.js) turns
- * the keyed tone into columns of pixel brightness, which go to the browser
- * as BINARY_TYPE.HELL_COLUMNS frames for the scrolling picture. The receiver
- * is cheap (well under 1% of a core), so it runs here rather than in a
- * worker. While Feld-Hell is selected the 0-3 kHz audio spectrum is
+ * The receiver (audio/hell-rx.js) turns the keyed tone into columns of
+ * pixel brightness, which go to the browser as BINARY_TYPE.HELL_COLUMNS
+ * frames for the scrolling picture. The same columns are read as text by
+ * matching them against the Feld-Hell font (audio/hell-ocr.js); what it
+ * reads goes out as EVENT.HELL_TEXT, a few seconds behind the picture, and
+ * the recent text is sent to a page that opens later. The picture stays the
+ * thing to trust on weak signals. Both are cheap (a few percent of a Pi
+ * core together), so they run here rather than in a worker. While Feld-Hell is selected the 0-3 kHz audio spectrum is
  * broadcast too (the ft8-spectrum frames FT8, JTTY and Olivia use), for
  * finding signals and click-tuning.
  */
@@ -66,7 +73,10 @@ class HellDecoderBridge {
     this._attached = false;
     this._decimator = null;
     this._receiver = null;
+    this._reader = null;
     this._pending = [];
+    this._text = ''; // read, not yet sent
+    this._backlog = ''; // recently read, for pages that open later
     this._warnedUnsupported = false;
     this._spectrumRing = new Float32Array(SPECTRUM_FFT_SIZE);
     this._spectrumFilled = 0;
@@ -84,11 +94,17 @@ class HellDecoderBridge {
       this._pttActive = !!on;
       this._sync();
     };
+    this._onClientJoined = (ws) => {
+      if (this._backlog && typeof this.controlServer.sendJsonEvent === 'function') {
+        this.controlServer.sendJsonEvent(ws, EVENT.HELL_TEXT, { text: this._backlog, replace: true, time: Date.now() });
+      }
+    };
   }
 
   start() {
     this.controlServer.on('hell-active', this._onActive);
     this.controlServer.on('ptt', this._onPtt);
+    this.controlServer.on('client-connected', this._onClientJoined);
     const st = this.controlServer.state;
     if (st?.hellActive) this._onActive({ active: true, toneHz: st.hellToneHz });
   }
@@ -96,6 +112,7 @@ class HellDecoderBridge {
   stop() {
     this.controlServer.off('hell-active', this._onActive);
     this.controlServer.off('ptt', this._onPtt);
+    this.controlServer.off('client-connected', this._onClientJoined);
     this._detach();
   }
 
@@ -121,6 +138,7 @@ class HellDecoderBridge {
     }
     this._decimator = new StreamDecimator(this.audioBridge.sampleRate, HELL_SAMPLE_RATE, { cutoffHz: 3000 });
     this._receiver = new HellReceiver({ toneHz: this.toneHz, rows: this.rows });
+    this._reader = new HellTextReader({ rows: this.rows });
     this._pending = [];
     this._spectrumFilled = 0;
     this.audioBridge.capture.on('data', this._onPcm);
@@ -137,9 +155,23 @@ class HellDecoderBridge {
     this._attached = false;
     for (const t of this._timers) clearInterval(t);
     this._timers = [];
+    // whatever is left of the picture so far (our own transmission is starting, or Feld-Hell was left)
+    if (this._reader) this._addText(this._reader.flush());
     this._flushColumns();
     this._decimator = null;
     this._receiver = null;
+    this._reader = null;
+  }
+
+  _addText(text) {
+    if (!text) return;
+    this._text += text;
+    this._backlog = (this._backlog + text).slice(-TEXT_BACKLOG_CHARS);
+  }
+
+  /** Recent read text, as sent to a page that opens later. */
+  get backlog() {
+    return this._backlog;
   }
 
   _handlePcm(chunk) {
@@ -150,10 +182,16 @@ class HellDecoderBridge {
     const out = this._decimator.process(samples);
     if (out.length === 0) return;
     this._pushSpectrum(out);
-    for (const col of this._receiver.process(out)) this._pending.push(col);
+    const cols = this._receiver.process(out);
+    for (const col of cols) this._pending.push(col);
+    if (cols.length) this._addText(this._reader.push(cols));
   }
 
   _flushColumns() {
+    if (this._text) {
+      this.controlServer.broadcastJsonEvent(EVENT.HELL_TEXT, { text: this._text, time: Date.now() });
+      this._text = '';
+    }
     if (this._pending.length === 0) return;
     while (this._pending.length) {
       const batch = this._pending.splice(0, 255);

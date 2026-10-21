@@ -181,6 +181,16 @@
         </div>
         <pre class="olivia-rx__text" id="olivia-rx-text" aria-live="polite" aria-label="Received Olivia text"></pre>
       </section>
+      <!-- Feld-Hell text: what the server reads from the received picture
+           by matching it against the Feld-Hell font (audio/hell-ocr.js),
+           a few seconds behind it. Own transmissions appear inline. -->
+      <section class="ft8-panel olivia-rx hell-rx" id="hell-rx" aria-label="Feld-Hell text" hidden>
+        <div class="ft8-panel__header">
+          <span class="row-group__label">Feld-Hell text</span>
+          <span class="ft8-panel__slot" title="Read by matching the picture against the Feld-Hell font, a couple of seconds behind it. On weak signals, trust the picture.">read from the picture</span>
+        </div>
+        <pre class="olivia-rx__text" id="hell-rx-text" aria-live="polite" aria-label="Feld-Hell text read from the picture"></pre>
+      </section>
 
       <!-- SSTV receive: the picture coming in, filled line by line, then
            replaced by the slant-corrected one; recent pictures below.

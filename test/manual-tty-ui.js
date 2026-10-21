@@ -310,7 +310,7 @@ class Civ extends EventEmitter {
     check(civ.mode === 'USB' && civ.dataMode === true && civ.log.filter((e) => e[0] === 'setMode' || e[0] === 'setDataMode').length === modeCalls, 'fourth click: Feld-Hell, radio left alone (USB, DATA MODE on)');
     check(server.state.oliviaActive === false && !oliviaRx.attached && server.state.hellActive === true && hellRx.attached, 'Olivia receiver disarmed, Feld-Hell receiver armed');
     check(civ.log.at(-1)[0] === 'setFrequency' && civ.log.at(-1)[1] === 14062000, 'entering Feld-Hell on 20m puts a 1000 Hz tone on 14.063 MHz (dial 14.062)');
-    check(!(await vis('#olivia-rx')) && !(await vis('#jtty-rx')) && (await vis('#tty-freq')) && (await page.locator('#tty-freq').inputValue()) === '1000', 'Feld-Hell: no text panel, tone box at 1000 Hz');
+    check(!(await vis('#olivia-rx')) && !(await vis('#jtty-rx')) && (await vis('#hell-rx')) && (await vis('#tty-freq')) && (await page.locator('#tty-freq').inputValue()) === '1000', 'Feld-Hell: its text panel (not Olivia\'s or JTTY\'s), tone box at 1000 Hz');
     check(/^Tone/.test(await page.locator('#tty-freq-label').textContent()), 'the box is labelled "Tone"');
     check((await page.locator('#ptt-hint').textContent()).includes('Feld-Hell'), 'hint text describes Feld-Hell');
     check((await page.locator('#tty-input').evaluate((e) => getComputedStyle(e).textTransform)) === 'none', 'Feld-Hell: the text box shows the real case');
@@ -340,6 +340,14 @@ class Civ extends EventEmitter {
     check(b2.left > 200, `and scrolls left as more arrives (${b2.left} lit pixels left)`);
     check(/ Hz$/.test(await page.locator('#scope-range-hi').textContent()) && !(await vis('#scope-spans')), 'Feld-Hell: the trace shows the audio spectrum, RF spans hidden');
     check(!(await vis('#scope-placeholder')), 'the "scope not enabled" notice does not cover the audio spectrum or the picture');
+    // the picture is also read as text, a couple of seconds behind it (more audio lets it catch up)
+    {
+      const quiet = upsampleFloatToPcm(new Float32Array(8000 * 3), 8000, 48000);
+      for (let i = 0; i < quiet.length; i += 9600) capture.emit('data', quiet.subarray(i, i + 9600));
+      const want = (p) => p.waitForFunction(() => /CQ CQ DE K1ABC K1ABC K/.test(document.getElementById('hell-rx-text').textContent), null, { timeout: 5000 }).then(() => true, () => false);
+      check(await want(page), 'the received picture is read as text in the Feld-Hell text panel: ' + JSON.stringify(await page.locator('#hell-rx-text').textContent()));
+      check(await want(pageB), 'and in the second browser too');
+    }
 
     // clicking the spectrum sets the tone; clicking the picture does nothing
     const box = await page.locator('#scope-trace').boundingBox();
@@ -364,6 +372,7 @@ class Civ extends EventEmitter {
     await page.waitForFunction(() => /Sending Feld-Hell/.test(document.getElementById('tty-status').textContent), null, { timeout: 8000 });
     const st = await page.locator('#tty-status').textContent();
     check(/Sending Feld-Hell: "VK2IO de K1ABC"/.test(st) && new RegExp(`tone ${tone} Hz`).test(st), 'Feld-Hell status line: ' + st);
+    check((await page.locator('#hell-rx-text .olivia-rx__own').last().textContent()).includes('VK2IO de K1ABC'), 'own transmission is shown in the Feld-Hell text, as in Olivia');
     check(writes.length === w + 1 && !hellRx.attached, 'Feld-Hell audio written, receiver paused while transmitting');
     await page.locator('#tty-send-btn').click(); // Stop
     await page.waitForFunction(() => /Stopped Feld-Hell/.test(document.getElementById('tty-status').textContent), null, { timeout: 8000 });
