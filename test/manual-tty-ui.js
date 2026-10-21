@@ -15,6 +15,8 @@ const { SstvDecoderBridge } = require(PKG + '/src/server/sstv-decoder-bridge');
 const { encodeSstv } = require(PKG + '/src/audio/sstv-tx');
 const { SstvTxBridge } = require(PKG + '/src/server/sstv-tx-bridge');
 const { CwTxBridge } = require(PKG + '/src/server/cw-tx-bridge');
+const { WsprBridge } = require(PKG + '/src/server/wspr-bridge');
+const { EVENT } = require(PKG + '/src/server/protocol');
 const { encodePng } = require(PKG + '/src/server/png');
 const { encodeJtty } = require(PKG + '/src/audio/jtty-tx');
 const { upsampleFloatToPcm } = require(PKG + '/src/audio/resample');
@@ -43,7 +45,8 @@ class Civ extends EventEmitter {
   async getSWR() { return 0; }
   async getPreamp() { return 0; } async getNoiseReduction() { return false; } async getNoiseBlanker() { return false; }
   async getNotch() { return false; } async getTuner() { return 0; } async getFilter() { return 1; }
-  async getTxPower() { return 100; } async getRxGain() { return 255; }
+  async getTxPower() { return this.power ?? 100; } async getRxGain() { return 255; }
+  async setTxPower(w) { this.log.push(['setTxPower', w]); this.power = w; return w; }
   // CW keyer (CI-V 17): each piece "takes" 5 s to send
   async getKeySpeed() { return this.keySpeed ?? 15; }
   async setKeySpeed(w) { this.log.push(['setKeySpeed', w]); this.keySpeed = w; return w; }
@@ -75,6 +78,10 @@ class Civ extends EventEmitter {
   sstvTx.start();
   const cwTx = new CwTxBridge({ controlServer: server });
   cwTx.start();
+  // WSPR, with a slot clock the test drives and no decoding (the spots are put in by hand)
+  const wsprClock = Object.assign(new EventEmitter(), { currentSlotStart: () => Date.now() - (Date.now() % 120000), start() {}, stop() {} });
+  const wspr = new WsprBridge({ controlServer: server, audioBridge, callsign: 'VK2IO', grid: 'QF56', slotClock: wsprClock, decoder: { decode: async () => ({ decodes: [], hashtab: [] }), terminate() {} }, wsprnet: { upload: async () => ({ sent: 1 }) }, random: () => 0 });
+  wspr.start();
 
   const browser = await chromium.launch({ executablePath: process.env.CHROMIUM_PATH || undefined, args: ['--no-sandbox'] });
   const page = await browser.newPage({ viewport: { width: 430, height: 1100 } });
@@ -504,6 +511,55 @@ class Civ extends EventEmitter {
     'the second browser leaves JTTY for FT8 too (FT8 panel shown): ' + (await bChips()).join(' ')
   );
 
+  // DIGI: FT8 -> FT4 -> WSPR -> FT8
+  {
+    const powerMenu = (p) => p.locator('#tx-power-select option').allTextContents();
+    const powerShown = (p) => p.locator('#tx-power-select').evaluate((e) => e.selectedOptions[0]?.textContent ?? '');
+    await page.locator('#modes .chip', { hasText: /^FT8$/ }).click();
+    await page.waitForFunction(() => [...document.querySelectorAll('#modes .chip')].some((c) => c.textContent === 'FT4'));
+    await page.locator('#modes .chip', { hasText: /^FT4$/ }).click();
+    await page.waitForFunction(() => [...document.querySelectorAll('#modes .chip')].some((c) => c.textContent === 'WSPR'));
+    await sleep(400);
+    check(server.state.wsprActive && !server.state.ft8Active && civ.mode === 'USB' && civ.dataMode === true && civ.freq === 7038600, `third DIGI choice is WSPR: on 7.0386 MHz USB, DATA on, FT8 off (${civ.freq} ${civ.mode})`);
+    check((await vis('#wspr-panel')) && !(await vis('#ft8-panel')) && !(await vis('#ptt-btn')), 'the WSPR panel replaces the FT8 one; no PTT button');
+    check((await powerMenu(page)).join(' ') === '5W 4W 3W 2W 1W' && civ.power === 5 && (await powerShown(page)) === '5W', `the power menu is 1-5 W and the radio is held at 5 W (${await powerShown(page)})`);
+    check(
+      await bFollows(() => [...document.querySelectorAll('#modes .chip')].some((c) => c.textContent === 'WSPR' && c.classList.contains('chip--active')) && !document.getElementById('wspr-panel').hidden && document.getElementById('ft8-panel').hidden),
+      'the second browser follows into WSPR: ' + (await bChips()).join(' ')
+    );
+    check(await bFollows(() => [...document.querySelectorAll('#tx-power-select option')].map((o) => o.textContent).join(' ') === '5W 4W 3W 2W 1W'), 'with the 1-5 W power menu');
+    check((await page.locator('#wspr-tx-msg').textContent()) === 'VK2IO QF56' && !(await page.locator('#wspr-tx-enabled').isChecked()), 'it shows what it would send; transmit starts off');
+    await page.locator('#wspr-tx-enabled').check();
+    await sleep(200);
+    check(server.state.wspr.txEnabled === true && server.state.wspr.nextTx != null, 'ticking Transmit turns it on in the server, and a slot is planned');
+    check(await bFollows(() => document.getElementById('wspr-tx-enabled').checked && /Transmits next at \d\d:\d\d UTC/.test(document.getElementById('wspr-status').textContent)), 'the second browser shows transmit on, and when');
+    await pageB.locator('#wspr-tx-hz').fill('1530');
+    await pageB.locator('#wspr-tx-hz').press('Enter');
+    await sleep(200);
+    check(server.state.wspr.txHz === 1530 && (await page.locator('#wspr-tx-hz').inputValue()) === '1530', 'the transmit frequency set in one browser shows in the other');
+    server.broadcastJsonEvent(EVENT.WSPR_DECODES, {
+      slotStartMs: Date.UTC(2026, 9, 22, 9, 10),
+      dialHz: 7038600,
+      decodes: [
+        { snr: -24, dt: 0.3, audioHz: 1480.4, drift: 0, message: 'K1ABC FN42 37', callsign: 'K1ABC', grid: 'FN42', dbm: 37, type: 1 },
+        { snr: -12, dt: -0.6, audioHz: 1551.2, drift: 1, message: 'VK3TR QF22 30', callsign: 'VK3TR', grid: 'QF22', dbm: 30, type: 1 },
+      ],
+    });
+    await sleep(200);
+    const rows = await page.locator('#wspr-table-body .ft8-table__row').evaluateAll((rs) => rs.map((r) => [...r.children].map((c) => c.textContent).join(' ')));
+    check(rows.join(' | ') === '09:10 -12 -0.6 7.040151 VK3TR QF22 30 | 09:10 -24 0.3 7.040080 K1ABC FN42 37', 'spots are listed, strongest first: ' + rows.join(' | '));
+    check((await pageB.locator('#wspr-table-body .ft8-table__row').count()) === 2, 'in both browsers');
+    if (process.env.WSPR_SHOT) await page.locator('#wspr-panel').screenshot({ path: process.env.WSPR_SHOT });
+    const wide = await page.evaluate(() => document.documentElement.scrollWidth <= window.innerWidth);
+    check(wide, 'the spot table fits the phone width');
+    await page.locator('#modes .chip', { hasText: /^WSPR$/ }).click();
+    await page.waitForFunction(() => [...document.querySelectorAll('#modes .chip')].some((c) => c.textContent === 'FT8'));
+    await sleep(400);
+    check(!server.state.wsprActive && server.state.ft8Active && server.state.ft8Variant === 'FT8' && civ.dataMode === true && civ.freq === 7074000, `then back to FT8 (7.074 MHz, DATA still on; ${civ.freq})`);
+    check(civ.power === 100 && (await powerMenu(page)).join(' ') === '100W 75W 50W 25W 5W' && (await powerShown(page)) === '100W', 'leaving WSPR puts the power back (100 W) and the usual power menu');
+    check(await bFollows(() => [...document.querySelectorAll('#modes .chip')].some((c) => c.textContent === 'FT8' && c.classList.contains('chip--active')) && document.getElementById('wspr-panel').hidden), 'the second browser follows back to FT8');
+  }
+
   // SSTV: FT8 -> SSTV on 40 m, a picture comes in, band change, then SSB
   await chip('SSTV').click();
   await sleep(300);
@@ -667,6 +723,7 @@ class Civ extends EventEmitter {
   sstvRx.stop();
   sstvTx.stop();
   cwTx.stop();
+  wspr.stop();
   await server.close();
   console.log(failures ? `\n${failures} FAILED` : '\nAll UI checks passed');
   process.exit(failures ? 1 : 0);

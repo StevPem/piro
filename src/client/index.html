@@ -281,6 +281,34 @@
         <p class="ft8-status" id="ft8-status" hidden></p>
       </section>
 
+      <!-- WSPR: spots from each 2-minute slot (newest first), and the
+           transmit controls. The server keeps the state; see app.js "WSPR"
+           and server/wspr-bridge.js. -->
+      <section class="ft8-panel wspr-panel" id="wspr-panel" aria-label="WSPR" hidden>
+        <div class="ft8-panel__header">
+          <span class="row-group__label">WSPR band activity</span>
+          <span class="ft8-panel__slot" id="wspr-slot">&mdash;</span>
+        </div>
+        <div class="ft8-table wspr-table" role="table" aria-label="WSPR spots">
+          <div class="ft8-table__head" role="row">
+            <span role="columnheader">UTC</span>
+            <span role="columnheader">SNR</span>
+            <span role="columnheader">dt</span>
+            <span role="columnheader">MHz</span>
+            <span role="columnheader">Call</span>
+            <span role="columnheader">Grid</span>
+            <span role="columnheader">dBm</span>
+          </div>
+          <div class="ft8-table__body" id="wspr-table-body"></div>
+        </div>
+        <div class="wspr-tx">
+          <label class="wspr-tx__toggle"><input type="checkbox" id="wspr-tx-enabled" disabled /> Transmit</label>
+          <label class="wspr-tx__hz">at <input class="wspr-tx__hz-input" type="number" id="wspr-tx-hz" min="1410" max="1590" step="1" value="1500" inputmode="numeric" aria-label="WSPR transmit audio frequency, Hz" /> Hz</label>
+          <span class="wspr-tx__msg" id="wspr-tx-msg"></span>
+        </div>
+        <p class="ft8-status wspr-status" id="wspr-status" aria-live="polite"></p>
+      </section>
+
       <!-- FreeDV Reporter (qso.freedv.org) status message — shown only
            while FreeDV mode is active, same visibility rule as the "FDV
            Spot" checkbox (see enterFreeDvMode()/exitFreeDvMode() in

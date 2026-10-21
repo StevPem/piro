@@ -395,6 +395,27 @@ const TX_POWER_OPTIONS = [
   { label: '25W', watts: 25 },
   { label: '5W', watts: 5 },
 ];
+// In WSPR the power menu offers 1-5 W (the server holds the radio at 5 W or
+// less while WSPR is on, and puts the earlier power back afterwards).
+const WSPR_POWER_OPTIONS = [5, 4, 3, 2, 1].map((watts) => ({ label: `${watts}W`, watts }));
+let txPowerOptions = TX_POWER_OPTIONS;
+
+// WSPR dial frequencies (USB; the signals are 1400-1600 Hz up). Kept the
+// same as WSPR_DIAL_HZ in server/wspr-bridge.js.
+const WSPR_FREQUENCIES = {
+  '160m': 1836600,
+  '80m': 3568600,
+  '40m': 7038600,
+  '30m': 10138700,
+  '20m': 14095600,
+  '17m': 18104600,
+  '15m': 21094600,
+  '12m': 24924600,
+  '10m': 28124600,
+  '6m': 50293000,
+};
+const WSPR_TX_HZ_RANGE = [1410, 1590];
+const WSPR_MAX_ROWS = 100;
 
 // --- DOM refs ---
 const panelTitleEl = document.querySelector('.panel__title');
@@ -468,6 +489,13 @@ const pttSectionEl = document.querySelector('.ptt-section');
 const ft8PanelEl = document.getElementById('ft8-panel');
 const ft8SlotTimeEl = document.getElementById('ft8-slot-time');
 const ft8TableBodyEl = document.getElementById('ft8-table-body');
+const wsprPanelEl = document.getElementById('wspr-panel');
+const wsprTableBodyEl = document.getElementById('wspr-table-body');
+const wsprSlotEl = document.getElementById('wspr-slot');
+const wsprTxEnabledEl = document.getElementById('wspr-tx-enabled');
+const wsprTxHzEl = document.getElementById('wspr-tx-hz');
+const wsprTxMsgEl = document.getElementById('wspr-tx-msg');
+const wsprStatusEl = document.getElementById('wspr-status');
 const ft8PanelLabelEl = document.getElementById('ft8-panel-label');
 const ft8ComposerInput = document.getElementById('ft8-composer-input');
 const ft8SendBtn = document.getElementById('ft8-send-btn');
@@ -511,6 +539,13 @@ let hasRequestedDefaultSpan = false; // auto-request the default span exactly on
 let ft8Active = false;
 let ft8LastBandName = null; // which band FT8's auto-tune last targeted, to detect a *new* band change rather than re-tuning on every frequency update
 let ft8SendInFlight = false;
+
+// --- WSPR state ---
+// The third DIGI choice: app-level on USB + DATA MODE like FT8. The server
+// keeps WSPR's state (EVENT.WSPR_STATUS); this page only shows it.
+let wsprActive = false;
+let wsprStatus = null;
+let wsprLastBandName = null;
 
 // --- JTTY state ---
 // Like ft8Active, JTTY is an app-level concept layered on USB + DATA MODE
@@ -587,7 +622,7 @@ function sidebandForFrequency(hz) {
  * no "unselected" state for it to revert from).
  */
 function updateFt8VariantUi() {
-  if (ft8ModeBtn) ft8ModeBtn.textContent = ft8Active ? ft8Variant : 'DIGI';
+  if (ft8ModeBtn) ft8ModeBtn.textContent = wsprActive ? 'WSPR' : ft8Active ? ft8Variant : 'DIGI';
   if (ft8PanelLabelEl) ft8PanelLabelEl.textContent = `${ft8Variant} band activity`;
 }
 
@@ -759,6 +794,11 @@ const scopeDisplay = new ScopeDisplay({
       setHellTone(hz);
       return;
     }
+    if (wsprActive) {
+      // WSPR: the click sets the transmit audio frequency (1410-1590 Hz).
+      setWsprTxHz(hz);
+      return;
+    }
     currentQsoFreqHz = hz;
     // Also persists as the new session default (see ft8DefaultTxFreqHz's
     // doc comment) — a manual pick should stick around as "where my CQs
@@ -768,11 +808,11 @@ const scopeDisplay = new ScopeDisplay({
   },
 });
 link.addEventListener('scope-line', (event) => {
-  if (ft8Active || jttyActive || oliviaActive || hellActive || sstvActive) return; // audio-domain FFT spectrum takes over the display; see the 'ft8-spectrum' listener below
+  if (ft8Active || wsprActive || jttyActive || oliviaActive || hellActive || sstvActive) return; // audio-domain FFT spectrum takes over the display; see the 'ft8-spectrum' listener below
   scopeDisplay.pushLine(event.detail);
 });
 link.addEventListener('ft8-spectrum', (event) => {
-  if (!ft8Active && !jttyActive && !oliviaActive && !hellActive && !sstvActive) return;
+  if (!ft8Active && !wsprActive && !jttyActive && !oliviaActive && !hellActive && !sstvActive) return;
   // The audio spectrum comes from the RX audio, not the radio's scope, so it
   // works with CIV_SCOPE_ENABLED off: don't leave the "scope not enabled"
   // notice over it (which would also hide the Feld-Hell picture).
@@ -899,6 +939,7 @@ link.addEventListener('connected', (event) => {
   ft8Qso.configure({ myCall: stationCallsign, myGrid: stationGrid });
   if (data.frequency != null) updateFrequencyDisplay(data.frequency);
   if (data.ft8Variant) ft8Variant = data.ft8Variant;
+  if (data.wspr) renderWsprStatus(data.wspr);
   // The app-level modes before the radio's mode, so a mode another browser
   // has left since this page last saw the server is dropped quietly rather
   // than "left" (which would turn DATA MODE off under whatever replaced it).
@@ -1085,6 +1126,7 @@ function updateFrequencyDisplay(hz) {
   scopeDisplay.setTunedFrequency(hz);
   updateBandButtons(hz);
   if (ft8Active) checkFt8BandChange(hz);
+  if (wsprActive) checkWsprBandChange(hz);
 }
 
 function beginFreqEdit() {
@@ -1160,6 +1202,11 @@ for (const band of BANDS) {
     // FT8_FREQUENCIES above and tuneFt8ToBand() below.
     if (ft8Active && ft8FrequencyTable()[band.name] != null) {
       tuneFt8ToBand(band.name);
+      return;
+    }
+    // In WSPR: the band's WSPR dial frequency.
+    if (wsprActive && WSPR_FREQUENCIES[band.name] != null) {
+      tuneWsprToBand(band.name);
       return;
     }
     // Likewise in JTTY: a band chip goes to that band's JTTY frequency.
@@ -1297,8 +1344,20 @@ for (const entry of MODE_CHIPS) {
       // toggles the protocol instead — see toggleFt8Variant()'s doc
       // comment for why this is the more useful behavior than a second
       // click doing nothing or re-entering the same mode.
-      if (!ft8Active) enterFt8Mode();
-      else toggleFt8Variant();
+      // ... and then on to WSPR: FT8 -> FT4 -> WSPR -> FT8.
+      if (wsprActive) {
+        exitWsprMode({ keepDataMode: true });
+        if (ft8Variant !== 'FT8') {
+          ft8Variant = 'FT8';
+          link.request('setFt8Variant', { variant: 'FT8' }).catch((err) => showError(`Couldn't switch to FT8: ${err.message}`));
+        }
+        enterFt8Mode();
+      } else if (!ft8Active) enterFt8Mode();
+      else if (ft8Variant === 'FT8') toggleFt8Variant();
+      else {
+        exitFt8Mode({ keepDataMode: true });
+        enterWsprMode();
+      }
     });
   } else if (entry === 'FreeDV') {
     freeDvModeBtn = btn;
@@ -1306,6 +1365,7 @@ for (const entry of MODE_CHIPS) {
       // Mutual exclusivity with FT8 — see the FT8 click handler's mirror
       // comment above.
       if (ft8Active) exitFt8Mode();
+      if (wsprActive) exitWsprMode();
       if (jttyActive) exitJttyMode();
       if (oliviaActive) exitOliviaMode();
       if (hellActive) exitHellMode();
@@ -1320,6 +1380,7 @@ for (const entry of MODE_CHIPS) {
     btn.addEventListener('click', () => {
       // Same mutual exclusivity as the other app-level modes.
       if (ft8Active) exitFt8Mode();
+      if (wsprActive) exitWsprMode();
       if (freeDvActive) exitFreeDvMode();
       if (sstvActive) exitSstvMode();
       // First click selects RTTY; after that the button cycles RTTY ->
@@ -1340,6 +1401,7 @@ for (const entry of MODE_CHIPS) {
     updateCwVariantUi();
     btn.addEventListener('click', () => {
       if (ft8Active) exitFt8Mode();
+      if (wsprActive) exitWsprMode();
       if (freeDvActive) exitFreeDvMode();
       if (jttyActive) exitJttyMode();
       if (oliviaActive) exitOliviaMode();
@@ -1373,6 +1435,7 @@ for (const entry of MODE_CHIPS) {
       // doc comments for why this is the only way out of either
       // pseudo-mode (there's no CI-V signal for either one).
       if (ft8Active) exitFt8Mode();
+      if (wsprActive) exitWsprMode();
       if (freeDvActive) exitFreeDvMode();
       if (jttyActive) exitJttyMode();
       if (oliviaActive) exitOliviaMode();
@@ -1391,12 +1454,13 @@ for (const entry of MODE_CHIPS) {
 
 /** True while one of the app-level modes layered on LSB/USB is selected. */
 function appModeActive() {
-  return ft8Active || freeDvActive || jttyActive || oliviaActive || hellActive || sstvActive;
+  return ft8Active || wsprActive || freeDvActive || jttyActive || oliviaActive || hellActive || sstvActive;
 }
 
 /** Leaves whichever app-level mode is selected (picking SSB or SSTV). */
 function exitAppModes() {
   if (ft8Active) exitFt8Mode();
+  if (wsprActive) exitWsprMode();
   if (freeDvActive) exitFreeDvMode();
   if (jttyActive) exitJttyMode();
   if (oliviaActive) exitOliviaMode();
@@ -1419,6 +1483,7 @@ function applyAppModes(s) {
   if (Number.isFinite(s.hellToneHz)) ttyFreqByMode.HELL = s.hellToneHz;
   // Whatever was switched off...
   if (!s.ft8Active) exitFt8Mode({ local: true });
+  if (!s.wsprActive) exitWsprMode({ local: true });
   if (!s.freeDvActive) exitFreeDvMode({ local: true });
   if (!s.jttyActive) exitJttyMode({ local: true });
   if (!s.oliviaActive) exitOliviaMode({ local: true });
@@ -1426,6 +1491,7 @@ function applyAppModes(s) {
   if (!s.sstvActive) exitSstvMode({ local: true });
   // ...then whatever was switched on.
   if (s.ft8Active) reflectFt8ActiveFromServer();
+  if (s.wsprActive) reflectWsprActiveFromServer();
   if (s.freeDvActive) reflectFreeDvActiveFromServer();
   if (s.jttyActive) reflectJttyActiveFromServer();
   if (s.oliviaActive) reflectOliviaActiveFromServer(s.oliviaCentreHz);
@@ -1453,11 +1519,12 @@ link.addEventListener('app-modes', (event) => applyAppModes(event.detail));
  * page carries on and re-arms it.
  */
 function syncAppModesOnConnect(data) {
-  const serverAny = data.ft8Active || data.freeDvActive || data.jttyActive || data.oliviaActive || data.hellActive || data.sstvActive;
+  const serverAny = data.ft8Active || data.wsprActive || data.freeDvActive || data.jttyActive || data.oliviaActive || data.hellActive || data.sstvActive;
   const radio = data.mode?.mode;
   const fits = sstvActive || freeDvActive ? radio === 'LSB' || radio === 'USB' : radio === 'USB';
   if (!serverAny && appModeActive() && fits) {
     if (ft8Active) link.request('setFt8Active', { active: true }).catch(() => {});
+    if (wsprActive) link.request('setWsprActive', { active: true }).catch(() => {});
     if (freeDvActive) link.request('setFreeDvActive', { active: true }).catch(() => {});
     if (jttyActive) link.request('setJttyActive', { active: true, txHz: ttyFreqByMode.JTTY }).catch(() => {});
     if (oliviaActive) link.request('setOliviaActive', { active: true, centreHz: ttyFreqByMode.OLIVIA }).catch(() => {});
@@ -1522,7 +1589,7 @@ function ttyMode() {
   if (jttyActive) return 'JTTY';
   if (oliviaActive) return 'OLIVIA';
   if (hellActive) return 'HELL';
-  if (currentMode === 'RTTY' && !ft8Active && !freeDvActive) return 'RTTY';
+  if (currentMode === 'RTTY' && !ft8Active && !wsprActive && !freeDvActive) return 'RTTY';
   return null;
 }
 
@@ -1890,16 +1957,17 @@ function updateTtyUi() {
   oliviaRxEl.hidden = mode !== 'OLIVIA';
   hellRxEl.hidden = mode !== 'HELL';
   // JTTY, Olivia and Feld-Hell show the 0-3 kHz audio spectrum (like FT8/FT4), so the RF span buttons don't apply.
-  scopeSpansEl.hidden = ft8Active || freqMode || sstvActive;
+  scopeSpansEl.hidden = ft8Active || wsprActive || freqMode || sstvActive;
   sstvRxEl.hidden = !sstvActive;
   // SSTV: faint guides at the sync (1200 Hz), black (1500 Hz) and white (2300 Hz) tones.
-  scopeDisplay.setGuideFreqs(sstvActive ? [1200, 1500, 2300] : []);
+  // WSPR: the edges of the 200 Hz WSPR window.
+  scopeDisplay.setGuideFreqs(sstvActive ? [1200, 1500, 2300] : wsprActive ? [1400, 1600] : []);
   updateSsbChip();
   // Feld-Hell turns the waterfall into the received picture, scrolling right to left.
   scopeDisplay.setHellMode(mode === 'HELL');
   // Back on the RF scope: show its "not enabled" notice again if it applies
   // (it only has text once the server has said the scope is off).
-  if (!ft8Active && !freqMode && !sstvActive && scopePlaceholder.textContent) scopePlaceholder.hidden = scopeEnabled;
+  if (!ft8Active && !wsprActive && !freqMode && !sstvActive && scopePlaceholder.textContent) scopePlaceholder.hidden = scopeEnabled;
   if (freqMode) {
     ttyFreqLabelEl.firstChild.textContent = `${TTY_FREQ_LABEL[mode]} `;
     ttyFreqEl.min = String(TTY_FREQ_RANGE[mode][0]);
@@ -1907,7 +1975,8 @@ function updateTtyUi() {
     ttyFreqEl.setAttribute('aria-label', TTY_FREQ_ARIA[mode]);
     if (mode !== ttyShownMode) ttyFreqEl.value = String(ttyFreqByMode[mode]);
     scopeDisplay.setQsoFreq(Number(ttyFreqEl.value) || null);
-  } else if (!ft8Active) scopeDisplay.setQsoFreq(null);
+  } else if (wsprActive) scopeDisplay.setQsoFreq(wsprStatus?.txHz ?? 1500);
+  else if (!ft8Active) scopeDisplay.setQsoFreq(null);
 
   // RTTY and JTTY only carry capitals, so the box shows text that way; Olivia
   // and Feld-Hell send exactly what is typed (fldigi's Feld-Hell font draws
@@ -2878,7 +2947,7 @@ function reflectFt8ActiveFromServer() {
  * With `local`, another browser left it and has already told the server and
  * the radio, so only this page's display changes (see applyAppModes()).
  */
-function exitFt8Mode({ local = false } = {}) {
+function exitFt8Mode({ local = false, keepDataMode = false } = {}) {
   if (!ft8Active) return;
   ft8Active = false;
   ft8ModeBtn.classList.remove('chip--active');
@@ -2891,7 +2960,9 @@ function exitFt8Mode({ local = false } = {}) {
   link.request('setFt8Active', { active: false }).catch((err) => showError(`Couldn't stop FT8 decoding: ${err.message}`));
   // Restore whatever MOD Input source the picked hardware mode expects
   // (typically the front-panel mic) — see enterFt8Mode()'s DATA MODE
-  // comment for why this was turned on in the first place.
+  // comment for why this was turned on in the first place. Not when
+  // going straight on to WSPR, which needs it on too.
+  if (keepDataMode) return;
   link.request('setDataMode', { on: false }).catch((err) => showError(`Couldn't disable DATA MODE: ${err.message}`));
 }
 
@@ -2941,6 +3012,181 @@ function toggleFt8Variant() {
     tuneFt8ToBand(ft8LastBandName);
   }
 }
+
+// --- WSPR (the third DIGI choice; see server/wspr-bridge.js) ---
+
+/**
+ * Puts the radio on USB + DATA MODE at the band's WSPR frequency and turns
+ * WSPR on in the server. The server decodes every 2-minute slot, and
+ * transmits about 1 slot in 5 once "Transmit" is ticked.
+ */
+function enterWsprMode() {
+  wsprActive = true;
+  ft8ModeBtn.classList.add('chip--active');
+  setCwPaddleVisible(false);
+  setRttyTickerVisible(false);
+  updateTtyUi();
+  setWsprUiVisible(true);
+  updateFt8VariantUi();
+  link
+    .request('setMode', { mode: 'USB' })
+    .then(() => updateModeButtons('USB'))
+    .catch((err) => showError(`Couldn't set USB for WSPR: ${err.message}`));
+  // after the mode: the mode command turns DATA MODE off
+  link.request('setDataMode', { on: true }).catch((err) => showError(`Couldn't enable DATA MODE for WSPR: ${err.message}`));
+  link
+    .request('setWsprActive', { active: true })
+    .then(() => syncTxPower())
+    .catch((err) => showError(`Couldn't start WSPR: ${err.message}`));
+  wsprLastBandName = currentFreqHz != null ? bandNameForFrequency(currentFreqHz) : null;
+  tuneWsprToBand(wsprLastBandName && WSPR_FREQUENCIES[wsprLastBandName] ? wsprLastBandName : '20m');
+}
+
+/** WSPR is already on in the server (another browser, or before a reconnect): show it, send nothing. */
+function reflectWsprActiveFromServer() {
+  if (wsprActive) return;
+  wsprActive = true;
+  ft8ModeBtn.classList.add('chip--active');
+  setCwPaddleVisible(false);
+  setRttyTickerVisible(false);
+  updateTtyUi();
+  setWsprUiVisible(true);
+  updateFt8VariantUi();
+  wsprLastBandName = currentFreqHz != null ? bandNameForFrequency(currentFreqHz) : null;
+}
+
+/**
+ * Leaves WSPR. With `local`, another browser left it (only this page's
+ * display changes). With `keepDataMode`, DATA MODE stays on for FT8.
+ */
+function exitWsprMode({ local = false, keepDataMode = false } = {}) {
+  if (!wsprActive) return;
+  wsprActive = false;
+  ft8ModeBtn.classList.remove('chip--active');
+  updateTtyUi();
+  updateFt8VariantUi();
+  setWsprUiVisible(false);
+  if (local) return;
+  // The server puts the power from before WSPR back.
+  link
+    .request('setWsprActive', { active: false })
+    .then(() => syncTxPower())
+    .catch((err) => showError(`Couldn't stop WSPR: ${err.message}`));
+  if (!keepDataMode) link.request('setDataMode', { on: false }).catch((err) => showError(`Couldn't disable DATA MODE: ${err.message}`));
+}
+
+function setWsprUiVisible(active) {
+  wsprPanelEl.hidden = !active;
+  pttSectionEl.hidden = active || ft8Active;
+  const filterControl = FUNCTION_CONTROLS.find((c) => c.key === 'filter');
+  if (filterControl && filterControl.buttonEl) filterControl.buttonEl.hidden = active || ft8Active;
+  rebuildTxPowerOptions();
+  syncTxPower();
+  updateTtyUi();
+  if (active) renderWsprStatus(wsprStatus);
+}
+
+function tuneWsprToBand(bandName) {
+  const hz = WSPR_FREQUENCIES[bandName];
+  if (hz == null) return;
+  wsprLastBandName = bandName;
+  link
+    .request('setFrequency', { value: hz })
+    .then(() => updateFrequencyDisplay(hz))
+    .catch((err) => showError(`Couldn't tune to the ${bandName} WSPR frequency: ${err.message}`));
+}
+
+/** A new band (typed in, or from the radio): go to its WSPR frequency. */
+function checkWsprBandChange(hz) {
+  const bandName = bandNameForFrequency(hz);
+  if (bandName && bandName !== wsprLastBandName && WSPR_FREQUENCIES[bandName] != null) tuneWsprToBand(bandName);
+  else if (bandName) wsprLastBandName = bandName;
+}
+
+function setWsprTxHz(hz) {
+  const txHz = Math.round(Math.max(WSPR_TX_HZ_RANGE[0], Math.min(WSPR_TX_HZ_RANGE[1], hz)));
+  scopeDisplay.setQsoFreq(txHz);
+  link
+    .request('setWsprTx', { txHz })
+    .then((r) => renderWsprStatus(r.wspr))
+    .catch((err) => showError(`Couldn't set the WSPR frequency: ${err.message}`));
+}
+
+const utcHhmm = (ms) => new Date(ms).toISOString().slice(11, 16);
+
+/** Shows the server's WSPR state (EVENT.WSPR_STATUS). */
+function renderWsprStatus(s) {
+  if (!s) return;
+  wsprStatus = s;
+  wsprTxEnabledEl.checked = !!s.txEnabled;
+  wsprTxEnabledEl.disabled = !s.canTransmit;
+  wsprTxEnabledEl.parentElement.title = s.canTransmit ? 'Transmit in about 1 slot in 5, picked at random' : s.txReason || '';
+  if (document.activeElement !== wsprTxHzEl) wsprTxHzEl.value = String(s.txHz);
+  wsprTxHzEl.disabled = !s.canTransmit;
+  wsprTxMsgEl.textContent = s.canTransmit ? s.txMessage : s.txReason || '';
+  if (wsprActive) scopeDisplay.setQsoFreq(s.txHz);
+  let slot = '—';
+  if (s.phase === 'tx' && s.slotEndMs) slot = `transmitting ${utcHhmm(s.slotStartMs)}`;
+  else if (s.phase === 'rx' && s.slotStartMs != null) slot = `receiving ${utcHhmm(s.slotStartMs)}–${utcHhmm(s.slotEndMs)}`;
+  if (s.decoding) slot += ' · decoding';
+  wsprSlotEl.textContent = slot;
+  const lines = [];
+  if (s.txEnabled) lines.push(s.nextTx ? `Transmits next at ${utcHhmm(s.nextTx)} UTC.` : 'Transmit is on (about 1 slot in 5).');
+  if (s.lastSlotStartMs != null) lines.push(`${s.lastDecodeCount} heard at ${utcHhmm(s.lastSlotStartMs)}.`);
+  if (!s.upload) lines.push('Not uploading to wsprnet.org.');
+  else if (s.uploadStatus) {
+    const u = s.uploadStatus;
+    lines.push(u.ok ? `Sent to wsprnet.org (${utcHhmm(u.slotStartMs)}).` : `wsprnet.org upload failed: ${u.error}`);
+  }
+  wsprStatusEl.textContent = lines.join(' ');
+  wsprStatusEl.hidden = lines.length === 0;
+}
+
+function wsprRow(d) {
+  const row = document.createElement('div');
+  row.className = 'ft8-table__row';
+  row.setAttribute('role', 'row');
+  const call = d.callsign || d.message.split(' ')[0];
+  const cells = [utcHhmm(d.slotStartMs), String(d.snr), d.dt.toFixed(1), ((d.dialHz + d.audioHz) / 1e6).toFixed(6), call, d.grid || '', String(d.dbm)];
+  for (const text of cells) {
+    const cell = document.createElement('span');
+    cell.setAttribute('role', 'cell');
+    cell.textContent = text;
+    row.appendChild(cell);
+  }
+  row.title = `${d.message} · drift ${d.drift} Hz · ${Math.round(d.audioHz)} Hz audio`;
+  return row;
+}
+
+/** EVENT.WSPR_DECODES: newest slot at the top. */
+function addWsprDecodes({ decodes, replace, slotStartMs, dialHz }) {
+  if (replace) wsprTableBodyEl.innerHTML = '';
+  for (const old of wsprTableBodyEl.querySelectorAll('.wspr-table__row--new')) old.classList.remove('wspr-table__row--new');
+  const list = (decodes || []).map((d) => ({ slotStartMs, dialHz, ...d }));
+  // newest slot first, strongest first within a slot
+  list.sort((a, b) => b.slotStartMs - a.slotStartMs || b.snr - a.snr);
+  const frag = document.createDocumentFragment();
+  for (const d of list) {
+    const row = wsprRow(d);
+    if (!replace) row.classList.add('wspr-table__row--new');
+    frag.appendChild(row);
+  }
+  wsprTableBodyEl.prepend(frag);
+  while (wsprTableBodyEl.children.length > WSPR_MAX_ROWS) wsprTableBodyEl.lastElementChild.remove();
+}
+
+link.addEventListener('wspr-status', (event) => renderWsprStatus(event.detail));
+link.addEventListener('wspr-decodes', (event) => addWsprDecodes(event.detail));
+wsprTxEnabledEl.addEventListener('change', () => {
+  link
+    .request('setWsprTx', { enabled: wsprTxEnabledEl.checked })
+    .then((r) => renderWsprStatus(r.wspr))
+    .catch((err) => showError(`Couldn't change WSPR transmit: ${err.message}`));
+});
+wsprTxHzEl.addEventListener('change', () => {
+  const hz = Number(wsprTxHzEl.value);
+  if (Number.isFinite(hz)) setWsprTxHz(hz);
+});
 
 // --- FreeDV mode (app-level concept layered on USB — see docs/ui-notes.md) ---
 
@@ -3868,14 +4114,24 @@ link.addEventListener('freedv-message', (event) => {
 // Preamp/NR/NB/Notch before they became buttons — syncing is skipped
 // while it's focused, so a poll landing while the native picker is open
 // can't yank the selection out from under an in-progress choice.
-TX_POWER_OPTIONS.forEach((option, index) => {
-  const opt = document.createElement('option');
-  opt.value = String(index);
-  opt.textContent = option.label;
-  txPowerSelect.appendChild(opt);
-});
+/** Fills the power menu: 1-5 W in WSPR, the usual steps otherwise. */
+function rebuildTxPowerOptions() {
+  const options = wsprActive ? WSPR_POWER_OPTIONS : TX_POWER_OPTIONS;
+  if (options === txPowerOptions && txPowerSelect.options.length) return;
+  txPowerOptions = options;
+  txPowerSelect.innerHTML = '';
+  options.forEach((option, index) => {
+    const opt = document.createElement('option');
+    opt.value = String(index);
+    opt.textContent = option.label;
+    txPowerSelect.appendChild(opt);
+  });
+  txPowerSelect.selectedIndex = -1; // until the radio says
+}
+rebuildTxPowerOptions();
 txPowerSelect.addEventListener('change', () => {
-  const option = TX_POWER_OPTIONS[txPowerSelect.selectedIndex];
+  const option = txPowerOptions[txPowerSelect.selectedIndex];
+  if (!option) return;
   link
     .request('setTxPower', { watts: option.watts })
     .then(() => syncTxPower())
@@ -3886,8 +4142,8 @@ async function syncTxPower() {
   if (document.activeElement === txPowerSelect) return;
   try {
     const data = await link.request('getTxPower');
-    const index = TX_POWER_OPTIONS.findIndex((option) => option.watts === data.watts);
-    if (index !== -1) txPowerSelect.selectedIndex = index;
+    // Shows nothing selected if the radio is at a power the menu doesn't list.
+    txPowerSelect.selectedIndex = txPowerOptions.findIndex((option) => option.watts === data.watts);
   } catch {
     // transient — next poll will retry
   }

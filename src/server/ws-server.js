@@ -177,6 +177,11 @@ class ControlServer extends EventEmitter {
       // Whether the client has SSTV selected (see REQUEST.SET_SSTV_ACTIVE /
       // server/sstv-decoder-bridge.js). Same reasons as jttyActive.
       sstvActive: false,
+      // Whether WSPR is on (REQUEST.SET_WSPR_ACTIVE / server/wspr-bridge.js).
+      // Its own state (TX on/off, slot, last upload) is state.wspr, kept by
+      // WsprBridge.
+      wsprActive: false,
+      wspr: null,
       // Which variant the FreeDV mode button is currently in — '700E' or
       // 'RADE' (see REQUEST.SET_FREEDV_VARIANT / src/server/rade-bridge.js).
       // Defaults to 'RADE' — the only variant the client's FreeDV chip
@@ -351,6 +356,7 @@ class ControlServer extends EventEmitter {
       hellActive: s.hellActive,
       hellToneHz: s.hellToneHz,
       sstvActive: s.sstvActive,
+      wsprActive: s.wsprActive,
     };
   }
 
@@ -379,6 +385,12 @@ class ControlServer extends EventEmitter {
     this.emit('hell-active', { active, toneHz: this.state.hellToneHz });
   }
 
+  _setWsprActive(active) {
+    this.state.wsprActive = active;
+    // Handled by WsprBridge (internal-only event).
+    this.emit('wspr-active', active);
+  }
+
   _setSstvActive(active) {
     this.state.sstvActive = active;
     // Handled by SstvDecoderBridge (internal-only event).
@@ -401,6 +413,11 @@ class ControlServer extends EventEmitter {
     if (this.state.oliviaActive) this._setOliviaActive(false);
     if (this.state.hellActive) this._setHellActive(false);
     if (this.state.sstvActive) this._setSstvActive(false);
+    // WSPR too (it may transmit). WSPR_UNATTENDED can start a receive-only run later; see wspr-bridge.js.
+    if (this.state.wsprActive) {
+      this._setWsprActive(false);
+      this._broadcastAppModes();
+    }
   }
 
   /** Adds an operator note, broadcasts it (the other browsers chime), and restarts the idle clock. */
@@ -571,6 +588,25 @@ class ControlServer extends EventEmitter {
           this._setSstvActive(msg.active);
           ws.send(makeResult(id, { active: msg.active }));
           this._broadcastAppModes(ws);
+          break;
+        }
+        case REQUEST.SET_WSPR_ACTIVE: {
+          if (typeof msg.active !== 'boolean') {
+            throw new Error('"active" must be a boolean');
+          }
+          this._setWsprActive(msg.active);
+          ws.send(makeResult(id, { active: msg.active }));
+          this._broadcastAppModes(ws);
+          break;
+        }
+        case REQUEST.SET_WSPR_TX: {
+          if (msg.enabled !== undefined && typeof msg.enabled !== 'boolean') throw new Error('"enabled" must be a boolean if provided');
+          if (msg.txHz !== undefined && (typeof msg.txHz !== 'number' || !Number.isFinite(msg.txHz))) {
+            throw new Error('"txHz" must be a number (Hz) if provided');
+          }
+          // Handled by WsprBridge, which owns state.wspr and broadcasts EVENT.WSPR_STATUS.
+          this.emit('wspr-tx', { enabled: msg.enabled, txHz: msg.txHz });
+          ws.send(makeResult(id, { wspr: this.state.wspr ?? null }));
           break;
         }
         case REQUEST.END_SSTV_PICTURE: {

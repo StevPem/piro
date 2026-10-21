@@ -14,6 +14,7 @@ const { clampOliviaCentre } = require('../audio/olivia-dsp');
 const { HellDecoderBridge } = require('./hell-decoder-bridge');
 const { SstvDecoderBridge } = require('./sstv-decoder-bridge');
 const { SstvTxBridge, DEFAULT_SSTV_TX_MODE } = require('./sstv-tx-bridge');
+const { WsprBridge } = require('./wspr-bridge');
 const { MODES: SSTV_MODES } = require('../audio/sstv-modes');
 const { clampHellTone } = require('../audio/hell-rx');
 const { Ft8Bridge } = require('../audio/ft8-bridge');
@@ -269,6 +270,7 @@ let oliviaDecoderBridge;
 let hellDecoderBridge;
 let sstvDecoderBridge;
 let sstvTxBridge;
+let wsprBridge;
 let radeBridge;
 let freeDvReporterBridge;
 
@@ -544,6 +546,30 @@ async function main() {
     console.log(`SSTV transmit ready (${SSTV_MODES[sstvTxMode].name}).`);
     console.log(`SSTV receive ready (decodes while SSTV is selected${process.env.SSTV_SAVE_DIR ? `; saving pictures to ${process.env.SSTV_SAVE_DIR}` : ''}).`);
 
+    // WSPR receive and transmit (the third choice of the DIGI button).
+    // WSPR_GRID is the Maidenhead locator sent and reported (defaults to
+    // STATION_GRID); spots go to wsprnet.org unless WSPR_UPLOAD=off;
+    // WSPR_UNATTENDED=on receives on its own 10 minutes after the last
+    // browser leaves. See server/wspr-bridge.js.
+    const wsprGrid = (process.env.WSPR_GRID || STATION_GRID || '').trim().toUpperCase();
+    if (wsprGrid && !/^[A-R]{2}[0-9]{2}([A-X]{2})?$/.test(wsprGrid)) {
+      console.warn(`WSPR_GRID "${wsprGrid}" is not a Maidenhead locator like QF22 or QF22LB; WSPR will receive but not transmit or upload.`);
+    }
+    wsprBridge = new WsprBridge({
+      controlServer,
+      audioBridge,
+      callsign: STATION_CALLSIGN || '',
+      grid: wsprGrid,
+      upload: !off(process.env.WSPR_UPLOAD),
+      unattended: /^(1|true|on|yes)$/i.test(process.env.WSPR_UNATTENDED || ''),
+      version: `PiRO-v${APP_VERSION}`,
+    });
+    wsprBridge.start();
+    console.log(
+      `WSPR ready (grid ${wsprGrid || 'not set'}; wsprnet.org upload ${wsprBridge.status.upload ? 'on' : 'off'}; ` +
+        `unattended receive ${wsprBridge.unattendedEnabled ? 'on' : 'off'}).`
+    );
+
     // RADE (FreeDV's neural-vocoder mode) is likewise a hard dependency
     // on AudioBridge — same reasoning as FT8 immediately above, since
     // it's also not a real CI-V mode. Unlike FT8, this doesn't decode
@@ -613,6 +639,7 @@ async function shutdown(signal) {
     if (hellDecoderBridge) hellDecoderBridge.stop();
     if (sstvDecoderBridge) sstvDecoderBridge.stop();
     if (sstvTxBridge) sstvTxBridge.stop();
+    if (wsprBridge) wsprBridge.stop();
     if (radeBridge) radeBridge.stop();
     if (freeDvReporterBridge) freeDvReporterBridge.stop();
     if (audioBridge) audioBridge.stop();

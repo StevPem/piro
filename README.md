@@ -12,7 +12,7 @@ Hamlib, no separate audio server and no extra apps.
 Written by VK3TR. Licensed AGPL-3.0-only (see
 [Licence](#licence)).
 
-**Current build: v86.** This is the version the app shows next to its title.
+**Current build: v87.** This is the version the app shows next to its title.
 It is the `CACHE_NAME` number in `src/client/sw.js`, which goes up with every
 change to the web app.
 
@@ -31,6 +31,7 @@ Several of the cooler features in this app are built on the work of others:
 - Olivia support = Ported to JS from Pawel Jalocha's (SP9VRC) MFSK code in fldigi, https://github.com/w1hkj/fldigi
 - Feld-Hell support = Ported to JS from fldigi's Feld-Hell modem and font, https://github.com/w1hkj/fldigi
 - SSTV receiver = Ported to JS from slowrx by Oona Räisänen (OH2EIQ), https://github.com/windytan/slowrx
+- WSPR support = Ported to JS from wsprd and wsprsim (K1JT, K9AN) in WSJT-X, https://wsjtx.github.io/wsjtx/index.html
 
 ## Features
 
@@ -59,6 +60,10 @@ Several of the cooler features in this app are built on the work of others:
 - **FT8**: band-activity decoding, manual TX, and a guided QSO sequence that
   suggests each reply (you still send every message yourself). Optional PSK
   Reporter spotting.
+- **WSPR** (the third choice of the DIGI button, after FT8 and FT4): receive
+  and transmit, with the decoder ported to JavaScript from WSJT-X's wsprd.
+  Spots go to [wsprnet.org](https://www.wsprnet.org). It can also receive
+  on its own when nobody is connected. See [WSPR](#wspr).
 - **FreeDV RADE** digital voice, with optional reporting to the
   [FreeDV Reporter](https://qso.freedv.org) map.
 - **A noise reducer for received audio**: "HamNoise" (a neural denoiser
@@ -395,7 +400,10 @@ All settings are environment variables. For the systemd service they go in
 | `SSTV_TX_POWER_W` | none | TX power in watts while sending SSTV (put back afterwards). Unset leaves the power alone. |
 | `SSTV_FSK_ID`, `SSTV_CW_ID` | on | `off` leaves out the FSK ID or the CW ID sent after each SSTV picture. Both use `STATION_CALLSIGN`. |
 | `HELL_TONE_HZ` | `1000` | Feld-Hell's default audio tone, in Hz, for sending and receiving, until it is changed in the UI. The band frequencies the client tunes to assume the signal is at this tone. |
-| `STATION_CALLSIGN`, `STATION_GRID` | none | Your callsign and Maidenhead grid. They set the FT8 default message and guided QSO, and the FreeDV Reporter report. |
+| `STATION_CALLSIGN`, `STATION_GRID` | none | Your callsign and Maidenhead grid. They set the FT8 default message and guided QSO, the FreeDV Reporter report, and WSPR's callsign (WSPR transmits only a plain call of up to 6 characters). |
+| `WSPR_GRID` | `STATION_GRID` | The Maidenhead grid WSPR sends (the first 4 characters) and reports to wsprnet.org (4 or 6 characters, such as `QF22` or `QF22LB`). |
+| `WSPR_UPLOAD` | on | `off` stops WSPR spots going to wsprnet.org. Uploading also needs `STATION_CALLSIGN` and a grid. |
+| `WSPR_UNATTENDED` | off | `on` makes WSPR receive by itself 10 minutes after the last browser leaves: the radio goes to the WSPR frequency of its band (USB, DATA on), and goes back to how it was when a browser connects. It never transmits then. See [WSPR](#wspr). |
 | `TLS_CERT_PATH`, `TLS_KEY_PATH` | none | Set both to serve HTTPS and WSS. Needed for the microphone from other devices. |
 | `SOURCE_CODE_URL` | none | Link shown in the page footer. The AGPL asks you to offer the source to people who use your instance (see [Licence](#licence)). |
 | `STATIC_DIR` | `src/client` | Folder the web app is served from. |
@@ -456,8 +464,14 @@ one hard refresh (Ctrl+Shift+R, or Cmd+Shift+R on a Mac).
   now confirms DATA mode, and waits for it to take, before keying. A
   warning saying DATA mode was turned off during a transmission means
   something changed the radio's mode while it was sending.
-- **FT8 decodes nothing or at the wrong times.** Check the system clock with
-  `timedatectl`. It must show "System clock synchronized: yes".
+- **FT8 or WSPR decodes nothing or at the wrong times.** Check the system
+  clock with `timedatectl`. It must show "System clock synchronized: yes".
+- **WSPR spots don't reach wsprnet.org.** The WSPR panel says whether the
+  last upload worked. Uploading needs `STATION_CALLSIGN`, `WSPR_GRID` (or
+  `STATION_GRID`) and internet access from the Pi (to `wsprnet.org`, port
+  80), and must not be turned off with `WSPR_UPLOAD=off`.
+- **The WSPR Transmit box can't be ticked.** Its tooltip says why: usually
+  `STATION_CALLSIGN` or the grid is not set, or the callsign has a `/`.
 - **The microphone is blocked in the browser.** Use HTTPS (see
   [Installing PiRO](#installing-piro)).
 
@@ -509,7 +523,9 @@ src/
                    (jtty-codec.js, jtty-tx.js, jtty-rx.js, jtty-tbcc-decode.js,
                    decimator.js, jtty-decode-worker.js); transmit is played
                    out by tty-bridge.js and receive is fed by
-                   server/jtty-decoder-bridge.js
+                   server/jtty-decoder-bridge.js;
+                   WSPR (wspr-codec.js, wspr-rx.js, wspr-decode-worker.js,
+                   with server/wspr-bridge.js and server/wsprnet.js)
   server/         WebSocket control layer (phase 2 — done), audio bridge
                    (phase 3 — done), scope bridge (phase 6 — done), static
                    file server (phase 4 — done), CW decoder bridge, FT8 protocol wiring
@@ -652,6 +668,15 @@ test/
   hell-ocr.test.js        Feld-Hell text reader: clean, in noise (error-rate
                            limits), timing errors, off tune, no characters
                            from noise alone, a long stream
+  wspr.test.js            WSPR coding against WSJT-X's wsprsim (symbols,
+                           hash, message types 1-3) and the decoder on a
+                           slot of audio (three signals, two 1.5 Hz apart,
+                           start-time offsets, noise alone); see
+                           third_party/wsjtx-wsprd/README.md
+  wspr-bridge.test.js     WSPR bridge: a slot decoded by the real worker,
+                           wsprnet.org form fields, power held at 5 W and
+                           put back, transmit planning and the audio decoded
+                           back, unattended receive and putting the radio back
   sstv.test.js            SSTV receiver: all 25 modes, whole pictures, PySSTV
                            audio, mistuning, clock error (slant), noise, no
                            false pictures, signal loss; see third_party/sstv/README.md
@@ -1223,6 +1248,50 @@ not yet been tested over the air.
 Transmit is refused if the radio is already transmitting. The usual PTT
 watchdog (ten minutes) still applies.
 
+### WSPR
+
+WSPR is the third choice of the **DIGI** button: FT8, then FT4, then WSPR,
+then FT8 again. It puts the radio on USB with DATA MODE on and tunes to the
+band's WSPR frequency (for example 7.0386 MHz on 40 m and 14.0956 MHz on
+20 m). Band buttons then go to that band's WSPR frequency. The WSPR signals
+are 1400-1600 Hz up; the spectrum marks that window.
+
+WSPR runs in 2-minute slots that start on even UTC minutes. PiRO decodes
+every slot it isn't transmitting in. The decoder is WSJT-X's `wsprd`,
+ported to JavaScript (`src/audio/wspr-rx.js`); see
+`third_party/wsjtx-wsprd/README.md`. It runs in a worker thread and takes a
+few seconds per slot. The spots are listed newest first (time, SNR, time
+offset, frequency, callsign, grid, power in dBm; tap-and-hold a row for the
+drift). Every browser sees the same list, and a page that opens later gets
+the recent spots.
+
+Spots go to wsprnet.org after each slot, the way WSJT-X sends them (a
+"wsprstat" report when nothing was heard). This needs `STATION_CALLSIGN`
+and `WSPR_GRID` (or `STATION_GRID`); `WSPR_UPLOAD=off` turns it off. The
+panel shows whether the last upload worked.
+
+While WSPR is on, the **Power** menu offers 1-5 W, and the radio is held at
+5 W or less (checked again before each transmission). The power from before
+is put back when you leave WSPR.
+
+Tick **Transmit** to transmit too. About one slot in five is then picked at
+random, never two in a row, as WSJT-X does with "Tx Pct 20"; the panel says
+when the next one is. A transmission starts 1 s into its slot and lasts
+110.6 s. It sends `STATION_CALLSIGN`, the first 4 characters of the grid and
+the radio's power in dBm (1 W is 30, 2 W is 33, 3-5 W are 37). The transmit
+audio frequency is 1500 Hz unless you change it (1410-1590 Hz, in the box
+or by tapping the spectrum). WSPR transmits only a plain callsign of up to 6
+characters, so not one with a `/`. Transmit stops when the last browser
+leaves. Unticking Transmit, or leaving WSPR, stops a transmission straight
+away. Not tested on air.
+
+**Unattended receive** (`WSPR_UNATTENDED=on`, off by default): 10 minutes
+after the last browser disconnects, PiRO tunes the radio to the WSPR
+frequency of the band it is on (20 m if it isn't near one), on USB with
+DATA on, and receives and uploads spots by itself. It never transmits then.
+When a browser connects, it stops and puts the frequency, mode and DATA
+mode back.
+
 ### SSTV
 
 The **SSTV** button turns on SSTV (slow-scan television). It puts the radio
@@ -1442,7 +1511,7 @@ shapes.
   `setTuner`, `getTuner`, `setTxPower`, `getTxPower`, `setRxGain`,
   `getRxGain`, `setFt8Active`, `sendFt8`, `sendTty`, `abortTty`, `setJttyActive`,
   `setOliviaActive`, `setHellActive`, `setSstvActive`, `endSstvPicture`, `getSstvPictures`,
-  `sendSstv`, `abortSstv`)
+  `sendSstv`, `abortSstv`, `setWsprActive`, `setWsprTx`)
   correlated by `id`; events (`connected`, `frequency`, `mode`, `data-mode`, `ptt`,
   `ptt-timeout`, `cw-text`, `ft8-decodes`, `ft8-tx-status`, `tty-tx-status`,
   `jtty-text`, `olivia-text`, `rig-error`, `audio-error`, `scope-error`)
@@ -1491,11 +1560,22 @@ shapes.
   pictureSec, fskSec, gapSec, cwSec, totalSec`), the picture's `lines` and
   the picture itself (`png`); a page that connects during a transmission is
   sent the current status, with `elapsedSec` how far in it is.
+  `setWsprActive` (`{active}`) turns WSPR on and off; `setWsprTx`
+  (`{enabled?, txHz?}`) turns WSPR transmit on and off and sets its audio
+  frequency (1410-1590 Hz). WSPR's state is the connect snapshot's `wspr`
+  and the `wspr-status` broadcast (`{phase: 'idle'|'rx'|'tx', slotStartMs,
+  slotEndMs, txEnabled, txHz, txPct, canTransmit, txMessage, txReason?,
+  nextTx, upload, uploadStatus, unattended, decoding, lastSlotStartMs,
+  lastDecodeCount}`). Each decoded slot arrives as a `wspr-decodes`
+  broadcast (`{slotStartMs, dialHz, decodes: [{snr, dt, audioHz, drift,
+  message, callsign, grid, dbm, type}]}`; with `replace: true`, sent to a
+  page that has just connected, the recent spots of every slot).
   An `app-modes` broadcast (`{ft8Active, freeDvActive, jttyActive, jttyTxHz,
-  oliviaActive, oliviaCentreHz, hellActive, hellToneHz, sstvActive}`) goes
-  to the other browsers after any `setFt8Active`, `setFreeDvActive`,
-  `setJttyActive`, `setOliviaActive`, `setHellActive` or `setSstvActive`, so
-  they show the same mode; the connect snapshot has the same fields.
+  oliviaActive, oliviaCentreHz, hellActive, hellToneHz, sstvActive,
+  wsprActive}`) goes to the other browsers after any `setFt8Active`,
+  `setFreeDvActive`, `setJttyActive`, `setOliviaActive`, `setHellActive`,
+  `setSstvActive` or `setWsprActive`, so they show the same mode; the
+  connect snapshot has the same fields.
   `sendCw` (`{text, wpm?}`) sends text with the radio's CW keyer;
   progress arrives as `cw-tx-status` broadcasts (`sending` →
   `sent`/`aborted`/`error`, with the text as sent, `wpm`, `durationSec`
