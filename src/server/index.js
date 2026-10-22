@@ -14,7 +14,7 @@ const { clampOliviaCentre } = require('../audio/olivia-dsp');
 const { HellDecoderBridge } = require('./hell-decoder-bridge');
 const { SstvDecoderBridge } = require('./sstv-decoder-bridge');
 const { SstvTxBridge, DEFAULT_SSTV_TX_MODE } = require('./sstv-tx-bridge');
-const { WsprBridge } = require('./wspr-bridge');
+const { WsprBridge, parseBandList, WSPR_DIAL_HZ } = require('./wspr-bridge');
 const { MODES: SSTV_MODES } = require('../audio/sstv-modes');
 const { clampHellTone } = require('../audio/hell-rx');
 const { Ft8Bridge } = require('../audio/ft8-bridge');
@@ -556,6 +556,17 @@ async function main() {
     if (wsprGrid && !/^[A-R]{2}[0-9]{2}([A-X]{2})?$/.test(wsprGrid)) {
       console.warn(`WSPR_GRID "${wsprGrid}" is not a Maidenhead locator like QF22 or QF22LB; WSPR will receive but not transmit or upload.`);
     }
+    // WSPR_SKIP_BANDS leaves bands out of that cycle ("160m,6m");
+    // WSPR_BAND_MINUTES is the time on each band (6, in whole 2-minute slots).
+    const wsprSkip = parseBandList(process.env.WSPR_SKIP_BANDS);
+    if (wsprSkip.unknown.length) console.warn(`WSPR_SKIP_BANDS: no WSPR band called ${wsprSkip.unknown.join(', ')} (bands: ${Object.keys(WSPR_DIAL_HZ).join(' ')}).`);
+    let wsprBandMinutes = Number(process.env.WSPR_BAND_MINUTES ?? 6);
+    if (!(wsprBandMinutes >= 2)) {
+      console.warn(`WSPR_BAND_MINUTES "${process.env.WSPR_BAND_MINUTES}" must be 2 or more; using 6.`);
+      wsprBandMinutes = 6;
+    } else if (wsprBandMinutes % 2) {
+      console.warn(`WSPR_BAND_MINUTES ${wsprBandMinutes} is not a whole number of 2-minute slots; using ${Math.round(wsprBandMinutes / 2) * 2}.`);
+    }
     wsprBridge = new WsprBridge({
       controlServer,
       audioBridge,
@@ -564,12 +575,14 @@ async function main() {
       upload: !off(process.env.WSPR_UPLOAD),
       unattended: /^(1|true|on|yes)$/i.test(process.env.WSPR_UNATTENDED || ''),
       bandCycle: !off(process.env.WSPR_BAND_CYCLE),
+      skipBands: wsprSkip.bands,
+      bandMinutes: wsprBandMinutes,
       version: `PiRO-v${APP_VERSION}`,
     });
     wsprBridge.start();
     console.log(
       `WSPR ready (grid ${wsprGrid || 'not set'}; wsprnet.org upload ${wsprBridge.status.upload ? 'on' : 'off'}; ` +
-        `unattended receive ${wsprBridge.unattendedEnabled ? `on, band cycle ${wsprBridge.bandCycle ? 'on' : 'off'}` : 'off'}).`
+        `unattended receive ${wsprBridge.unattendedEnabled ? `on, band cycle ${wsprBridge.bandCycle ? `every ${wsprBridge.bandSlots * 2} min: ${wsprBridge.cycleBands.join(' ')}` : 'off'}` : 'off'}).`
     );
 
     // RADE (FreeDV's neural-vocoder mode) is likewise a hard dependency

@@ -3772,3 +3772,36 @@ model for how to approach that.
   round from 6 m to 160 m, each slot reported on its own band, the radio put
   back; band cycle off stays on 20 m). Not tested on a radio. Service-worker
   cache bumped to v88.
+
+### WSPR band cycle: skipped bands, time per band, tuner (v89)
+
+- `WSPR_SKIP_BANDS` (e.g. `160m,6m`, or `160,6`) leaves bands out of the
+  unattended band cycle; unknown names are logged at start-up. If the radio
+  is on a skipped band when unattended receive starts, it starts on the
+  next band in the cycle. If every band is skipped, it stays put.
+- `WSPR_BAND_MINUTES` (default 6) is the time on each band, rounded to
+  whole 2-minute slots (2 = every slot, as in v88). The bridge counts slots
+  on the band and changes at the boundary that completes them.
+- After each band change the bridge starts the antenna tuner (CI-V
+  `1C 01 02`, the Tune button's command) and waits for it before capturing
+  on the new band. "Finished" means the tuner no longer reads 2 and
+  `getTransmitting()` is false, checked every 0.5 s after 1 s. That the
+  IC-7300 reads 2 while tuning is not confirmed on a radio; the
+  transmitting check covers it either way.
+- Tuning is a transmission without PTT, so it has its own limit (CLAUDE.md):
+  after 15 s (wall time) the tuner is switched off (ending the tune), PTT
+  is sent off, and the tuner is switched back on, with a warning. A tune of
+  more than about 20 s also means that slot isn't decoded (its audio
+  starts too late); receiving carries on. A browser connecting during a
+  tune waits for it (at most the limit) before the radio is put back, so
+  the restore can't be overtaken. No tune when a browser is connected or
+  PTT is on.
+- Status: `cycleBands`, `bandMinutes`, `tuning` in `wspr-status`.
+- Real bug found while testing: the tune limit first used the bridge's
+  injectable clock, which tests (and nothing else) freeze; it now uses wall
+  time, as the radio does.
+- Tests (wspr-bridge.test.js): 6 minutes per band with the tuner after each
+  change and no other transmission; 2 minutes with 160 m and 6 m skipped
+  (round from 10 m to 80 m); starting on a skipped band; a stuck tune
+  stopped by the limit; a browser arriving mid-tune; band list parsing.
+  Not tested on air. Service-worker cache bumped to v89.

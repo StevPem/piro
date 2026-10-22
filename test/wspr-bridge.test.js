@@ -2,7 +2,7 @@
 'use strict';
 
 const { EventEmitter } = require('events');
-const { WsprBridge, wsprDialFor, WSPR_DIAL_HZ } = require('../src/server/wspr-bridge');
+const { WsprBridge, wsprDialFor, WSPR_DIAL_HZ, nextWsprBand, parseBandList } = require('../src/server/wspr-bridge');
 const { spotBodies, slotDateTime } = require('../src/server/wsprnet');
 const { EVENT } = require('../src/server/protocol');
 const codec = require('../src/audio/wspr-codec');
@@ -62,6 +62,22 @@ class StubCiv {
   async setTxPower(w) {
     this.log.push(`power ${w}`);
     this.power = w;
+  }
+  // antenna tuner: 2 starts a tune, which reads back as 2 (and transmitting) for a few reads
+  async setTuner(v) {
+    this.log.push(`tuner ${v}`);
+    this.tuner = v;
+    this.tuneReads = v === 2 ? 2 : 0;
+  }
+  async getTuner() {
+    if (this.tuner === 2 && !this.tuneStuck && this.tuneReads-- <= 0) this.tuner = 1;
+    return this.tuner ?? 1;
+  }
+  async getTransmitting() {
+    return this.tuner === 2;
+  }
+  async setPtt(on) {
+    this.log.push(`setPtt ${on}`);
   }
 }
 
@@ -312,36 +328,97 @@ function feed(capture, pcm, chunk = 19200) {
     bridge.stop();
   }
   {
-    // unattended band cycle: the next band at every slot, 160 m up to 6 m and round again
-    const decoded = [];
-    const decoder = { decode: async (samples) => ({ decodes: [], hashtab: [] }), terminate() {} };
-    const { bridge, controlServer, civ, capture, slotClock, setTime } = setup({ unattended: true, unattendedDelayMs: 10, decoder });
-    controlServer.clients.clear();
-    controlServer.emit('client-disconnected', 'a');
-    await until(() => bridge.attached, 2000);
-    check(controlServer.state.frequency === 14095600 && statusOf(controlServer).unattendedBand === '20m' && statusOf(controlServer).bandCycle === true, 'unattended receive starts on the band the radio was on (20 m), band cycle on');
+    check(nextWsprBand(14095600) === '17m' && nextWsprBand(50293000) === '160m', 'the band cycle goes up, and round from 6 m to 160 m');
+    check(nextWsprBand(28124600, ['80m', '40m', '20m']) === '80m' && nextWsprBand(50293000, ['40m', '20m']) === '40m', 'skipped bands are passed over');
+    const p = parseBandList('160m, 6 ,40M; 99');
+    check(p.bands.join() === '160m,6m,40m' && p.unknown.join() === '99', 'WSPR_SKIP_BANDS takes "160m" or "160", any case, and reports unknown names');
+  }
+  /** Runs unattended receive slot by slot; returns the frequency after each boundary and the dial each decode was reported on. */
+  async function unattendedRun(opts, slots, before) {
+    const decoder = { decode: async () => ({ decodes: [], hashtab: [] }), terminate() {} };
+    const t = setup({ unattended: true, unattendedDelayMs: 10, decoder, tuneStartMs: 5, tunePollMs: 5, ...opts });
+    before?.(t);
+    t.controlServer.clients.clear();
+    t.controlServer.emit('client-disconnected', 'a');
+    await until(() => t.bridge.attached, 2000);
+    const startFreq = t.civ.frequency;
+    const freqs = [];
     const quiet = Buffer.alloc(48000 * 2 * 70);
-    const seen = [];
-    for (let slot = 1; slot <= 7; slot++) {
-      const t = slot * 120000;
-      setTime(t);
-      feed(capture, quiet, 96000);
-      slotClock.fire(t);
-      await until(() => controlServer.state.frequency !== seen.at(-1) && bridge.status.unattendedBand && civ.frequency === controlServer.state.frequency);
-      await sleep(20);
-      seen.push(civ.frequency);
-      const ev = controlServer.broadcasts.filter((b) => b.type === EVENT.WSPR_DECODES).at(-1)?.data;
-      decoded.push(ev ? ev.dialHz : null);
+    for (let slot = 1; slot <= slots; slot++) {
+      t.setTime(slot * 120000);
+      feed(t.capture, quiet, 96000);
+      t.slotClock.fire(slot * 120000);
+      await until(() => !t.bridge._hop);
+      await sleep(10);
+      freqs.push(t.civ.frequency);
     }
-    check(seen.join() === '18104600,21094600,24924600,28124600,50293000,1836600,3568600', `each slot moves on one band, round from 6 m to 160 m: ${seen.map((f) => (f / 1e6).toFixed(4)).join(' ')}`);
-    check(decoded.slice(1).join() === seen.slice(0, -1).join() && decoded[0] === 14095600, 'each slot is decoded and reported on the band it was heard on');
-    check(statusOf(controlServer).unattendedBand === '80m', 'the status says which band');
-    civ.log.length = 0;
-    controlServer.clients.add('b');
-    controlServer.emit('client-connected', 'b');
-    await until(() => civ.log.includes('freq 14095600'));
-    check(civ.log.at(-1) === 'freq 14095600' && !bridge.attached, 'a browser connecting puts the radio back on the frequency from before');
-    bridge.stop();
+    const decoded = t.controlServer.broadcasts.filter((b) => b.type === EVENT.WSPR_DECODES).map((b) => b.data.dialHz);
+    return { ...t, startFreq, freqs, decoded };
+  }
+  const mhz = (list) => list.map((f) => (f / 1e6).toFixed(4)).join(' ');
+  {
+    // the default: 6 minutes (3 slots) a band, with the tuner after each change
+    const r = await unattendedRun({}, 7);
+    check(r.startFreq === 14095600 && statusOf(r.controlServer).bandMinutes === 6 && statusOf(r.controlServer).unattendedBand === '15m', 'unattended receive starts on the band the radio was on (20 m); the status says which band it is on now');
+    check(r.freqs.join() === '14095600,14095600,18104600,18104600,18104600,21094600,21094600', `6 minutes on each band by default: ${mhz(r.freqs)}`);
+    check(r.decoded.join() === '14095600,14095600,14095600,18104600,18104600,18104600,21094600', 'every slot is decoded and reported on the band it was heard on');
+    const log = r.civ.log.join();
+    check(/freq 18104600,tuner 2,.*freq 21094600,tuner 2/.test(log) && (log.match(/tuner 2/g) || []).length === 2, `the tuner is started straight after each band change, and only then: ${log}`);
+    check(!/setPtt|power|ptt true/.test(log), 'nothing else is transmitted');
+    r.civ.log.length = 0;
+    r.controlServer.clients.add('b');
+    r.controlServer.emit('client-connected', 'b');
+    await until(() => r.civ.log.includes('freq 14095600'));
+    check(r.civ.log.at(-1) === 'freq 14095600' && !r.bridge.attached, 'a browser connecting puts the radio back on the frequency from before');
+    r.bridge.stop();
+  }
+  {
+    // WSPR_BAND_MINUTES=2 and WSPR_SKIP_BANDS=160m,6m: every slot, round from 10 m to 80 m
+    const r = await unattendedRun({ bandMinutes: 2, skipBands: ['160m', '6m'] }, 3, (t) => {
+      t.civ.frequency = 28124600;
+      t.controlServer.state.frequency = 28124600;
+    });
+    check(r.freqs.join() === '3568600,7038600,10138700', `2 minutes a band, 6 m and 160 m skipped: ${mhz(r.freqs)}`);
+    check(statusOf(r.controlServer).cycleBands.join() === '80m,40m,30m,20m,17m,15m,12m,10m', 'the status lists the bands in the cycle');
+    r.bridge.stop();
+  }
+  {
+    // the radio on a skipped band: start on the next one
+    const r = await unattendedRun({ skipBands: ['6m'] }, 1, (t) => {
+      t.civ.frequency = 50313000;
+      t.controlServer.state.frequency = 50313000;
+    });
+    check(r.startFreq === 1836600, `on a skipped band (6 m), it starts on the next (${mhz([r.startFreq])})`);
+    r.bridge.stop();
+  }
+  {
+    // a tuner that doesn't finish is stopped
+    const r = await unattendedRun({ bandMinutes: 2, tuneLimitMs: 60 }, 1, (t) => {
+      t.civ.tuneStuck = true;
+    });
+    const log = r.civ.log.join();
+    check(/tuner 2,tuner 0,setPtt false,tuner 1/.test(log) && r.controlServer.broadcasts.some((b) => b.type === EVENT.AUDIO_ERROR && /tuner was still going/.test(b.data.message)), `a tune still going after the limit is stopped (tuner off, PTT off, tuner on): ${log}`);
+    check(r.decoded.length === 1 && r.bridge.attached, 'and receiving carries on');
+    r.bridge.stop();
+  }
+  {
+    // a browser connecting while the tuner runs: the tune ends first, then the radio is put back
+    const decoder = { decode: async () => ({ decodes: [], hashtab: [] }), terminate() {} };
+    const t = setup({ unattended: true, unattendedDelayMs: 10, decoder, bandMinutes: 2, tuneStartMs: 5, tunePollMs: 5, tuneLimitMs: 150 });
+    t.civ.tuneStuck = true;
+    t.controlServer.clients.clear();
+    t.controlServer.emit('client-disconnected', 'a');
+    await until(() => t.bridge.attached, 2000);
+    t.setTime(120000);
+    feed(t.capture, Buffer.alloc(48000 * 2 * 70), 96000);
+    t.slotClock.fire(120000);
+    await until(() => t.civ.log.includes('tuner 2'));
+    t.controlServer.clients.add('b');
+    t.controlServer.emit('client-connected', 'b');
+    await until(() => t.civ.log.at(-1) === 'freq 14095600', 3000);
+    const log = t.civ.log.join();
+    check(log.indexOf('tuner 1') < log.lastIndexOf('freq 14095600') && t.civ.frequency === 14095600 && !t.bridge.attached, `a browser arriving mid-tune: tune stopped, then the radio put back: ${log}`);
+    t.bridge.stop();
   }
   {
     // WSPR_BAND_CYCLE=off: unattended receive stays on its band
