@@ -27,8 +27,11 @@
  * of its current band (USB, DATA on) and WSPR receives (never
  * transmits) until a browser connects again. Then the frequency, mode
  * and DATA mode from before are put back. While receiving unattended it
- * moves to the next band at every slot boundary, 160 m up to 6 m and round
- * again (WSPR_BAND_CYCLE=off stays on the one band).
+ * moves to the next band every 6 minutes (WSPR_BAND_MINUTES, whole
+ * 2-minute slots), 160 m up to 6 m and round again, leaving out
+ * WSPR_SKIP_BANDS (WSPR_BAND_CYCLE=off stays on the one band). After each
+ * band change it starts the radio's antenna tuner (the only transmission
+ * unattended receive makes; see _tune() for its time limit).
  */
 
 const path = require('node:path');
@@ -77,11 +80,40 @@ const WSPR_DIAL_HZ = {
 
 const BAND_ORDER = Object.keys(WSPR_DIAL_HZ); // 160 m up to 6 m
 
-/** The band after the one `hz` is on, round to 160 m after 6 m. */
-function nextWsprBand(hz) {
+/**
+ * The band after the one `hz` is on, in `bands` (the cycle, low to high),
+ * round to the lowest after the highest. From a band not in `bands`, the
+ * next one above it that is.
+ */
+function nextWsprBand(hz, bands = BAND_ORDER) {
+  if (!bands.length) return null;
   const i = BAND_ORDER.findIndex((b) => WSPR_DIAL_HZ[b] === hz);
-  return BAND_ORDER[(i + 1) % BAND_ORDER.length];
+  for (let k = 1; k <= BAND_ORDER.length; k++) {
+    const b = BAND_ORDER[(i + k + BAND_ORDER.length) % BAND_ORDER.length];
+    if (bands.includes(b)) return b;
+  }
+  return bands[0];
 }
+
+/**
+ * WSPR_SKIP_BANDS: "160m, 6m" or "160 6" -> ['160m', '6m']. Unknown names
+ * are returned in `unknown`.
+ */
+function parseBandList(text) {
+  const bands = [];
+  const unknown = [];
+  for (const raw of String(text || '').split(/[\s,;]+/)) {
+    if (!raw) continue;
+    const name = /m$/i.test(raw) ? raw.toLowerCase() : `${raw.toLowerCase()}m`;
+    if (WSPR_DIAL_HZ[name]) bands.push(name);
+    else unknown.push(raw);
+  }
+  return { bands, unknown };
+}
+
+const TUNE_LIMIT_MS = 15000; // the IC-7300's tuner takes a few seconds
+const TUNE_POLL_MS = 500;
+const TUNE_START_MS = 1000; // before the first check that it has finished
 
 const bandOf = (hz) => BAND_ORDER.find((b) => WSPR_DIAL_HZ[b] === hz) ?? null;
 
@@ -156,7 +188,10 @@ class WsprBridge {
    * @param {boolean} [opts.upload=true] - send spots to wsprnet.org
    * @param {boolean} [opts.unattended=false] - receive on our own when nobody is connected
    * @param {number} [opts.unattendedDelayMs=600000]
-   * @param {boolean} [opts.bandCycle=true] - unattended receive changes band every slot
+   * @param {boolean} [opts.bandCycle=true] - unattended receive changes band
+   * @param {string[]} [opts.skipBands] - bands left out of the cycle, e.g. ['160m', '6m']
+   * @param {number} [opts.bandMinutes=6] - minutes on each band (rounded to whole 2-minute slots)
+   * @param {boolean} [opts.tune=true] - start the antenna tuner after each band change
    * @param {string} [opts.version] - sent to wsprnet.org
    * Test hooks: slotClock, decoder ({decode, terminate}), wsprnet, now, random,
    * setTimer/clearTimer, dataSettleMs, dataWatchMs, pttReleaseMarginMs, spectrumIntervalMs.
@@ -170,6 +205,12 @@ class WsprBridge {
     unattended = false,
     unattendedDelayMs = UNATTENDED_DELAY_MS,
     bandCycle = true,
+    skipBands = [],
+    bandMinutes = 6,
+    tune = true,
+    tuneLimitMs = TUNE_LIMIT_MS,
+    tunePollMs = TUNE_POLL_MS,
+    tuneStartMs = TUNE_START_MS,
     version = 'PiRO',
     slotClock,
     decoder,
@@ -193,6 +234,14 @@ class WsprBridge {
     this.unattendedEnabled = unattended === true;
     this.unattendedDelayMs = unattendedDelayMs;
     this.bandCycle = bandCycle !== false;
+    this.cycleBands = BAND_ORDER.filter((b) => !skipBands.includes(b));
+    if (this.cycleBands.length === 0) this.bandCycle = false; // every band skipped: stay put
+    this.bandSlots = Math.max(1, Math.round((Number(bandMinutes) || 6) / 2));
+    this.tune = tune !== false;
+    this.tuneLimitMs = tuneLimitMs;
+    this.tunePollMs = tunePollMs;
+    this.tuneStartMs = tuneStartMs;
+    this._slotsOnBand = 0;
     this._hop = null; // the band change in progress (unattended band cycle)
     this.version = version;
     this.now = now;
@@ -251,6 +300,9 @@ class WsprBridge {
       unattended: false,
       unattendedEnabled: this.unattendedEnabled,
       bandCycle: this.unattendedEnabled && this.bandCycle,
+      cycleBands: this.cycleBands,
+      bandMinutes: this.bandSlots * 2,
+      tuning: false,
       unattendedBand: null,
       decoding: false,
       lastSlotStartMs: null,
@@ -480,7 +532,7 @@ class WsprBridge {
     const cap = this._capture;
     if (this._attached && cap) {
       this._decodeSlot(cap); // checks the dial first, before the band changes below
-      if (this._unattended && this.bandCycle) this._hopBand(slotStartMs);
+      if (this._unattended && this.bandCycle && ++this._slotsOnBand >= this.bandSlots) this._hopBand(slotStartMs);
       else this._newCapture(slotStartMs, slotStartMs);
     }
     this._setStatus({ slotStartMs, slotEndMs: slotStartMs + SLOT_MS });
@@ -683,23 +735,69 @@ class WsprBridge {
    */
   _hopBand(slotStartMs) {
     this._capture = null;
+    this._slotsOnBand = 0;
     const civ = this._civ();
     const state = this.controlServer.state;
-    const dial = WSPR_DIAL_HZ[nextWsprBand(state.frequency)];
+    const dial = WSPR_DIAL_HZ[nextWsprBand(state.frequency, this.cycleBands)];
     this._hop = (async () => {
+      let moved = false;
       try {
         if (civ) await civ.setFrequency(dial);
         state.frequency = dial;
+        moved = true;
         this._setStatus({ unattendedBand: bandOf(dial) });
       } catch (err) {
         this._warn(`could not change band: ${err.message}`);
       }
+      if (moved && civ && this.tune && this._unattended) await this._tune(civ);
+      // a slot whose audio starts more than 20 s late (a long tune) is not decoded
       if (this._unattended && this._attached) this._newCapture(slotStartMs, this.now());
     })();
     const hop = this._hop;
     hop.finally(() => {
       if (this._hop === hop) this._hop = null;
     });
+  }
+
+  /**
+   * Starts the antenna tuner (CI-V 1C 01 02) and waits for it to finish.
+   * Tuning transmits a carrier without PTT, so it has its own limit: if the
+   * radio still reports tuning or transmitting after tuneLimitMs, the tuner
+   * is switched off (which ends the tune), PTT is sent off, and the tuner is
+   * switched back on.
+   */
+  async _tune(civ) {
+    if (typeof civ.setTuner !== 'function' || this._clientCount() !== 0 || this.controlServer.state.ptt) return;
+    const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
+    const t0 = Date.now(); // wall time, as the radio's tuner is
+    this._setStatus({ tuning: true });
+    try {
+      await civ.setTuner(2);
+      await sleep(this.tuneStartMs);
+      for (;;) {
+        let busy = true;
+        try {
+          const tuner = typeof civ.getTuner === 'function' ? await civ.getTuner() : 1;
+          const tx = typeof civ.getTransmitting === 'function' ? await civ.getTransmitting() : false;
+          busy = tuner === 2 || tx === true;
+        } catch {
+          // can't tell: keep waiting, up to the limit
+        }
+        if (!busy) return;
+        if (Date.now() - t0 >= this.tuneLimitMs) {
+          this._warn(`the tuner was still going after ${Math.round(this.tuneLimitMs / 1000)} s on ${(this.controlServer.state.frequency / 1e6).toFixed(4)} MHz; stopped it.`);
+          await civ.setTuner(0).catch(() => {});
+          if (typeof civ.setPtt === 'function') await civ.setPtt(false).catch(() => {});
+          await civ.setTuner(1).catch(() => {});
+          return;
+        }
+        await sleep(this.tunePollMs);
+      }
+    } catch (err) {
+      this._warn(`could not start the tuner: ${err.message}`);
+    } finally {
+      this._setStatus({ tuning: false });
+    }
   }
 
   async _startUnattended() {
@@ -722,7 +820,9 @@ class WsprBridge {
         } catch {
           saved.dataMode = state.dataMode ?? false;
         }
-        const dial = wsprDialFor(saved.frequency);
+        let dial = wsprDialFor(saved.frequency);
+        // a skipped band: start on the next one in the cycle
+        if (this.bandCycle && !this.cycleBands.includes(bandOf(dial))) dial = WSPR_DIAL_HZ[nextWsprBand(dial, this.cycleBands)];
         await civ.setMode('USB', saved.filter ?? 1);
         await civ.setDataMode(true);
         await civ.setFrequency(dial);
@@ -745,8 +845,9 @@ class WsprBridge {
       return;
     }
     this._unattended = { saved };
+    this._slotsOnBand = 0;
     this._setStatus({ unattended: true, unattendedBand: bandOf(state.frequency) });
-    const cycle = this.bandCycle ? ', changing band every slot' : '';
+    const cycle = this.bandCycle ? `, changing band every ${this.bandSlots * 2} minutes (${this.cycleBands.join(' ')})` : '';
     console.log(`WSPR: receiving unattended, from ${(state.frequency / 1e6).toFixed(4)} MHz${cycle}.`);
     this._syncAttachment();
   }
@@ -792,4 +893,4 @@ class WsprBridge {
   }
 }
 
-module.exports = { WsprBridge, WSPR_DIAL_HZ, wsprDialFor, nextWsprBand, clampTxHz, SLOT_MS, MAX_POWER_W, TX_PCT };
+module.exports = { WsprBridge, WSPR_DIAL_HZ, wsprDialFor, nextWsprBand, parseBandList, clampTxHz, SLOT_MS, MAX_POWER_W, TX_PCT };

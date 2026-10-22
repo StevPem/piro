@@ -12,7 +12,7 @@ Hamlib, no separate audio server and no extra apps.
 Written by VK3TR. Licensed AGPL-3.0-only (see
 [Licence](#licence)).
 
-**Current build: v88.** This is the version the app shows next to its title.
+**Current build: v89.** This is the version the app shows next to its title.
 It is the `CACHE_NAME` number in `src/client/sw.js`, which goes up with every
 change to the web app.
 
@@ -404,7 +404,9 @@ All settings are environment variables. For the systemd service they go in
 | `WSPR_GRID` | `STATION_GRID` | The Maidenhead grid WSPR sends (the first 4 characters) and reports to wsprnet.org (4 or 6 characters, such as `QF22` or `QF22LB`). |
 | `WSPR_UPLOAD` | on | `off` stops WSPR spots going to wsprnet.org. Uploading also needs `STATION_CALLSIGN` and a grid. |
 | `WSPR_UNATTENDED` | off | `on` makes WSPR receive by itself 10 minutes after the last browser leaves: the radio goes to the WSPR frequency of its band (USB, DATA on), and goes back to how it was when a browser connects. It never transmits then. See [WSPR](#wspr). |
-| `WSPR_BAND_CYCLE` | on | While WSPR receives unattended, it moves to the next band every slot (2 minutes), 160 m up to 6 m and round again. `off` stays on the one band. |
+| `WSPR_BAND_CYCLE` | on | While WSPR receives unattended, it moves to the next band every `WSPR_BAND_MINUTES`, 160 m up to 6 m and round again, and starts the antenna tuner after each change. `off` stays on the one band. |
+| `WSPR_BAND_MINUTES` | `6` | Minutes on each band in the unattended band cycle. WSPR slots are 2 minutes, so it is rounded to an even number; 2 changes band every slot. |
+| `WSPR_SKIP_BANDS` | none | Bands left out of the unattended band cycle, separated by commas: for example `160m,6m` (or `160,6`). The bands are 160m 80m 40m 30m 20m 17m 15m 12m 10m 6m. If the radio is on a skipped band, the cycle starts on the next one. |
 | `TLS_CERT_PATH`, `TLS_KEY_PATH` | none | Set both to serve HTTPS and WSS. Needed for the microphone from other devices. |
 | `SOURCE_CODE_URL` | none | Link shown in the page footer. The AGPL asks you to offer the source to people who use your instance (see [Licence](#licence)). |
 | `STATIC_DIR` | `src/client` | Folder the web app is served from. |
@@ -1290,10 +1292,21 @@ away. Not tested on air.
 after the last browser disconnects, PiRO tunes the radio to the WSPR
 frequency of the band it is on (20 m if it isn't near one), on USB with
 DATA on, and receives and uploads spots by itself. It never transmits then.
-Each slot it moves on to the next band: 160, 80, 40, 30, 20, 17, 15, 12,
-10 and 6 m, then round again, so every band is heard once every 20 minutes.
-`WSPR_BAND_CYCLE=off` keeps it on the one band. Each slot is decoded and
-reported on the band it was heard on. When a browser connects, it stops
+Every 6 minutes (three slots; `WSPR_BAND_MINUTES` changes this) it moves
+on to the next band: 160, 80, 40, 30, 20, 17, 15, 12, 10 and 6 m, then
+round again. `WSPR_SKIP_BANDS` leaves bands out (for example
+`160m,6m` for an antenna that doesn't suit them), and `WSPR_BAND_CYCLE=off`
+keeps it on the one band. Each slot is decoded and reported on the band it
+was heard on.
+
+Straight after each band change it starts the radio's antenna tuner (the
+same as the Tune button). This is the only time unattended WSPR transmits:
+a tuning carrier for a few seconds, before receiving starts on the new
+band. Tuning has its own limit: if the radio still reports tuning or
+transmitting after 15 s, PiRO switches the tuner off, which ends the tune,
+sends PTT off, and switches the tuner back on. A browser that connects
+during a tune waits for it to finish before the radio is put back. Not
+tested on air. When a browser connects, it stops
 and puts the frequency, mode and DATA mode back.
 
 ### SSTV
@@ -1570,7 +1583,8 @@ shapes.
   and the `wspr-status` broadcast (`{phase: 'idle'|'rx'|'tx', slotStartMs,
   slotEndMs, txEnabled, txHz, txPct, canTransmit, txMessage, txReason?,
   nextTx, upload, uploadStatus, unattended, unattendedBand, bandCycle,
-  decoding, lastSlotStartMs, lastDecodeCount}`). Each decoded slot arrives as a `wspr-decodes`
+  cycleBands, bandMinutes, tuning, decoding, lastSlotStartMs,
+  lastDecodeCount}`). Each decoded slot arrives as a `wspr-decodes`
   broadcast (`{slotStartMs, dialHz, decodes: [{snr, dt, audioHz, drift,
   message, callsign, grid, dbm, type}]}`; with `replace: true`, sent to a
   page that has just connected, the recent spots of every slot).
