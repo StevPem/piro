@@ -15,6 +15,7 @@ const { HellDecoderBridge } = require('./hell-decoder-bridge');
 const { SstvDecoderBridge } = require('./sstv-decoder-bridge');
 const { SstvTxBridge, DEFAULT_SSTV_TX_MODE } = require('./sstv-tx-bridge');
 const { WsprBridge, parseBandList, WSPR_DIAL_HZ } = require('./wspr-bridge');
+const { BandConditions } = require('./band-conditions');
 const { MODES: SSTV_MODES } = require('../audio/sstv-modes');
 const { clampHellTone } = require('../audio/hell-rx');
 const { Ft8Bridge } = require('../audio/ft8-bridge');
@@ -271,6 +272,7 @@ let hellDecoderBridge;
 let sstvDecoderBridge;
 let sstvTxBridge;
 let wsprBridge;
+let bandConditions;
 let radeBridge;
 let freeDvReporterBridge;
 
@@ -615,6 +617,14 @@ async function main() {
     );
   }
 
+  // "Current conditions" (the link above the band buttons): WSPR spots
+  // heard here, and those of WSPR reporters around the site's grid
+  // (wsprnet.org's spots via wspr.live). Needs a grid; works without audio
+  // for the local-area column. See server/band-conditions.js.
+  bandConditions = new BandConditions({ controlServer, grid: (process.env.WSPR_GRID || STATION_GRID || '').trim() });
+  bandConditions.start();
+  controlServer.bandConditions = bandConditions;
+
   // CW text: the radio's own keyer does the sending, so no audio is needed.
   cwTxBridge = new CwTxBridge({ controlServer });
   cwTxBridge.start();
@@ -655,6 +665,7 @@ async function shutdown(signal) {
     if (sstvDecoderBridge) sstvDecoderBridge.stop();
     if (sstvTxBridge) sstvTxBridge.stop();
     if (wsprBridge) wsprBridge.stop();
+    if (bandConditions) bandConditions.stop();
     if (radeBridge) radeBridge.stop();
     if (freeDvReporterBridge) freeDvReporterBridge.stop();
     if (audioBridge) audioBridge.stop();

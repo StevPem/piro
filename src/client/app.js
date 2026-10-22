@@ -3013,6 +3013,74 @@ function toggleFt8Variant() {
   }
 }
 
+// --- Current conditions (the link beside the Band label) ---
+// The server works the table out (server/band-conditions.js); this only shows it.
+const conditionsBtn = document.getElementById('conditions-btn');
+const conditionsDialog = document.getElementById('conditions-dialog');
+const conditionsBody = document.getElementById('conditions-body');
+const conditionsNote = document.getElementById('conditions-note');
+
+function conditionsCell(c, local) {
+  const td = document.createElement('td');
+  const tag = document.createElement('span');
+  const key = c.tag === 'N/A' ? 'na' : c.tag.toLowerCase();
+  tag.className = `conditions__tag conditions__tag--${key}`;
+  tag.textContent = c.tag;
+  td.appendChild(tag);
+  if (c.tag !== 'N/A') {
+    const detail = document.createElement('span');
+    detail.className = 'conditions__detail';
+    const who = local ? `${c.reporters} rx, ${c.stations} heard` : `${c.stations} heard`;
+    detail.textContent = c.stations ? `${c.rangeKm.toLocaleString()} km · ${who}` : 'nothing heard';
+    if (!local && c.lastMs) detail.title = `last listened at ${utcHhmm(c.lastMs)} UTC (${c.slots} slots)`;
+    td.appendChild(detail);
+  }
+  return td;
+}
+
+function renderConditions(r) {
+  conditionsBody.innerHTML = '';
+  for (const b of r.bands) {
+    const tr = document.createElement('tr');
+    const band = document.createElement('td');
+    band.className = 'conditions__band';
+    band.textContent = b.band;
+    tr.append(band, conditionsCell(b.myQth, false), conditionsCell(b.local, true));
+    conditionsBody.appendChild(tr);
+  }
+  const notes = [];
+  notes.push(`Range: how far most of the stations heard were. ${rangeTagsText(r.tags)}`);
+  notes.push(`My QTH: WSPR spots decoded here, last ${r.myWindowMin} min. N/A: not listened on that band.`);
+  const when = r.localUpdatedMs ? ` (updated ${utcHhmm(r.localUpdatedMs)} UTC)` : '';
+  notes.push(`Local area: WSPR reporters in ${r.squares.length ? r.squares.join(' ') : 'the grid squares around here'}, last ${r.localWindowMin} min, from wsprnet.org spots via wspr.live${when}.`);
+  if (r.myError) notes.push(r.myError);
+  if (r.localError) notes.push(`Local area: ${r.localError}`);
+  conditionsNote.textContent = notes.join(' ');
+}
+
+/** "Great ≥ 10,000 km, Good ≥ 5,000 km, ..., Dismal below." */
+function rangeTagsText(tags) {
+  return `${tags.map((t) => `${t.tag} ≥ ${t.km.toLocaleString()} km`).join(', ')}, Dismal below.`;
+}
+
+conditionsBtn.addEventListener('click', () => {
+  conditionsBody.innerHTML = '';
+  conditionsNote.textContent = 'Loading…';
+  if (typeof conditionsDialog.showModal === 'function') conditionsDialog.showModal();
+  else conditionsDialog.setAttribute('open', '');
+  link
+    .request('getBandConditions')
+    .then((r) => renderConditions(r))
+    .catch((err) => {
+      conditionsNote.textContent = `Couldn't get the conditions: ${err.message}`;
+    });
+});
+document.getElementById('conditions-close').addEventListener('click', () => conditionsDialog.close?.() ?? conditionsDialog.removeAttribute('open'));
+// a tap outside the window closes it too
+conditionsDialog.addEventListener('click', (e) => {
+  if (e.target === conditionsDialog) conditionsDialog.close();
+});
+
 // --- WSPR (the third DIGI choice; see server/wspr-bridge.js) ---
 
 /**
@@ -4341,7 +4409,8 @@ notesForm.addEventListener('submit', (event) => {
     .request('postNote', { text })
     .then(({ notes }) => {
       renderNotes(notes);
-      notesInput.value = '';
+      // clear what was sent, not something typed since
+      if (notesInput.value.trim() === text) notesInput.value = '';
     })
     .catch((err) => showError(`Couldn't send the note: ${err.message}`))
     .finally(() => {

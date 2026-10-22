@@ -640,6 +640,11 @@ class ControlServer extends EventEmitter {
           ws.send(makeResult(id, { notes }));
           break;
         }
+        case REQUEST.GET_BAND_CONDITIONS: {
+          if (!this.bandConditions) throw new Error('Band conditions are not available');
+          ws.send(makeResult(id, await this.bandConditions.report()));
+          break;
+        }
         case REQUEST.GET_SSTV_PICTURES: {
           // Kept here by SstvDecoderBridge (newest last).
           ws.send(makeResult(id, { pictures: this.sstvPictures ?? [] }));

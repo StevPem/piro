@@ -67,7 +67,7 @@
       <section class="rig-controls" aria-label="Band, mode, and function controls">
         <div class="rig-controls__left">
           <div class="row-group" aria-label="Band">
-            <span class="row-group__label">Band</span>
+            <span class="row-group__label row-group__label--with-link">Band <button class="conditions-link" id="conditions-btn" type="button" aria-haspopup="dialog">Current conditions</button></span>
             <div class="chips chips--grid-5" id="bands"></div>
           </div>
 
@@ -409,6 +409,23 @@
       <p class="error-line" id="error-line" hidden></p>
     </div>
   </main>
+
+  <!-- "Current conditions": a quality tag per band from WSPR spots heard
+       here and around the site's grid. See app.js "Current conditions" and
+       server/band-conditions.js. -->
+  <dialog class="conditions" id="conditions-dialog" aria-labelledby="conditions-title">
+    <div class="conditions__head">
+      <h2 class="conditions__title" id="conditions-title">Current conditions</h2>
+      <button class="chip conditions__close" id="conditions-close" type="button" aria-label="Close">Close</button>
+    </div>
+    <table class="conditions__table">
+      <thead>
+        <tr><th scope="col">Band</th><th scope="col">My QTH</th><th scope="col">Local area</th></tr>
+      </thead>
+      <tbody id="conditions-body"></tbody>
+    </table>
+    <p class="conditions__note" id="conditions-note">Loading…</p>
+  </dialog>
 
   <div class="screen-flash" id="screen-flash" aria-hidden="true"></div>
   <script type="module" src="/app.js"></script>
