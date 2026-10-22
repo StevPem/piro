@@ -12,7 +12,7 @@ Hamlib, no separate audio server and no extra apps.
 Written by VK3TR. Licensed AGPL-3.0-only (see
 [Licence](#licence)).
 
-**Current build: v90.** This is the version the app shows next to its title.
+**Current build: v91.** This is the version the app shows next to its title.
 It is the `CACHE_NAME` number in `src/client/sw.js`, which goes up with every
 change to the web app.
 
@@ -473,10 +473,14 @@ one hard refresh (Ctrl+Shift+R, or Cmd+Shift+R on a Mac).
   something changed the radio's mode while it was sending.
 - **FT8 or WSPR decodes nothing or at the wrong times.** Check the system
   clock with `timedatectl`. It must show "System clock synchronized: yes".
-- **"Local area" in Current conditions is all N/A.** The note at the bottom
-  of the window says why: no grid set, or wspr.live couldn't be reached
-  (the Pi needs internet access to `db1.wspr.live`, HTTPS). It can also
-  just mean no WSPR reporters near you were heard in the last hour.
+- **"Local area" in Current conditions is all N/A.** A red line at the top
+  of the window says why, if PiRO knows: no grid set, or wspr.live couldn't
+  be reached or refused the query (the Pi needs internet access to
+  `db1.wspr.live`, HTTPS). The server log (`journalctl -u piro`) has a
+  "Band conditions:" line for every fetch. To test from the Pi itself, run
+  `node test/manual-wspr-live.js QF22` (your grid): it sends the same
+  queries and prints what comes back. With no red line, no WSPR reporters
+  near you were heard in the last hour.
 - **WSPR spots don't reach wsprnet.org.** The WSPR panel says whether the
   last upload worked. Uploading needs `STATION_CALLSIGN`, `WSPR_GRID` (or
   `STATION_GRID`) and internet access from the Pi (to `wsprnet.org`, port
@@ -498,6 +502,7 @@ node test/manual-scope-span-diagnostics.js /dev/ttyUSB0   # scope span slider re
 node test/manual-smeter-diagnostics.js /dev/ttyUSB0       # S-meter shows wrong values; prints the raw reply bytes
 node test/manual-txpower-diagnostics.js /dev/ttyUSB0      # TX power setting rejected (NG)
 node test/manual-ws-test.js ws://<pi-hostname-or-ip>:8080 # talk to a running server's WebSocket
+node test/manual-wspr-live.js QF22                        # Current conditions "Local area": the wspr.live queries from this machine (no radio needed)
 ```
 
 If you open an issue about one of these, include the script's full output and

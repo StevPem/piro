@@ -104,22 +104,39 @@ function summary(distances, extra = {}) {
   return { tag: tagForRange(rangeKm), rangeKm, stations: distances.length, ...extra };
 }
 
+/** The band codes wspr.live uses for PiRO's bands (its `band` column is the frequency in whole MHz). */
+const WSPR_LIVE_BANDS = BANDS.map((b) => Math.floor(WSPR_DIAL_HZ[b] / 1e6));
+
+/**
+ * The plain query: one row per spot, no grouping (PiRO groups them), and
+ * filtered by time and band as wspr.live asks. Used if the grouped one fails.
+ */
+function localRowsQuery(squares, minutes = LOCAL_WINDOW_MIN) {
+  const list = squares.map((s) => `'${s}'`).join(',');
+  return (
+    'SELECT frequency, tx_sign, distance, rx_sign FROM wspr.rx ' +
+    `WHERE time > now() - INTERVAL ${minutes} MINUTE AND band IN (${WSPR_LIVE_BANDS.join(',')}) ` +
+    `AND upper(substring(rx_loc, 1, 4)) IN (${list}) LIMIT 20000 FORMAT JSONCompact`
+  );
+}
+
 /** The wspr.live query for the local area: per 10 kHz and transmitter, its farthest spot and who heard it. */
 function localQuery(squares, minutes = LOCAL_WINDOW_MIN) {
   const list = squares.map((s) => `'${s}'`).join(',');
   return (
     'SELECT intDiv(frequency, 10000) AS f, tx_sign, max(distance) AS d, groupUniqArray(rx_sign) AS rx ' +
-    `FROM wspr.rx WHERE time > now() - INTERVAL ${minutes} MINUTE ` +
+    `FROM wspr.rx WHERE time > now() - INTERVAL ${minutes} MINUTE AND band IN (${WSPR_LIVE_BANDS.join(',')}) ` +
     `AND upper(substring(rx_loc, 1, 4)) IN (${list}) ` +
     'GROUP BY f, tx_sign FORMAT JSONCompact'
   );
 }
 
 /** Runs a query on wspr.live, returning the JSONCompact rows. */
-function wsprLiveQuery(sql, { timeoutMs = 20000 } = {}) {
+function wsprLiveQuery(sql, { timeoutMs = 30000 } = {}) {
   return new Promise((resolve, reject) => {
     const url = `${WSPR_LIVE_URL}?query=${encodeURIComponent(sql)}`;
-    const req = https.get(url, { timeout: timeoutMs, headers: { 'User-Agent': 'PiRO' } }, (res) => {
+    // autoSelectFamily: try IPv4 too when IPv6 is offered but doesn't work (common on home networks)
+    const req = https.get(url, { timeout: timeoutMs, autoSelectFamily: true, headers: { 'User-Agent': 'PiRO' } }, (res) => {
       let body = '';
       res.setEncoding('utf8');
       res.on('data', (c) => (body += c));
@@ -132,16 +149,21 @@ function wsprLiveQuery(sql, { timeoutMs = 20000 } = {}) {
         }
       });
     });
-    req.on('timeout', () => req.destroy(new Error('wspr.live did not answer')));
-    req.on('error', reject);
+    req.on('timeout', () => req.destroy(new Error(`wspr.live did not answer within ${timeoutMs / 1000} s`)));
+    req.on('error', (err) => reject(new Error(`could not reach wspr.live (${err.code || err.message})`)));
   });
+}
+
+/** Per band, from the plain query's rows (frequency in Hz, one spot each). */
+function localFromSpotRows(rows) {
+  return localFromRows(rows.map(([hz, tx, d, rx]) => [Math.floor(Number(hz) / 10000), tx, d, [rx]]));
 }
 
 /** Per band, from the query's rows: {band: {distances, reporters}}. */
 function localFromRows(rows) {
   const out = {};
   for (const [f10k, tx, d, rx] of rows) {
-    let hz = Number(f10k) * 10000;
+    const hz = Number(f10k) * 10000;
     const band = bandForHz(hz);
     if (!band) continue;
     const b = (out[band] = out[band] ?? { byTx: new Map(), reporters: new Set() });
@@ -215,11 +237,32 @@ class BandConditions {
     if (this._local && this.now() - this._local.time < LOCAL_CACHE_MS) return Promise.resolve(this._local);
     if (this._localPending) return this._localPending;
     if (this.squares.length === 0) return Promise.resolve({ time: this.now(), bands: {}, error: 'No grid set (WSPR_GRID or STATION_GRID).' });
+    const area = `${this.squares[0]}-${this.squares.at(-1)}`;
     this._localPending = this.query(localQuery(this.squares))
       .then(
-        (rows) => ({ time: this.now(), bands: localFromRows(rows) }),
+        (rows) => ({ rows, bands: localFromRows(rows) }),
+        // the grouped query refused: try the plain one before giving up
+        (err) =>
+          this.query(localRowsQuery(this.squares)).then(
+            (rows) => {
+              console.warn(`Band conditions: wspr.live refused the grouped query (${err.message}); the plain one worked.`);
+              return { rows, bands: localFromSpotRows(rows) };
+            },
+            (err2) => {
+              throw new Error(err2.message === err.message ? err.message : `${err.message}; then ${err2.message}`);
+            }
+          )
+      )
+      .then(
+        ({ rows, bands }) => {
+          console.log(`Band conditions: wspr.live gave ${rows.length} rows for ${area} (${Object.keys(bands).join(' ') || 'no PiRO bands'}).`);
+          return { time: this.now(), bands };
+        },
         // keep the last good one, if any, and say why it is old
-        (err) => ({ ...(this._local ?? { bands: {} }), time: this._local?.time ?? null, error: err.message })
+        (err) => {
+          console.warn(`Band conditions: no local-area spots from wspr.live: ${err.message}`);
+          return { ...(this._local ?? { bands: {} }), time: this._local?.time ?? null, error: err.message };
+        }
       )
       .then((r) => {
         this._localPending = null;
@@ -266,6 +309,9 @@ module.exports = {
   bandForHz,
   rangeOf,
   localQuery,
+  localRowsQuery,
   localFromRows,
+  localFromSpotRows,
+  WSPR_LIVE_BANDS,
   wsprLiveQuery,
 };

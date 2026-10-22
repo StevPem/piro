@@ -3019,6 +3019,7 @@ const conditionsBtn = document.getElementById('conditions-btn');
 const conditionsDialog = document.getElementById('conditions-dialog');
 const conditionsBody = document.getElementById('conditions-body');
 const conditionsNote = document.getElementById('conditions-note');
+const conditionsError = document.getElementById('conditions-error');
 
 function conditionsCell(c, local) {
   const td = document.createElement('td');
@@ -3053,9 +3054,13 @@ function renderConditions(r) {
   notes.push(`My QTH: WSPR spots decoded here, last ${r.myWindowMin} min. N/A: not listened on that band.`);
   const when = r.localUpdatedMs ? ` (updated ${utcHhmm(r.localUpdatedMs)} UTC)` : '';
   notes.push(`Local area: WSPR reporters in ${r.squares.length ? r.squares.join(' ') : 'the grid squares around here'}, last ${r.localWindowMin} min, from wsprnet.org spots via wspr.live${when}.`);
-  if (r.myError) notes.push(r.myError);
-  if (r.localError) notes.push(`Local area: ${r.localError}`);
   conditionsNote.textContent = notes.join(' ');
+  // why a column is all N/A, where it can't be missed
+  const problems = [];
+  if (r.myError) problems.push(r.myError);
+  if (r.localError) problems.push(`Local area: ${r.localError}${r.localUpdatedMs ? ' (showing the last answer)' : ''}.`);
+  conditionsError.textContent = problems.join(' ');
+  conditionsError.hidden = problems.length === 0;
 }
 
 /** "Great ≥ 10,000 km, Good ≥ 5,000 km, ..., Dismal below." */
@@ -3065,6 +3070,7 @@ function rangeTagsText(tags) {
 
 conditionsBtn.addEventListener('click', () => {
   conditionsBody.innerHTML = '';
+  conditionsError.hidden = true;
   conditionsNote.textContent = 'Loading…';
   if (typeof conditionsDialog.showModal === 'function') conditionsDialog.showModal();
   else conditionsDialog.setAttribute('open', '');

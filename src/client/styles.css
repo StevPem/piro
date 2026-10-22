@@ -1670,3 +1670,16 @@ button {
   color: var(--text-muted);
   line-height: 1.4;
 }
+
+.conditions__error {
+  margin: 0 0 10px;
+  padding: 6px 8px;
+  border-left: 3px solid var(--led-red);
+  background: color-mix(in srgb, var(--led-red) 14%, transparent);
+  font-size: 0.8rem;
+  line-height: 1.4;
+}
+
+.conditions__error[hidden] {
+  display: none;
+}
