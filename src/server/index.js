@@ -550,7 +550,8 @@ async function main() {
     // WSPR_GRID is the Maidenhead locator sent and reported (defaults to
     // STATION_GRID); spots go to wsprnet.org unless WSPR_UPLOAD=off;
     // WSPR_UNATTENDED=on receives on its own 10 minutes after the last
-    // browser leaves. See server/wspr-bridge.js.
+    // browser leaves, changing band every slot unless WSPR_BAND_CYCLE=off.
+    // See server/wspr-bridge.js.
     const wsprGrid = (process.env.WSPR_GRID || STATION_GRID || '').trim().toUpperCase();
     if (wsprGrid && !/^[A-R]{2}[0-9]{2}([A-X]{2})?$/.test(wsprGrid)) {
       console.warn(`WSPR_GRID "${wsprGrid}" is not a Maidenhead locator like QF22 or QF22LB; WSPR will receive but not transmit or upload.`);
@@ -562,12 +563,13 @@ async function main() {
       grid: wsprGrid,
       upload: !off(process.env.WSPR_UPLOAD),
       unattended: /^(1|true|on|yes)$/i.test(process.env.WSPR_UNATTENDED || ''),
+      bandCycle: !off(process.env.WSPR_BAND_CYCLE),
       version: `PiRO-v${APP_VERSION}`,
     });
     wsprBridge.start();
     console.log(
       `WSPR ready (grid ${wsprGrid || 'not set'}; wsprnet.org upload ${wsprBridge.status.upload ? 'on' : 'off'}; ` +
-        `unattended receive ${wsprBridge.unattendedEnabled ? 'on' : 'off'}).`
+        `unattended receive ${wsprBridge.unattendedEnabled ? `on, band cycle ${wsprBridge.bandCycle ? 'on' : 'off'}` : 'off'}).`
     );
 
     // RADE (FreeDV's neural-vocoder mode) is likewise a hard dependency
