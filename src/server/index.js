@@ -16,6 +16,8 @@ const { SstvDecoderBridge } = require('./sstv-decoder-bridge');
 const { SstvTxBridge, DEFAULT_SSTV_TX_MODE } = require('./sstv-tx-bridge');
 const { WsprBridge, parseBandList, WSPR_DIAL_HZ } = require('./wspr-bridge');
 const { BandConditions } = require('./band-conditions');
+// Outgoing connections: give far-away servers (Europe is ~300 ms from Australia) time to answer; see net-options.js.
+require('./net-options').applyDefaults();
 const { MODES: SSTV_MODES } = require('../audio/sstv-modes');
 const { clampHellTone } = require('../audio/hell-rx');
 const { Ft8Bridge } = require('../audio/ft8-bridge');

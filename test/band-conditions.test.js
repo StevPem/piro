@@ -114,6 +114,30 @@ function check(cond, msg) {
     check((await failing.report()).localError === 'A; then B', 'if both fail, both reasons are given');
   }
   {
+    // far servers: each connection attempt gets 5 s, not Node's 250 ms (Europe is ~300 ms from Australia)
+    const https = require('node:https');
+    const orig = https.get;
+    let seen = null;
+    https.get = (url, opts) => {
+      seen = opts;
+      const req = new EventEmitter();
+      setImmediate(() => req.emit('error', Object.assign(new Error('x'), { code: 'ETIMEDOUT' })));
+      return req;
+    };
+    let msg = '';
+    try {
+      await bc.wsprLiveQuery('SELECT 1');
+    } catch (err) {
+      msg = err.message;
+    }
+    https.get = orig;
+    check(seen && seen.autoSelectFamily === true && seen.autoSelectFamilyAttemptTimeout >= 2000, `wspr.live requests give each address ${seen?.autoSelectFamilyAttemptTimeout} ms to connect`);
+    check(msg === 'could not reach wspr.live (ETIMEDOUT)', 'a connection error is reported with its code');
+    const net = require('node:net');
+    require('../src/server/net-options').applyDefaults(net);
+    check(net.getDefaultAutoSelectFamilyAttemptTimeout() === 5000, 'and the server sets the same default for every other connection');
+  }
+  {
     const rows = bc.localFromRows([[1409, 'A1A', 100, ['R1']], [1409, 'A1A', 900, ['R2']]]);
     check(rows['20m'].byTx.get('A1A') === 900 && rows['20m'].reporters.size === 2, 'a station heard by several reporters counts once, at its farthest');
   }

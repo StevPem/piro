@@ -9,6 +9,7 @@
  */
 
 const http = require('node:http');
+const { CONNECT_OPTIONS } = require('./net-options');
 
 const WSPRNET_URL = 'http://wsprnet.org/post/';
 
@@ -66,7 +67,7 @@ function httpPost(body, { url = WSPRNET_URL, timeoutMs = 20000 } = {}) {
   return new Promise((resolve, reject) => {
     const req = http.request(
       url,
-      { method: 'POST', headers: { 'Content-Type': 'application/x-www-form-urlencoded', 'Content-Length': Buffer.byteLength(body) }, timeout: timeoutMs },
+      { method: 'POST', ...CONNECT_OPTIONS, headers: { 'Content-Type': 'application/x-www-form-urlencoded', 'Content-Length': Buffer.byteLength(body) }, timeout: timeoutMs },
       (res) => {
         res.resume();
         res.on('end', () => (res.statusCode >= 200 && res.statusCode < 300 ? resolve() : reject(new Error(`wsprnet.org answered ${res.statusCode}`))));

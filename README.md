@@ -12,7 +12,7 @@ Hamlib, no separate audio server and no extra apps.
 Written by VK3TR. Licensed AGPL-3.0-only (see
 [Licence](#licence)).
 
-**Current build: v91.** This is the version the app shows next to its title.
+**Current build: v92.** This is the version the app shows next to its title.
 It is the `CACHE_NAME` number in `src/client/sw.js`, which goes up with every
 change to the web app.
 
@@ -480,7 +480,11 @@ one hard refresh (Ctrl+Shift+R, or Cmd+Shift+R on a Mac).
   "Band conditions:" line for every fetch. To test from the Pi itself, run
   `node test/manual-wspr-live.js QF22` (your grid): it sends the same
   queries and prints what comes back. With no red line, no WSPR reporters
-  near you were heard in the last hour.
+  near you were heard in the last hour. Before v92, `ETIMEDOUT` within half
+  a second was Node giving up too soon on a far server (see below).
+- **`ETIMEDOUT` after a fraction of a second** when reaching a server
+  abroad. Node gives each address only 250 ms to connect, and wspr.live (in
+  Europe) is about 300 ms from Australia. Since v92 PiRO allows 5 s.
 - **WSPR spots don't reach wsprnet.org.** The WSPR panel says whether the
   last upload worked. Uploading needs `STATION_CALLSIGN`, `WSPR_GRID` (or
   `STATION_GRID`) and internet access from the Pi (to `wsprnet.org`, port
