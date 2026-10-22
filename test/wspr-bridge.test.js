@@ -312,6 +312,55 @@ function feed(capture, pcm, chunk = 19200) {
     bridge.stop();
   }
   {
+    // unattended band cycle: the next band at every slot, 160 m up to 6 m and round again
+    const decoded = [];
+    const decoder = { decode: async (samples) => ({ decodes: [], hashtab: [] }), terminate() {} };
+    const { bridge, controlServer, civ, capture, slotClock, setTime } = setup({ unattended: true, unattendedDelayMs: 10, decoder });
+    controlServer.clients.clear();
+    controlServer.emit('client-disconnected', 'a');
+    await until(() => bridge.attached, 2000);
+    check(controlServer.state.frequency === 14095600 && statusOf(controlServer).unattendedBand === '20m' && statusOf(controlServer).bandCycle === true, 'unattended receive starts on the band the radio was on (20 m), band cycle on');
+    const quiet = Buffer.alloc(48000 * 2 * 70);
+    const seen = [];
+    for (let slot = 1; slot <= 7; slot++) {
+      const t = slot * 120000;
+      setTime(t);
+      feed(capture, quiet, 96000);
+      slotClock.fire(t);
+      await until(() => controlServer.state.frequency !== seen.at(-1) && bridge.status.unattendedBand && civ.frequency === controlServer.state.frequency);
+      await sleep(20);
+      seen.push(civ.frequency);
+      const ev = controlServer.broadcasts.filter((b) => b.type === EVENT.WSPR_DECODES).at(-1)?.data;
+      decoded.push(ev ? ev.dialHz : null);
+    }
+    check(seen.join() === '18104600,21094600,24924600,28124600,50293000,1836600,3568600', `each slot moves on one band, round from 6 m to 160 m: ${seen.map((f) => (f / 1e6).toFixed(4)).join(' ')}`);
+    check(decoded.slice(1).join() === seen.slice(0, -1).join() && decoded[0] === 14095600, 'each slot is decoded and reported on the band it was heard on');
+    check(statusOf(controlServer).unattendedBand === '80m', 'the status says which band');
+    civ.log.length = 0;
+    controlServer.clients.add('b');
+    controlServer.emit('client-connected', 'b');
+    await until(() => civ.log.includes('freq 14095600'));
+    check(civ.log.at(-1) === 'freq 14095600' && !bridge.attached, 'a browser connecting puts the radio back on the frequency from before');
+    bridge.stop();
+  }
+  {
+    // WSPR_BAND_CYCLE=off: unattended receive stays on its band
+    const decoder = { decode: async () => ({ decodes: [], hashtab: [] }), terminate() {} };
+    const { bridge, controlServer, civ, capture, slotClock, setTime } = setup({ unattended: true, unattendedDelayMs: 10, bandCycle: false, decoder });
+    controlServer.clients.clear();
+    controlServer.emit('client-disconnected', 'a');
+    await until(() => bridge.attached, 2000);
+    for (let slot = 1; slot <= 2; slot++) {
+      setTime(slot * 120000);
+      feed(capture, Buffer.alloc(48000 * 2 * 70), 96000);
+      slotClock.fire(slot * 120000);
+      await sleep(50);
+    }
+    const decodes = controlServer.broadcasts.filter((b) => b.type === EVENT.WSPR_DECODES).map((b) => b.data.dialHz);
+    check(civ.frequency === 14095600 && decodes.join() === '14095600,14095600' && statusOf(controlServer).bandCycle === false, 'with the band cycle off, every slot is on 20 m');
+    bridge.stop();
+  }
+  {
     // a browser arriving during the delay cancels it
     const { bridge, controlServer, civ } = setup({ unattended: true, unattendedDelayMs: 60 });
     controlServer.clients.clear();

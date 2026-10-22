@@ -26,7 +26,9 @@
  * after the last browser leaves, the radio is put on the WSPR frequency
  * of its current band (USB, DATA on) and WSPR receives (never
  * transmits) until a browser connects again. Then the frequency, mode
- * and DATA mode from before are put back.
+ * and DATA mode from before are put back. While receiving unattended it
+ * moves to the next band at every slot boundary, 160 m up to 6 m and round
+ * again (WSPR_BAND_CYCLE=off stays on the one band).
  */
 
 const path = require('node:path');
@@ -72,6 +74,16 @@ const WSPR_DIAL_HZ = {
   '10m': 28124600,
   '6m': 50293000,
 };
+
+const BAND_ORDER = Object.keys(WSPR_DIAL_HZ); // 160 m up to 6 m
+
+/** The band after the one `hz` is on, round to 160 m after 6 m. */
+function nextWsprBand(hz) {
+  const i = BAND_ORDER.findIndex((b) => WSPR_DIAL_HZ[b] === hz);
+  return BAND_ORDER[(i + 1) % BAND_ORDER.length];
+}
+
+const bandOf = (hz) => BAND_ORDER.find((b) => WSPR_DIAL_HZ[b] === hz) ?? null;
 
 /** The WSPR dial frequency for the band `hz` is in (20 m if it isn't near one). */
 function wsprDialFor(hz) {
@@ -144,6 +156,7 @@ class WsprBridge {
    * @param {boolean} [opts.upload=true] - send spots to wsprnet.org
    * @param {boolean} [opts.unattended=false] - receive on our own when nobody is connected
    * @param {number} [opts.unattendedDelayMs=600000]
+   * @param {boolean} [opts.bandCycle=true] - unattended receive changes band every slot
    * @param {string} [opts.version] - sent to wsprnet.org
    * Test hooks: slotClock, decoder ({decode, terminate}), wsprnet, now, random,
    * setTimer/clearTimer, dataSettleMs, dataWatchMs, pttReleaseMarginMs, spectrumIntervalMs.
@@ -156,6 +169,7 @@ class WsprBridge {
     upload = true,
     unattended = false,
     unattendedDelayMs = UNATTENDED_DELAY_MS,
+    bandCycle = true,
     version = 'PiRO',
     slotClock,
     decoder,
@@ -178,6 +192,8 @@ class WsprBridge {
     this.uploadEnabled = upload !== false;
     this.unattendedEnabled = unattended === true;
     this.unattendedDelayMs = unattendedDelayMs;
+    this.bandCycle = bandCycle !== false;
+    this._hop = null; // the band change in progress (unattended band cycle)
     this.version = version;
     this.now = now;
     this.random = random;
@@ -234,6 +250,8 @@ class WsprBridge {
       uploadStatus: null,
       unattended: false,
       unattendedEnabled: this.unattendedEnabled,
+      bandCycle: this.unattendedEnabled && this.bandCycle,
+      unattendedBand: null,
       decoding: false,
       lastSlotStartMs: null,
       lastDecodeCount: null,
@@ -461,8 +479,9 @@ class WsprBridge {
   _handleBoundary(slotStartMs) {
     const cap = this._capture;
     if (this._attached && cap) {
-      this._decodeSlot(cap);
-      this._newCapture(slotStartMs, slotStartMs);
+      this._decodeSlot(cap); // checks the dial first, before the band changes below
+      if (this._unattended && this.bandCycle) this._hopBand(slotStartMs);
+      else this._newCapture(slotStartMs, slotStartMs);
     }
     this._setStatus({ slotStartMs, slotEndMs: slotStartMs + SLOT_MS });
     if (this._active && this.status.txEnabled && this._plannedTxSlot === slotStartMs) {
@@ -656,6 +675,33 @@ class WsprBridge {
     this._unattendedTimer = null;
   }
 
+  /**
+   * Unattended band cycle: moves to the next band's WSPR frequency at a slot
+   * boundary. Nothing is captured until the radio is there, so the slot is
+   * decoded on the new band (its first fraction of a second is silence; a
+   * transmission starts 1 s in).
+   */
+  _hopBand(slotStartMs) {
+    this._capture = null;
+    const civ = this._civ();
+    const state = this.controlServer.state;
+    const dial = WSPR_DIAL_HZ[nextWsprBand(state.frequency)];
+    this._hop = (async () => {
+      try {
+        if (civ) await civ.setFrequency(dial);
+        state.frequency = dial;
+        this._setStatus({ unattendedBand: bandOf(dial) });
+      } catch (err) {
+        this._warn(`could not change band: ${err.message}`);
+      }
+      if (this._unattended && this._attached) this._newCapture(slotStartMs, this.now());
+    })();
+    const hop = this._hop;
+    hop.finally(() => {
+      if (this._hop === hop) this._hop = null;
+    });
+  }
+
   async _startUnattended() {
     if (this._clientCount() !== 0 || this._unattended || this._active || this.controlServer.state.ptt) return;
     const civ = this._civ();
@@ -699,8 +745,9 @@ class WsprBridge {
       return;
     }
     this._unattended = { saved };
-    this._setStatus({ unattended: true });
-    console.log(`WSPR: receiving unattended on ${(state.frequency / 1e6).toFixed(4)} MHz.`);
+    this._setStatus({ unattended: true, unattendedBand: bandOf(state.frequency) });
+    const cycle = this.bandCycle ? ', changing band every slot' : '';
+    console.log(`WSPR: receiving unattended, from ${(state.frequency / 1e6).toFixed(4)} MHz${cycle}.`);
     this._syncAttachment();
   }
 
@@ -715,8 +762,10 @@ class WsprBridge {
     const u = this._unattended;
     if (!u) return;
     this._unattended = null;
+    // a band change still going would land after the frequency is put back
+    if (this._hop) await this._hop;
     this._syncAttachment();
-    this._setStatus({ unattended: false });
+    this._setStatus({ unattended: false, unattendedBand: null });
     const civ = this._civ();
     const s = u.saved;
     if (!civ) return;
@@ -743,4 +792,4 @@ class WsprBridge {
   }
 }
 
-module.exports = { WsprBridge, WSPR_DIAL_HZ, wsprDialFor, clampTxHz, SLOT_MS, MAX_POWER_W, TX_PCT };
+module.exports = { WsprBridge, WSPR_DIAL_HZ, wsprDialFor, nextWsprBand, clampTxHz, SLOT_MS, MAX_POWER_W, TX_PCT };

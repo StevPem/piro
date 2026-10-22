@@ -3752,3 +3752,23 @@ model for how to approach that.
   and headless Chromium (DIGI cycle, panel, 1-5 W menu, transmit and audio
   frequency shared between browsers, spots listed, power put back). Not
   tested on air. Service-worker cache bumped to v87.
+
+### WSPR unattended band cycle (v88)
+
+- Unattended WSPR receive now moves to the next band at every slot
+  boundary: 160, 80, 40, 30, 20, 17, 15, 12, 10, 6 m, then round again
+  (every band once in 20 minutes). It starts on the band the radio was on.
+  `WSPR_BAND_CYCLE=off` keeps it on one band; it is on by default and only
+  matters with `WSPR_UNATTENDED=on`. Attended WSPR never changes band by
+  itself.
+- At a boundary the finished slot is handed to the decoder first (it checks
+  the dial it was heard on), then capture pauses, the radio is retuned, and
+  capture restarts on the new band. The few tens of ms lost are zero-filled;
+  a transmission starts 1 s into the slot, so nothing is missed.
+- A browser connecting during a band change waits for it to finish before
+  putting the frequency back, so the radio can't be left on the new band.
+- Status: `unattendedBand` and `bandCycle` in `wspr-status`.
+- Tests: wspr-bridge.test.js (seven slots stepping through the bands and
+  round from 6 m to 160 m, each slot reported on its own band, the radio put
+  back; band cycle off stays on 20 m). Not tested on a radio. Service-worker
+  cache bumped to v88.
