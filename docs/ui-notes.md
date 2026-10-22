@@ -3869,3 +3869,25 @@ model for how to approach that.
 - Tests: band-conditions.test.js (fallback to the plain query, both
   reasons), headless Chromium (error line hidden with data, shown when
   wspr.live can't be reached). Service-worker cache bumped to v91.
+
+### wspr.live from Australia: ETIMEDOUT in 0.3 s (v92)
+
+- On the Pi, `test/manual-wspr-live.js QF22` failed both queries with
+  `ETIMEDOUT` after 262-414 ms, far short of the 30 s timeout. Real bug,
+  cause: Node's "happy eyeballs" (autoSelectFamily, on by default since
+  Node 20) gives each address 250 ms to connect, and some Node versions
+  apply that to the last address too. wspr.live is in Europe, about 300 ms
+  from Melbourne, so the TCP connection never had time to open. v91 made
+  it explicit (`autoSelectFamily: true`) without the longer attempt time.
+- Fix: `src/server/net-options.js`, each connection attempt gets 5 s
+  (`autoSelectFamilyAttemptTimeout`), for wspr.live and the wsprnet.org
+  upload, and as the process default (`setDefaultAutoSelectFamilyAttemptTimeout`)
+  for everything else, such as the FreeDV Reporter connection. An IPv6
+  address that doesn't work still falls back to IPv4, after 5 s instead of
+  0.25 s.
+- `test/manual-wspr-live.js` also prints the Node version and the
+  addresses db1.wspr.live resolves to.
+- Tests: band-conditions.test.js checks the options reach the request and
+  the process default. Not reproducible here (this machine can't reach
+  wspr.live): to be confirmed by running the script on the Pi.
+  Service-worker cache bumped to v92.

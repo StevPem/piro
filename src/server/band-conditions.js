@@ -20,6 +20,7 @@
  */
 
 const https = require('node:https');
+const { CONNECT_OPTIONS } = require('./net-options');
 const { WSPR_DIAL_HZ } = require('./wspr-bridge');
 
 const BANDS = Object.keys(WSPR_DIAL_HZ); // 160m ... 6m
@@ -135,8 +136,7 @@ function localQuery(squares, minutes = LOCAL_WINDOW_MIN) {
 function wsprLiveQuery(sql, { timeoutMs = 30000 } = {}) {
   return new Promise((resolve, reject) => {
     const url = `${WSPR_LIVE_URL}?query=${encodeURIComponent(sql)}`;
-    // autoSelectFamily: try IPv4 too when IPv6 is offered but doesn't work (common on home networks)
-    const req = https.get(url, { timeout: timeoutMs, autoSelectFamily: true, headers: { 'User-Agent': 'PiRO' } }, (res) => {
+    const req = https.get(url, { timeout: timeoutMs, ...CONNECT_OPTIONS, headers: { 'User-Agent': 'PiRO' } }, (res) => {
       let body = '';
       res.setEncoding('utf8');
       res.on('data', (c) => (body += c));

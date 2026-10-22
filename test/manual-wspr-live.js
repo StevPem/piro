@@ -15,6 +15,13 @@ const squares = bc.squareAndNeighbours(grid);
 console.log(`Grid ${grid}; local area: ${squares.join(' ')}`);
 
 (async () => {
+  console.log(`Node ${process.version}`);
+  try {
+    const addrs = await require('node:dns').promises.lookup('db1.wspr.live', { all: true });
+    console.log(`db1.wspr.live is ${addrs.map((a) => a.address).join(', ')}`);
+  } catch (err) {
+    console.log(`db1.wspr.live: DNS lookup failed (${err.code || err.message}): check the Pi's DNS`);
+  }
   let ok = false;
   for (const [name, sql, toBands] of [
     ['grouped query', bc.localQuery(squares), bc.localFromRows],
