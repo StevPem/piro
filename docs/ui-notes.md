@@ -3844,3 +3844,28 @@ model for how to approach that.
   (getBandConditions), wspr-bridge (slots passed on), and headless Chromium
   (link placed right of "Band", above the buttons; the window, its columns,
   tags and note; Close). Service-worker cache bumped to v90.
+
+### Current conditions: why "Local area" is N/A (v91)
+
+- Reported: every Local area cell was N/A. The cause on the Pi isn't known
+  yet; the window gave the reason only at the end of the small note, if at
+  all. Probing wspr.live from here (through a shared fetcher) showed simple
+  queries working, and queries that filter on the reporter's locator
+  sometimes refused with a client error; that couldn't be narrowed down
+  (it may be the fetcher's shared rate limit), so PiRO now copes with it
+  either way.
+- If the grouped query fails, PiRO tries a plain one (one row per spot, at
+  most 20,000, no GROUP BY) and groups the spots itself. Both now filter by
+  `band` as well as time, as wspr.live asks (its band code is the frequency
+  in whole MHz: 1, 3, 7, 10, 14, 18, 21, 24, 28, 50). If both fail, both
+  reasons are shown.
+- Requests use `autoSelectFamily`, so a network that offers IPv6 but
+  can't route it falls back to IPv4 instead of timing out. Timeout 30 s.
+- The reason a column is N/A (no grid, wspr.live unreachable or refusing)
+  is now a red line at the top of the window. The server logs a
+  "Band conditions:" line for every fetch (rows and bands, or the error).
+- New `test/manual-wspr-live.js <grid>`: runs both queries from the Pi and
+  prints the per-band result or the error. No radio needed.
+- Tests: band-conditions.test.js (fallback to the plain query, both
+  reasons), headless Chromium (error line hidden with data, shown when
+  wspr.live can't be reached). Service-worker cache bumped to v91.

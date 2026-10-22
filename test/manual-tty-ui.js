@@ -151,6 +151,15 @@ class Civ extends EventEmitter {
     if (process.env.CONDITIONS_SHOT) await page.locator('#conditions-dialog').screenshot({ path: process.env.CONDITIONS_SHOT });
     await page.locator('#conditions-close').click();
     check(!(await page.locator('#conditions-dialog').evaluate((d) => d.open)), 'Close shuts the window');
+    check(await page.locator('#conditions-error').isHidden(), 'no error line when both columns have their data');
+    // wspr.live out of reach: the window says so, plainly
+    server.bandConditions = new BandConditions({ controlServer: server, grid: 'QF56', query: async () => { throw new Error('could not reach wspr.live (ENETUNREACH)'); } });
+    await page.locator('#conditions-btn').click();
+    await page.waitForFunction(() => !document.getElementById('conditions-error').hidden, null, { timeout: 5000 });
+    const err = await page.locator('#conditions-error').textContent();
+    check(/^Local area: could not reach wspr\.live \(ENETUNREACH\)/.test(err), 'when wspr.live can\'t be reached, the window shows why at the top: ' + err);
+    await page.locator('#conditions-close').click();
+    server.bandConditions = conditions;
   }
 
   // Operator notes: under the PTT button, shared, the newest three; a new one chimes and flashes the other browsers

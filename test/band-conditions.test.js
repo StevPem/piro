@@ -33,7 +33,7 @@ function check(cond, msg) {
     check(['Great', 'Good', 'Average', 'Bad', 'Dismal'].join() === [12000, 5000, 4999, 1000, 999].map(bc.tagForRange).join(), 'range tags: Great >= 10,000 km, Good >= 5,000, Average >= 2,500, Bad >= 1,000, else Dismal');
     check(bc.rangeOf([100, 200, 300, 400, 20000]) === 400 && bc.rangeOf([3000]) === 3000, 'the range is the 80th percentile, so one far spot does not decide it');
     const q = bc.localQuery(['QF22', 'QF23']);
-    check(/INTERVAL 60 MINUTE/.test(q) && /IN \('QF22','QF23'\)/.test(q) && /FORMAT JSONCompact$/.test(q) && /GROUP BY f, tx_sign/.test(q), 'the wspr.live query: last hour, the squares, per frequency and transmitter');
+    check(/INTERVAL 60 MINUTE/.test(q) && /band IN \(1,3,7,10,14,18,21,24,28,50\)/.test(q) && /IN \('QF22','QF23'\)/.test(q) && /FORMAT JSONCompact$/.test(q) && /GROUP BY f, tx_sign/.test(q), 'the wspr.live query: last hour, the squares, per frequency and transmitter');
   }
   {
     let t = Date.UTC(2026, 9, 22, 6, 0);
@@ -83,9 +83,9 @@ function check(cond, msg) {
     t += 6 * 60000;
     fail = 'wspr.live did not answer';
     const r2 = await conditions.report();
-    check(queries.length === 2 && r2.localError === 'wspr.live did not answer' && r2.bands.find((x) => x.band === '20m').local.tag === 'Great' && r2.localUpdatedMs === t - 11 * 60000, 'when wspr.live fails, the last answer is shown, with its time and the error');
+    check(queries.length === 3 && r2.localError === 'wspr.live did not answer' && r2.bands.find((x) => x.band === '20m').local.tag === 'Great' && r2.localUpdatedMs === t - 11 * 60000, 'when wspr.live fails, the last answer is shown, with its time and the error');
     const two = await Promise.all([conditions.report(), conditions.report()]);
-    check(queries.length === 3 && two.length === 2, 'a failed fetch is tried again next time, once for requests that arrive together');
+    check(queries.length === 5 && two.length === 2, 'a failed fetch is tried again next time, once for requests that arrive together');
     conditions.stop();
     check(cs.listenerCount('wspr-slot-decoded') === 0, 'stop() removes its listener');
   }
@@ -93,6 +93,25 @@ function check(cond, msg) {
     const conditions = new bc.BandConditions({ controlServer: new EventEmitter(), grid: '', query: async () => { throw new Error('should not be asked'); } });
     const r = await conditions.report();
     check(r.bands.every((b) => b.myQth.tag === 'N/A' && b.local.tag === 'N/A') && /No grid set/.test(r.localError) && /No grid set/.test(r.myError), 'with no grid set: all N/A, and the window says why');
+  }
+  {
+    // wspr.live refuses the grouped query: the plain one is used, and grouped here
+    const asked = [];
+    const query = async (sql) => {
+      asked.push(sql);
+      if (/GROUP BY/.test(sql)) throw new Error('wspr.live answered 400: Code: 62');
+      return [
+        ['14097100', 'K1ABC', 16500, 'VK3TR'],
+        ['14097150', 'K1ABC', 16400, 'VK3XYZ'],
+        ['7040100', 'VK2AA', 700, 'VK3TR'],
+      ];
+    };
+    const conditions = new bc.BandConditions({ controlServer: new EventEmitter(), grid: 'QF22', query });
+    const r = await conditions.report();
+    const b20 = r.bands.find((x) => x.band === '20m').local;
+    check(asked.length === 2 && /LIMIT 20000/.test(asked[1]) && !r.localError && b20.tag === 'Great' && b20.stations === 1 && b20.reporters === 2, `if the grouped query is refused, the plain one gives the same table (20 m ${b20.tag}, 1 heard by 2 reporters)`);
+    const failing = new bc.BandConditions({ controlServer: new EventEmitter(), grid: 'QF22', query: async (sql) => { throw new Error(/GROUP/.test(sql) ? 'A' : 'B'); } });
+    check((await failing.report()).localError === 'A; then B', 'if both fail, both reasons are given');
   }
   {
     const rows = bc.localFromRows([[1409, 'A1A', 100, ['R1']], [1409, 'A1A', 900, ['R2']]]);
