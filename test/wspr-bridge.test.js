@@ -221,6 +221,8 @@ function feed(capture, pcm, chunk = 19200) {
     controlServer.emit('wspr-active', true);
     await until(() => bridge.attached);
     check(bridge.attached && civ.log.join() === 'power 5', `WSPR on: receiving, and the power is held at 5 W: ${civ.log.join()}`);
+    const slotEvents = [];
+    controlServer.on('wspr-slot-decoded', (e) => slotEvents.push(e));
     feed(capture, slotPcm(['K1ABC', 'FN42', 37], 1520, -18));
     slotClock.fire(120000);
     const ok = await until(() => controlServer.broadcasts.some((b) => b.type === EVENT.WSPR_DECODES), 60000);
@@ -228,6 +230,7 @@ function feed(capture, pcm, chunk = 19200) {
     const d = ev?.decodes?.[0];
     check(ok && ev.slotStartMs === 0 && ev.dialHz === 14095600 && d?.message === 'K1ABC FN42 37' && Math.abs(d.audioHz - 1520) < 1 && Math.abs(d.snr + 18) <= 2, `the slot is decoded: ${d?.message} at ${d?.audioHz?.toFixed(1)} Hz, ${d?.snr} dB`);
     await until(() => uploads.length === 1);
+    check(slotEvents.length === 1 && slotEvents[0].dialHz === 14095600 && slotEvents[0].decodes[0].callsign === 'K1ABC', 'each decoded slot is passed on for "Current conditions"');
     check(uploads[0]?.rcall === 'VK3TR' && uploads[0].rgrid === 'QF22LB' && uploads[0].decodes[0].callsign === 'K1ABC' && uploads[0].tpct === 0, 'and uploaded to wsprnet.org');
     await until(() => statusOf(controlServer).uploadStatus);
     check(statusOf(controlServer).uploadStatus?.ok === true && statusOf(controlServer).lastDecodeCount === 1, 'the upload result is in the WSPR status');

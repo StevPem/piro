@@ -12,7 +12,7 @@ Hamlib, no separate audio server and no extra apps.
 Written by VK3TR. Licensed AGPL-3.0-only (see
 [Licence](#licence)).
 
-**Current build: v89.** This is the version the app shows next to its title.
+**Current build: v90.** This is the version the app shows next to its title.
 It is the `CACHE_NAME` number in `src/client/sw.js`, which goes up with every
 change to the web app.
 
@@ -64,6 +64,10 @@ Several of the cooler features in this app are built on the work of others:
   and transmit, with the decoder ported to JavaScript from WSJT-X's wsprd.
   Spots go to [wsprnet.org](https://www.wsprnet.org). It can also receive
   on its own when nobody is connected. See [WSPR](#wspr).
+- **Current conditions**: a link beside "Band" opens a table that rates
+  each band Great to Dismal for your station (from WSPR spots PiRO decoded)
+  and for your local area (from wsprnet.org spots of WSPR reporters around
+  your grid). See [Current conditions](#current-conditions).
 - **FreeDV RADE** digital voice, with optional reporting to the
   [FreeDV Reporter](https://qso.freedv.org) map.
 - **A noise reducer for received audio**: "HamNoise" (a neural denoiser
@@ -469,6 +473,10 @@ one hard refresh (Ctrl+Shift+R, or Cmd+Shift+R on a Mac).
   something changed the radio's mode while it was sending.
 - **FT8 or WSPR decodes nothing or at the wrong times.** Check the system
   clock with `timedatectl`. It must show "System clock synchronized: yes".
+- **"Local area" in Current conditions is all N/A.** The note at the bottom
+  of the window says why: no grid set, or wspr.live couldn't be reached
+  (the Pi needs internet access to `db1.wspr.live`, HTTPS). It can also
+  just mean no WSPR reporters near you were heard in the last hour.
 - **WSPR spots don't reach wsprnet.org.** The WSPR panel says whether the
   last upload worked. Uploading needs `STATION_CALLSIGN`, `WSPR_GRID` (or
   `STATION_GRID`) and internet access from the Pi (to `wsprnet.org`, port
@@ -676,6 +684,12 @@ test/
                            slot of audio (three signals, two 1.5 Hz apart,
                            start-time offsets, noise alone); see
                            third_party/wsjtx-wsprd/README.md
+  band-conditions.test.js Current conditions: grid distances, the 3 x 3
+                           squares (with wrap), band of a frequency, range
+                           tags, My QTH from decoded slots (heard nothing
+                           is Dismal, not listened is N/A, old slots
+                           dropped), Local area from a stubbed wspr.live
+                           (cache, failure keeps the last answer), no grid
   wspr-bridge.test.js     WSPR bridge: a slot decoded by the real worker,
                            wsprnet.org form fields, power held at 5 W and
                            put back, transmit planning and the audio decoded
@@ -1309,6 +1323,40 @@ during a tune waits for it to finish before the radio is put back. Not
 tested on air. When a browser connects, it stops
 and puts the frequency, mode and DATA mode back.
 
+### Current conditions
+
+The **Current conditions** link to the right of "Band" opens a window with
+a table: **Band**, **My QTH** and **Local area**, one row per WSPR band
+(160 m to 6 m). Each cell is tagged by range, how far the stations heard
+were: the farthest spot of each station, and of those the 80th percentile,
+so one freak spot doesn't decide it.
+
+| Tag | Range |
+|---|---|
+| Great | 10,000 km or more |
+| Good | 5,000 km or more |
+| Average | 2,500 km or more |
+| Bad | 1,000 km or more |
+| Dismal | less than 1,000 km, or nothing heard |
+
+- **My QTH** comes from the WSPR spots PiRO decoded itself in the last 90
+  minutes: while you run WSPR, or from unattended receive and its band
+  cycle (which visits every band about once an hour). A band PiRO listened
+  to and heard nothing on is Dismal. A band it hasn't listened to is N/A.
+- **Local area** comes from the spots of every WSPR reporter in your
+  4-character grid square and the 8 squares around it (a 3 x 3 block
+  centred on your square), in the last 60 minutes. These are wsprnet.org's
+  spots. wsprnet.org has no open query interface, so PiRO reads them from
+  [wspr.live](https://wspr.live), a free public copy of the wsprnet.org
+  database. It asks at most every 10 minutes, and only when the window is
+  opened. A band with no spots is N/A. This column works without WSPR
+  running, but needs the Pi to have internet access.
+
+Under each tag is the range, the number of stations heard and, for the
+local area, the number of reporters. Both columns use `WSPR_GRID` (or
+`STATION_GRID`); without one, everything is N/A. The window's note gives
+the squares, the time windows and when the local area was last fetched.
+
 ### SSTV
 
 The **SSTV** button turns on SSTV (slow-scan television). It puts the radio
@@ -1528,7 +1576,7 @@ shapes.
   `setTuner`, `getTuner`, `setTxPower`, `getTxPower`, `setRxGain`,
   `getRxGain`, `setFt8Active`, `sendFt8`, `sendTty`, `abortTty`, `setJttyActive`,
   `setOliviaActive`, `setHellActive`, `setSstvActive`, `endSstvPicture`, `getSstvPictures`,
-  `sendSstv`, `abortSstv`, `setWsprActive`, `setWsprTx`)
+  `sendSstv`, `abortSstv`, `setWsprActive`, `setWsprTx`, `getBandConditions`)
   correlated by `id`; events (`connected`, `frequency`, `mode`, `data-mode`, `ptt`,
   `ptt-timeout`, `cw-text`, `ft8-decodes`, `ft8-tx-status`, `tty-tx-status`,
   `jtty-text`, `olivia-text`, `rig-error`, `audio-error`, `scope-error`)
@@ -1588,6 +1636,10 @@ shapes.
   broadcast (`{slotStartMs, dialHz, decodes: [{snr, dt, audioHz, drift,
   message, callsign, grid, dbm, type}]}`; with `replace: true`, sent to a
   page that has just connected, the recent spots of every slot).
+  `getBandConditions` returns the Current conditions table: `{grid,
+  squares, myWindowMin, localWindowMin, localUpdatedMs, localError,
+  myError, tags, bands: [{band, myQth: {tag, rangeKm?, stations?, slots?,
+  lastMs?}, local: {tag, rangeKm?, stations?, reporters?}}]}`.
   An `app-modes` broadcast (`{ft8Active, freeDvActive, jttyActive, jttyTxHz,
   oliviaActive, oliviaCentreHz, hellActive, hellToneHz, sstvActive,
   wsprActive}`) goes to the other browsers after any `setFt8Active`,

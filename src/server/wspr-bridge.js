@@ -597,6 +597,8 @@ class WsprBridge {
     if (this.backlog.length > BACKLOG) this.backlog.splice(0, this.backlog.length - BACKLOG);
     this._setStatus({ decoding: false, lastSlotStartMs: cap.slotStartMs, lastDecodeCount: decodes.length });
     this.controlServer.broadcastJsonEvent(EVENT.WSPR_DECODES, { slotStartMs: cap.slotStartMs, dialHz, decodes });
+    // internal: feeds "Current conditions" (server/band-conditions.js), including slots that heard nothing
+    this.controlServer.emit('wspr-slot-decoded', { slotStartMs: cap.slotStartMs, dialHz, decodes });
     if (this.status.upload) this._upload(cap.slotStartMs, dialHz, decodes);
   }
 

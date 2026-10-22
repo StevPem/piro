@@ -1214,6 +1214,22 @@ async function run() {
     await sServer.close();
   }
 
+  // getBandConditions: answered by the BandConditions the server is given
+  {
+    const bServer = new ControlServer({ civ: new StubCivDriver(), port: 0 });
+    const bPort = await bServer.listen();
+    const c = await connect(bPort);
+    await nextMessage(c);
+    c.send(JSON.stringify({ id: 'b1', type: 'getBandConditions' }));
+    check((await nextMessage(c)).ok === false, 'getBandConditions fails cleanly when there is no BandConditions');
+    bServer.bandConditions = { report: async () => ({ grid: 'QF22', bands: [{ band: '20m', myQth: { tag: 'Good' }, local: { tag: 'N/A' } }] }) };
+    c.send(JSON.stringify({ id: 'b2', type: 'getBandConditions' }));
+    const r = await nextMessage(c);
+    check(r.ok && r.data.grid === 'QF22' && r.data.bands[0].myQth.tag === 'Good', 'getBandConditions returns the table');
+    c.close();
+    await bServer.close();
+  }
+
   // WSPR: setWsprActive (an app mode, shared), setWsprTx (passed to the bridge), off when the last client leaves.
   {
     const wServer = new ControlServer({ civ: new StubCivDriver(), port: 0 });

@@ -3805,3 +3805,42 @@ model for how to approach that.
   (round from 10 m to 80 m); starting on a skipped band; a stuck tune
   stopped by the limit; a browser arriving mid-tune; band list parsing.
   Not tested on air. Service-worker cache bumped to v89.
+
+### Current conditions (v90)
+
+- A "Current conditions" link to the right of the Band label opens a
+  `<dialog>` with a table: Band, My QTH, Local area, one row per WSPR band.
+  Each cell is a tag (Great >= 10,000 km, Good >= 5,000, Average >= 2,500,
+  Bad >= 1,000, else Dismal; N/A for no data) with the range and counts
+  under it. The tag is from the range: each station heard counted once at
+  its farthest, then the 80th percentile (nearest rank), so one freak spot
+  doesn't decide it. The thresholds are one table (`RANGE_TAGS` in
+  `server/band-conditions.js`), the same for every band.
+- My QTH: WsprBridge emits an internal `wspr-slot-decoded` for every
+  decoded slot (including one that heard nothing); BandConditions keeps 90
+  minutes of them, by band (from the dial). Distances are from the site's
+  grid to each spot's grid (4 or 6 characters, centre of the square); spots
+  without a grid (type 2 messages) are not counted. A band listened to with
+  nothing heard is Dismal; one not listened to is N/A.
+- Local area: one query to wspr.live (`db1.wspr.live`, ClickHouse SQL over
+  HTTPS, 20 queries a minute allowed), which copies wsprnet.org's spots
+  every few minutes; wsprnet.org's own query pages need a login. The query
+  takes the last 60 minutes of spots whose reporter's locator is in the
+  site's square or the 8 around it (longitude wraps, nothing past the
+  poles), grouped by 10 kHz and transmitter (farthest distance, reporters).
+  The band comes from the frequency, so it doesn't depend on wspr.live's
+  band codes. Fetched only when the window is opened, at most every 10
+  minutes (requests in between share it); a failure keeps the last answer
+  and shows the error and its time.
+- Server state is canonical: the table comes from `getBandConditions`;
+  the client only shows it.
+- Not tested against the real wspr.live: this build machine can't reach it.
+  The query follows its documentation (table `wspr.rx`, columns `time`,
+  `frequency` in Hz, `tx_sign`, `rx_sign`, `rx_loc`, `distance` in km).
+- Real bug found while testing (old, in the notes box): the reply to a sent
+  note cleared the box even if something new had been typed since. Now it
+  only clears the text that was sent.
+- Tests: band-conditions.test.js (new, in `npm test`), ws-server
+  (getBandConditions), wspr-bridge (slots passed on), and headless Chromium
+  (link placed right of "Band", above the buttons; the window, its columns,
+  tags and note; Close). Service-worker cache bumped to v90.

@@ -1567,3 +1567,106 @@ button {
 .wspr-status[hidden] {
   display: none;
 }
+
+/* "Current conditions" link beside the Band label, and its window. */
+.row-group__label--with-link {
+  display: flex;
+  align-items: baseline;
+  gap: 10px;
+}
+
+.conditions-link {
+  background: none;
+  border: none;
+  padding: 0;
+  font: inherit;
+  color: var(--led-amber);
+  text-decoration: underline;
+  text-underline-offset: 2px;
+  cursor: pointer;
+}
+
+.conditions {
+  width: min(420px, calc(100vw - 32px));
+  max-height: calc(100vh - 32px);
+  padding: 14px 16px;
+  background: var(--panel);
+  color: var(--text);
+  border: 1px solid var(--panel-border);
+  border-radius: 8px;
+}
+
+.conditions::backdrop {
+  background: rgb(0 0 0 / 60%);
+}
+
+.conditions__head {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  margin-bottom: 10px;
+}
+
+.conditions__title {
+  margin: 0;
+  font-size: 1rem;
+  font-weight: 600;
+}
+
+.conditions__table {
+  width: 100%;
+  border-collapse: collapse;
+  font-size: 0.9rem;
+}
+
+.conditions__table th,
+.conditions__table td {
+  text-align: left;
+  padding: 5px 6px;
+  border-bottom: 1px solid var(--panel-border);
+  vertical-align: top;
+}
+
+.conditions__table th {
+  font-size: 0.75rem;
+  font-weight: 500;
+  color: var(--text-muted);
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+}
+
+.conditions__band {
+  font-family: var(--font-mono);
+}
+
+.conditions__tag {
+  display: inline-block;
+  min-width: 4.6em;
+  padding: 1px 6px;
+  border-radius: 4px;
+  font-weight: 600;
+  font-size: 0.8rem;
+  text-align: center;
+}
+
+.conditions__tag--great { background: #1f6f3e; color: #e9fff0; }
+.conditions__tag--good { background: #3f7f2a; color: #f1ffe9; }
+.conditions__tag--average { background: #7a6a1c; color: #fff8dd; }
+.conditions__tag--bad { background: #8a4a1e; color: #fff0e4; }
+.conditions__tag--dismal { background: #7a2626; color: #ffecec; }
+.conditions__tag--na { background: var(--panel-raised); color: var(--text-muted); font-weight: 500; }
+
+.conditions__detail {
+  display: block;
+  margin-top: 2px;
+  font-family: var(--font-mono);
+  font-size: 0.7rem;
+  color: var(--text-muted);
+}
+
+.conditions__note {
+  margin: 10px 0 0;
+  font-size: 0.75rem;
+  color: var(--text-muted);
+  line-height: 1.4;
+}

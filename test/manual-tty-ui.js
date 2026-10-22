@@ -16,6 +16,7 @@ const { encodeSstv } = require(PKG + '/src/audio/sstv-tx');
 const { SstvTxBridge } = require(PKG + '/src/server/sstv-tx-bridge');
 const { CwTxBridge } = require(PKG + '/src/server/cw-tx-bridge');
 const { WsprBridge } = require(PKG + '/src/server/wspr-bridge');
+const { BandConditions } = require(PKG + '/src/server/band-conditions');
 const { EVENT } = require(PKG + '/src/server/protocol');
 const { encodePng } = require(PKG + '/src/server/png');
 const { encodeJtty } = require(PKG + '/src/audio/jtty-tx');
@@ -82,6 +83,12 @@ class Civ extends EventEmitter {
   const wsprClock = Object.assign(new EventEmitter(), { currentSlotStart: () => Date.now() - (Date.now() % 120000), start() {}, stop() {} });
   const wspr = new WsprBridge({ controlServer: server, audioBridge, callsign: 'VK2IO', grid: 'QF56', slotClock: wsprClock, decoder: { decode: async () => ({ decodes: [], hashtab: [] }), terminate() {} }, wsprnet: { upload: async () => ({ sent: 1 }) }, random: () => 0 });
   wspr.start();
+  // "Current conditions", with wspr.live answered by hand
+  const conditions = new BandConditions({ controlServer: server, grid: 'QF56', query: async () => [[1409, 'K1ABC', 16500, ['VK2IO']], [704, 'VK3TR', 700, ['VK2IO']]] });
+  conditions.start();
+  server.bandConditions = conditions;
+  conditions.addSlot({ slotStartMs: Date.now() - 600000, dialHz: 14095600, decodes: [{ callsign: 'JA1XYZ', grid: 'PM95' }] });
+  conditions.addSlot({ slotStartMs: Date.now() - 300000, dialHz: 7038600, decodes: [] });
 
   const browser = await chromium.launch({ executablePath: process.env.CHROMIUM_PATH || undefined, args: ['--no-sandbox'] });
   const page = await browser.newPage({ viewport: { width: 430, height: 1100 } });
@@ -121,6 +128,29 @@ class Civ extends EventEmitter {
     check(chips.map((c) => c.t).join(' ') === 'LSB AM FM CW TTY DIGI FreeDV SSTV', 'mode chips: ' + chips.map((c) => c.t).join(' ') + ' (the SSB chip reads LSB: the radio is on LSB)');
     check(chips.slice(0, 4).every((c) => c.top === chips[0].top) && chips.slice(4).every((c) => c.top === chips[4].top) && chips[4].top > chips[0].top, 'two rows of four');
     check(chips[0].on && chips.slice(1).every((c) => !c.on), 'only the SSB chip is lit');
+  }
+
+  // "Current conditions": beside the Band label, above the band buttons; a window with the table
+  {
+    const label = await page.locator('.row-group[aria-label="Band"] .row-group__label').boundingBox();
+    const link = await page.locator('#conditions-btn').boundingBox();
+    const bands = await page.locator('#bands').boundingBox();
+    const word = await page.locator('.row-group[aria-label="Band"] .row-group__label').evaluate((e) => e.firstChild.textContent.trim());
+    check(word === 'Band' && link && link.x > label.x + 20 && Math.abs(link.y - label.y) < 6 && link.y + link.height <= bands.y + 1, '"Current conditions" sits to the right of "Band", above the band buttons');
+    await page.locator('#conditions-btn').click();
+    await page.waitForFunction(() => document.querySelectorAll('#conditions-body tr').length === 10, null, { timeout: 5000 });
+    const table = await page.evaluate(() => ({
+      open: document.getElementById('conditions-dialog').open,
+      head: [...document.querySelectorAll('.conditions__table th')].map((t) => t.textContent).join('|'),
+      rows: [...document.querySelectorAll('#conditions-body tr')].map((r) => [...r.children].map((c) => c.querySelector('.conditions__tag')?.textContent ?? c.textContent).join(' ')),
+      note: document.getElementById('conditions-note').textContent,
+    }));
+    check(table.open && table.head === 'Band|My QTH|Local area', 'clicking it opens a window with Band, My QTH and Local area columns');
+    check(table.rows.join(' | ') === '160m N/A N/A | 80m N/A N/A | 40m Dismal Dismal | 30m N/A N/A | 20m Good Great | 17m N/A N/A | 15m N/A N/A | 12m N/A N/A | 10m N/A N/A | 6m N/A N/A', 'one row per band, tagged: ' + table.rows.join(' | '));
+    check(table.note.includes('QF47 QF57 QF67 QF46 QF56 QF66 QF45 QF55 QF65') && /wsprnet\.org/.test(table.note), 'the note names the 9 squares of the local area and where the spots come from');
+    if (process.env.CONDITIONS_SHOT) await page.locator('#conditions-dialog').screenshot({ path: process.env.CONDITIONS_SHOT });
+    await page.locator('#conditions-close').click();
+    check(!(await page.locator('#conditions-dialog').evaluate((d) => d.open)), 'Close shuts the window');
   }
 
   // Operator notes: under the PTT button, shared, the newest three; a new one chimes and flashes the other browsers
@@ -724,6 +754,7 @@ class Civ extends EventEmitter {
   sstvTx.stop();
   cwTx.stop();
   wspr.stop();
+  conditions.stop();
   await server.close();
   console.log(failures ? `\n${failures} FAILED` : '\nAll UI checks passed');
   process.exit(failures ? 1 : 0);
