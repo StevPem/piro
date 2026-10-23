@@ -65,7 +65,8 @@ function decodeGreyPng(buf) {
   const saveDir = fs.mkdtempSync(path.join(os.tmpdir(), 'fax-save-'));
   const cs = new StubControlServer();
   const capture = new EventEmitter();
-  const bridge = new FaxDecoderBridge({ controlServer: cs, audioBridge: { capture, sampleRate: 48000 }, saveDir });
+  const stateFile = path.join(saveDir, 'state', 'fax.json');
+  const bridge = new FaxDecoderBridge({ controlServer: cs, audioBridge: { capture, sampleRate: 48000 }, saveDir, stateFile });
   bridge.start();
   check(!bridge.attached && cs.state.fax.state === 'idle', 'idle until Radiofax is selected');
   cs.emit('fax-active', true);
@@ -74,8 +75,18 @@ function decodeGreyPng(buf) {
   const H = 30;
   const grey = new Uint8Array(W * H);
   for (let y = 0; y < H; y++) for (let x = 0; x < W; x++) grey[y * W + x] = x < W / 2 ? 0 : 255;
-  feed(capture, upsampleFloatToPcm(encodeFax({ grey, width: W, lines: H, phasingSec: 5, leadSec: 1 }), 12000, 48000));
+  feed(capture, upsampleFloatToPcm(encodeFax({ grey, width: W, lines: H, phasingSec: 5, leadSec: 1, rateError: 1.5e-4 }), 12000, 48000));
   await bridge.settled();
+  await new Promise((r) => setTimeout(r, 50));
+  const kept = JSON.parse(fs.readFileSync(stateFile, 'utf8'));
+  check(kept.clockPpm.length === 1 && Math.abs(kept.clockPpm[0] + 150) <= 25 && Math.abs(bridge.clockPpm + 150) <= 25, `the clock error measured on a lined-up chart is kept (${kept.clockPpm[0]} ppm)`);
+  {
+    const again = new FaxDecoderBridge({ controlServer: new StubControlServer(), audioBridge: { capture: new EventEmitter(), sampleRate: 48000 }, stateFile });
+    again.start();
+    again.controlServer.emit('fax-active', true);
+    check(again.clockPpm === kept.clockPpm[0] && again._rx.clockPpm === kept.clockPpm[0], 'and used from the start after a restart, so a chart started by hand is straight too');
+    again.stop();
+  }
   const types = cs.broadcasts.map((b) => b.type);
   check(types.includes(EVENT.FAX_START) && types.includes(EVENT.FAX_PICTURE), 'a chart is announced and, at its end, broadcast');
   const lines = cs.binary.filter((b) => b[0] === BINARY_TYPE.FAX_LINE);
@@ -85,7 +96,7 @@ function decodeGreyPng(buf) {
   const png = decodeGreyPng(Buffer.from(pic.png, 'base64'));
   check(png.w === W && png.h === pic.lines && png.px[5 * W + 400] < 40 && png.px[5 * W + 1400] > 215, 'the PNG is the chart (black left half, white right half)');
   check(cs.faxPictures.length === 1 && cs.faxPictures[0] === pic, 'kept for pages that connect later');
-  const saved = fs.readdirSync(saveDir);
+  const saved = fs.readdirSync(saveDir).filter((f) => f.endsWith('.png'));
   check(saved.length === 1 && /^\d{8}-\d{6}z-fax\.png$/.test(saved[0]), `saved to FAX_SAVE_DIR as ${saved[0]}`);
   check(cs.broadcasts.filter((b) => b.type === EVENT.FAX_STATUS).map((b) => b.data.state).join(' ').includes('listening phasing receiving'), 'status follows the receiver: listening, phasing, receiving, listening');
 
@@ -111,7 +122,7 @@ function decodeGreyPng(buf) {
 
   {
     const cs2 = new StubControlServer();
-    const b2 = new FaxDecoderBridge({ controlServer: cs2, audioBridge: { capture: new EventEmitter(), sampleRate: 44100 } });
+    const b2 = new FaxDecoderBridge({ controlServer: cs2, audioBridge: { capture: new EventEmitter(), sampleRate: 44100 }, stateFile: null });
     b2.start();
     cs2.emit('fax-active', true);
     check(!b2.attached && cs2.broadcasts.some((b) => b.type === EVENT.AUDIO_ERROR && /multiple of 12000/.test(b.data.message)), 'an unsupported capture rate is reported, not attached');

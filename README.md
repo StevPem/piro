@@ -12,7 +12,7 @@ Hamlib, no separate audio server and no extra apps.
 Written by VK3TR. Licensed AGPL-3.0-only (see
 [Licence](#licence)).
 
-**Current build: v94.** This is the version the app shows next to its title.
+**Current build: v95.** This is the version the app shows next to its title.
 It is the `CACHE_NAME` number in `src/client/sw.js`, which goes up with every
 change to the web app.
 
@@ -404,6 +404,7 @@ All settings are environment variables. For the systemd service they go in
 | `OLIVIA_FREQ_HZ` | `1500` | Olivia's default audio centre frequency, in Hz, for sending and receiving, until it is changed in the UI. The signal is 250 Hz wide; the receiver searches 125 Hz either side. |
 | `OLIVIA_SQUELCH` | on | `off` turns off PiRO's filtering of junk characters and decodes exactly as fldigi does with its squelch off. See [Olivia](#rtty-jtty-olivia-and-feld-hell). |
 | `SSTV_SAVE_DIR` | none | If set, every received SSTV picture is also saved in this folder as a PNG (`YYYYMMDD-HHMMSSz-<mode>.png`, UTC). |
+| `FAX_STATE_FILE` | `~/.config/piro/fax.json` | Where Radiofax keeps the sound card's measured clock error between restarts. |
 | `FAX_SAVE_DIR` | none | If set, every received radiofax chart is also saved in this folder as a greyscale PNG (`YYYYMMDD-HHMMSSz-fax.png`, UTC, the chart's start). |
 | `SSTV_TX_MODE` | `S1` | SSTV transmit mode: `S1` (Scottie 1), or any mode id the receiver knows (`M1`, `M2`, `S2`, `SDX`, `R36`, `R72`, `PD90`, `PD120`, `PD180`, ...; see `src/audio/sstv-modes.js`). Read at startup. |
 | `SSTV_TX_POWER_W` | none | TX power in watts while sending SSTV (put back afterwards). Unset leaves the power alone. |
@@ -719,10 +720,14 @@ test/
   fax.test.js             radiofax receiver: start/phasing/stop signals,
                            line-up on the phasing pulse, clock errors of
                            -1000 to +300 ppm corrected, noise (10 and 3 dB),
-                           Start now / Stop, a new start signal
+                           Start now / Stop, a new start signal, phasing
+                           with no start signal, Start now during phasing,
+                           an unphased slanted chart straightened, a straight
+                           chart left alone
   fax-decoder-bridge.test.js  radiofax bridge: line frames, the chart as a
                            greyscale PNG (decoded back), kept and saved, a
-                           page joining part-way, PTT, unsupported rates
+                           page joining part-way, PTT, unsupported rates,
+                           the clock error kept across a restart
   jtty-decoder-bridge.test.js  JTTY receive bridge: arming, PTT, decimation,
                            backlog dropping, broadcasts
   manual-tty-ui.js        optional browser test of the TTY button, text box and
@@ -1420,6 +1425,17 @@ How a chart is received:
   difference between the sender's clock and the Pi's sound card. Each line
   is then made that much longer or shorter, so the chart isn't slanted. The
   measurement is shown as "clock ±N ppm".
+- PiRO looks for phasing lines all the time, so a chart still lines up if
+  its start signal was missed, or if **Start now** was pressed during the
+  phasing.
+- The clock measurement is kept (the median of the last 5, in
+  `FAX_STATE_FILE`), so a chart without phasing, or the first one after a
+  restart, starts with the right line length.
+- A chart that had no phasing is straightened when it ends: PiRO tries
+  slants of up to 1.5 pixels a line and keeps the one that lines its
+  vertical lines (frames, grids, coasts) up best, then shifts each line
+  back. The chart then says "slant corrected". Its left edge stays wherever
+  the line happened to start.
 - The stop signal (450 Hz) ends the chart. So do a new start signal,
   **Stop**, leaving Radiofax, transmitting, or 25 minutes.
 - **Start now** begins a chart straight away, for a broadcast that is

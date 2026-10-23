@@ -60,6 +60,20 @@ const firstBrightAvg = (end, a, b) => {
   }
   return -1;
 };
+/** How far (pixels, circular) line b is shifted from line a. */
+function rowShift(end, a, b) {
+  let best = 0;
+  let bestSum = -Infinity;
+  for (let k = -W / 2; k < W / 2; k++) {
+    let sum = 0;
+    for (let x = 0; x < W; x += 2) sum += end.grey[a * W + x] * end.grey[b * W + ((((x + k) % W) + W) % W)];
+    if (sum > bestSum) {
+      bestSum = sum;
+      best = k;
+    }
+  }
+  return best;
+}
 const firstBright = (end, y) => {
   for (let x = 0; x < W; x++) if (end.grey[y * W + x] > 128) return x;
   return -1;
@@ -125,6 +139,55 @@ for (const [snr, maxErr] of [[10, 25], [3, 45]]) {
   const cut = a.subarray(0, a.length - 15 * 12000); // first one loses its stop signal
   const { ends } = run(Float32Array.from([...cut, ...b]));
   check(ends.length === 2 && ends[0].reason === 'a new start signal' && ends[1].reason === 'the stop signal', `a start signal during a chart starts the next one: ${ends.map((e) => e.reason).join(', ')}`);
+}
+
+{
+  // no start signal heard, but the phasing is: the chart still lines up
+  const H = 80;
+  const truth = chart(H);
+  const { rx, events } = run(encodeFax({ grey: truth, width: W, lines: H, apt: false, rateError: 1.2e-4, leadSec: 2 }));
+  const end = rx.flush().find((e) => e.type === 'end'); // no stop signal either
+  check(events.some((e) => e.type === 'start' && e.phased) && end && end.phased && Math.abs(end.clockPpm + 120) <= 20, `without a start signal, phasing alone starts and lines up the chart (clock ${end?.clockPpm} ppm)`);
+  check(end && Math.abs(firstBright(end, 5) - 181) <= 1 && Math.abs(firstBright(end, H - 10) - 181) <= 1, 'lined up and straight');
+}
+{
+  // Start now pressed during the phasing: the chart is lined up anyway
+  const H = 80;
+  const truth = chart(H);
+  const audio = encodeFax({ grey: truth, width: W, lines: H, rateError: -2e-4 });
+  const rx = new FaxReceiver();
+  const first = run(audio.subarray(0, 12000 * 12), rx); // start signal and 7 s of phasing
+  const ev = rx.startNow();
+  const rest = run(audio.subarray(12000 * 12), rx);
+  const all = [...first.events, ...ev, ...rest.events];
+  const starts = all.filter((e) => e.type === 'start');
+  const ends = all.filter((e) => e.type === 'end');
+  check(starts.length === 2 && starts[0].phased === false && starts[1].phased === true, 'Start now during phasing: the phasing takes over and lines the chart up');
+  check(ends.length === 1 && ends[0].phased && Math.abs(firstBright(ends[0], 5) - 181) <= 1 && meanError(ends[0], truth, ends[0].lines) < 4, `the hand-started bit (only phasing) is dropped; the chart is straight (clock ${ends[0]?.clockPpm} ppm)`);
+}
+{
+  // Start now part-way through a chart (no phasing at all), with a 150 ppm clock error: straightened at the end
+  const H = 400;
+  const truth = chart(H);
+  const audio = encodeFax({ grey: truth, width: W, lines: H, rateError: 1.5e-4, apt: false, phasingSec: 0 });
+  const rx = new FaxReceiver();
+  rx.startNow();
+  run(audio, rx);
+  const end = rx.flush().find((e) => e.type === 'end');
+  const expected = (6000 - 6000 / 1.00015) / (6000 / W); // pixels a line the features drift
+  check(end && !end.phased && Math.abs(Math.abs(end.slantPxPerLine) - expected) < 0.02, `a chart with no phasing is straightened from its own lines (slant ${end?.slantPxPerLine} px/line; sent ${expected.toFixed(3)})`);
+  const drift = rowShift(end, 20, end.lines - 20);
+  check(Math.abs(drift) <= 2, `and comes out straight (${drift} px between lines 20 and ${end.lines - 20})`);
+}
+{
+  // a straight chart is left alone
+  const H = 200;
+  const truth = chart(H);
+  const rx = new FaxReceiver();
+  rx.startNow();
+  run(encodeFax({ grey: truth, width: W, lines: H, apt: false, phasingSec: 0 }), rx);
+  const end = rx.flush().find((e) => e.type === 'end');
+  check(end && end.slantPxPerLine === 0, 'a straight chart is left as it is');
 }
 
 if (failures) {
