@@ -62,6 +62,84 @@ function toneStrength(block, hz) {
   return energy > 1e-9 ? (re * re + im * im) / ((n / 2) * energy) : 0;
 }
 
+/**
+ * Straightens a slanted chart. A clock difference between the sender and
+ * us makes every line a little long or short, so features drift sideways
+ * by the same amount on each line (and wrap round the edge). Charts are full
+ * of vertical lines (frames, grids, coastlines): try drifts from -1.5 to
+ * +1.5 pixels a line, and keep the one where the ink lines up into the
+ * sharpest columns (the largest sum of squared column totals). Then shift
+ * each line back, round the edge, by that drift.
+ * @returns {{grey: Uint8Array, pxPerLine: number}}
+ */
+function deslant(grey, width, lines, { maxPxPerLine = 1.5 } = {}) {
+  const bin = 2;
+  const cols = Math.floor(width / bin);
+  const step = Math.max(1, Math.floor(lines / 300)); // about 300 lines are plenty
+  const rows = [];
+  for (let y = 0; y < lines; y += step) {
+    const r = new Float32Array(cols);
+    for (let c = 0; c < cols; c++) {
+      let ink = 0;
+      for (let b = 0; b < bin; b++) ink += 255 - grey[y * width + c * bin + b];
+      r[c] = ink;
+    }
+    // remove the line's own average, so dark streaks (noise) don't count
+    let mean = 0;
+    for (let c = 0; c < cols; c++) mean += r[c];
+    mean /= cols;
+    for (let c = 0; c < cols; c++) r[c] -= mean;
+    rows.push({ y, r });
+  }
+  const prof = new Float64Array(cols);
+  const score = (pxPerLine) => {
+    prof.fill(0);
+    for (const { y, r } of rows) {
+      const shift = ((Math.round((pxPerLine * y) / bin) % cols) + cols) % cols;
+      // prof[c] += r[(c + shift) % cols], in two runs (no modulo per pixel)
+      const n1 = cols - shift;
+      for (let c = 0; c < n1; c++) prof[c] += r[c + shift];
+      for (let c = n1; c < cols; c++) prof[c] += r[c - n1];
+    }
+    let sum = 0;
+    for (let c = 0; c < cols; c++) sum += prof[c] * prof[c];
+    return sum;
+  };
+  let best = 0;
+  let bestScore = score(0);
+  const flat = bestScore;
+  // fine enough that the best step is within about 5 pixels over the chart
+  const coarse = Math.min(0.04, Math.max(0.01, 10 / lines));
+  for (let d = -maxPxPerLine; d <= maxPxPerLine + 1e-9; d += coarse) {
+    const sc = score(d);
+    if (sc > bestScore) {
+      bestScore = sc;
+      best = d;
+    }
+  }
+  for (let d = best - coarse; d <= best + coarse + 1e-9; d += coarse / 10) {
+    const sc = score(d);
+    if (sc > bestScore) {
+      bestScore = sc;
+      best = d;
+    }
+  }
+  // not worth it unless clearly better than leaving it alone
+  if (Math.abs(best) < 0.01 || bestScore < flat * 1.1) return { grey, pxPerLine: 0 };
+  const out = new Uint8Array(grey.length);
+  for (let y = 0; y < lines; y++) {
+    const shift = best * y;
+    const whole = Math.floor(shift);
+    const frac = shift - whole;
+    for (let x = 0; x < width; x++) {
+      const a = (((x + whole) % width) + width) % width;
+      const b = (a + 1) % width;
+      out[y * width + x] = Math.round(grey[y * width + a] * (1 - frac) + grey[y * width + b] * frac);
+    }
+  }
+  return { grey: out, pxPerLine: Math.round(best * 1000) / 1000 };
+}
+
 class FaxReceiver {
   constructor({ lpm = FAX_LPM, width = FAX_WIDTH } = {}) {
     this.lpm = lpm;
@@ -89,7 +167,11 @@ class FaxReceiver {
     this._toneEnd = null; // sample number where the start tone ended
     // state
     this.state = 'listening';
-    this._phasing = null; // {next, positions: []}
+    // Phasing lines are looked for all the time (not only after a start
+    // signal), so a chart lines up even when its start signal was missed or
+    // Start now was pressed during the phasing.
+    this._scan = { next: 0, positions: [], widths: [] };
+    this._phased = false; // the chart coming in was lined up by phasing
     this._lineStart = 0; // sample number where the next line starts
     this._lines = [];
   }
@@ -103,7 +185,7 @@ class FaxReceiver {
   _push(v) {
     if (this._len === this._buf.length) {
       // drop what nothing needs any more
-      const keepFrom = Math.min(this._blockPos, this.state === 'receiving' ? Math.floor(this._lineStart) : this._phasing ? this._phasing.next : this._blockPos) - 10;
+      const keepFrom = Math.min(this._blockPos, this._scan.next, this.state === 'receiving' ? Math.floor(this._lineStart) : Infinity) - 10;
       const drop = Math.max(0, Math.min(this._len, keepFrom - this._bufStart));
       if (drop > 0) {
         this._buf.copyWithin(0, drop, this._len);
@@ -171,14 +253,14 @@ class FaxReceiver {
       this._startRun = start ? this._startRun + 1 : 0;
       this._stopRun = stop ? this._stopRun + 1 : 0;
       if (this._startRun === START_BLOCKS) {
-        // a start signal: end any chart in progress, then wait for it to finish
+        // a start signal: end any chart in progress; phasing follows
         if (this.state === 'receiving') this._finish(events, true, 'a new start signal');
         this._setState('phasing', events);
-        this._phasing = null;
-      } else if (this.state === 'phasing' && !this._phasing && this._startRun === 0) {
-        // the start signal has ended: phasing lines follow
-        this._phasing = { next: this._blockPos - BLOCK, positions: [], widths: [] };
-        this._toneEnd = this._phasing.next;
+        this._toneEnd = null;
+      } else if (this.state === 'phasing' && this._toneEnd == null && this._startRun === 0) {
+        // the start signal has ended: look for phasing from here
+        this._toneEnd = this._blockPos - BLOCK;
+        this._scan = { next: this._toneEnd, positions: [], widths: [] };
       }
       if (this._stopRun === STOP_BLOCKS && this.state === 'receiving') {
         // drop the lines the stop signal itself drew
@@ -187,13 +269,14 @@ class FaxReceiver {
         this._finish(events, true, 'the stop signal');
       }
     }
-    if (this.state === 'phasing' && this._phasing) this._runPhasing(events);
+    // not while the start signal is still going, nor during a lined-up chart
+    if (!(this.state === 'phasing' && this._toneEnd == null) && !(this.state === 'receiving' && this._phased)) this._runPhasing(events);
     if (this.state === 'receiving') this._runLines(events);
   }
 
   /** Finds the white pulse in each phasing line; when the lines stop being phasing, the chart starts. */
   _runPhasing(events) {
-    const ph = this._phasing;
+    const ph = this._scan;
     const spl = Math.round(this.nominalSpl);
     const win = Math.max(8, Math.round(spl * 0.02));
     while (ph.next + spl <= this._total) {
@@ -233,16 +316,24 @@ class FaxReceiver {
         ph.widths.push(count);
       }
       ph.next += spl;
+      if (isPhasing && ph.positions.length === 3 && this.state === 'listening') this._setState('phasing', events);
       const enough = ph.positions.length >= MIN_PHASING_LINES;
       if ((!isPhasing && enough) || ph.positions.length >= MAX_PHASING_LINES) {
-        this._beginFromPhasing(ph.positions, ph.widths, events);
-        return;
+        const ok = this._beginFromPhasing(ph.positions, ph.widths, events);
+        this._scan = { next: ph.next, positions: [], widths: [] };
+        if (ok) return;
+        continue;
       }
-      if (!isPhasing && ph.positions.length === 0 && ph.next - (this._toneEnd ?? ph.next) > 90 * RATE) {
-        // no phasing came: back to listening
-        this._phasing = null;
+      if (!isPhasing && ph.positions.length) {
+        // a few pulse-like lines and then not: noise, start again
+        ph.positions = [];
+        ph.widths = [];
+        if (this.state === 'phasing' && this._toneEnd == null) this._setState('listening', events);
+      }
+      if (!isPhasing && this.state === 'phasing' && this._toneEnd != null && ph.next - this._toneEnd > 90 * RATE) {
+        // a start signal but no phasing after it: back to listening
+        this._toneEnd = null;
         this._setState('listening', events);
-        return;
       }
     }
   }
@@ -283,23 +374,38 @@ class FaxReceiver {
       if (use.filter(Boolean).length >= 3) line = fit(use);
       measured = line.slope;
     }
+    // real phasing pulses sit on a straight line; pulse-like scraps of a
+    // chart (or noise) don't
+    if (line) {
+      const res = positions.map((p, i) => Math.abs(p - line.at(i))).sort((a, b) => a - b);
+      if (res[res.length >> 1] > spl * 0.005) return false;
+    }
     const err = measured / spl - 1;
     if (Math.abs(err) <= MAX_CLOCK_ERROR) {
       this.spl = measured;
       this.clockPpm = Math.round(err * 1e6);
     }
-    this._phasing = null;
+    if (this.state === 'receiving') {
+      // a chart started by hand ran into phasing: keep what came before the
+      // phasing as its own chart (if there is enough of it), then line up
+      const firstPulseLine = Math.floor((positions[0] - this._lineStart) / this.spl) + this._lines.length;
+      this._lines.length = Math.max(0, Math.min(this._lines.length, firstPulseLine - 1));
+      if (this._lines.length >= 20) this._finish(events, false, 'phasing for the next chart');
+      else this._lines = [];
+    }
     // the chart starts one line after the last phasing line, where the fitted line puts it
     // positions are pulse centres; the line starts at the pulse's leading
     // edge, half its (median) width earlier
     const w = [...widths].sort((a, b) => a - b)[widths.length >> 1] ?? 0;
     const last = (line ? line.at(n - 1) : positions[n - 1]) - w / 2;
     this._startChart(last + this.spl, true, events);
+    return true;
   }
 
   _startChart(lineStart, phased, events) {
     this._lineStart = lineStart;
     this._lines = [];
+    this._phased = phased;
     this._setState('receiving', events);
     events.push({ type: 'start', width: this.width, lpm: this.lpm, ioc: FAX_IOC, phased, clockPpm: this.clockPpm });
   }
@@ -334,10 +440,20 @@ class FaxReceiver {
 
   _finish(events, complete, reason) {
     const lines = this._lines;
-    const grey = new Uint8Array(this.width * lines.length);
+    let grey = new Uint8Array(this.width * lines.length);
     lines.forEach((l, y) => grey.set(l, y * this.width));
-    events.push({ type: 'end', width: this.width, lines: lines.length, grey, complete, reason, clockPpm: this.clockPpm });
+    // A chart that wasn't lined up by phasing may slant: straighten it from
+    // its own vertical lines (see deslant()).
+    let slantPxPerLine = 0;
+    if (!this._phased && lines.length >= 60) {
+      const d = deslant(grey, this.width, lines.length);
+      grey = d.grey;
+      slantPxPerLine = d.pxPerLine;
+    }
+    events.push({ type: 'end', width: this.width, lines: lines.length, grey, complete, reason, clockPpm: this.clockPpm, phased: this._phased, slantPxPerLine });
     this._lines = [];
+    this._phased = false;
+    this._scan = { next: Math.max(this._scan.next, Math.floor(this._lineStart)), positions: [], widths: [] };
     this._setState('listening', events);
   }
 
@@ -345,7 +461,8 @@ class FaxReceiver {
   startNow() {
     const events = [];
     if (this.state === 'receiving') this._finish(events, false, 'Start');
-    this._phasing = null;
+    this._toneEnd = null;
+    this._scan = { next: this._total, positions: [], widths: [] };
     this._startChart(this._total, false, events);
     return events;
   }
@@ -355,11 +472,12 @@ class FaxReceiver {
     const events = [];
     if (this.state === 'receiving') this._finish(events, false, 'Stop');
     else if (this.state === 'phasing') {
-      this._phasing = null;
+      this._toneEnd = null;
+      this._scan = { next: this._total, positions: [], widths: [] };
       this._setState('listening', events);
     }
     return events;
   }
 }
 
-module.exports = { FaxReceiver, toneStrength, FAX_SAMPLE_RATE, FAX_WIDTH };
+module.exports = { FaxReceiver, toneStrength, deslant, FAX_SAMPLE_RATE, FAX_WIDTH };

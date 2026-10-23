@@ -555,7 +555,12 @@ async function main() {
     // Radiofax receive (the Image button's second choice): VMC/VMW weather
     // charts. FAX_SAVE_DIR, if set, also saves each chart there as a PNG.
     // See server/fax-decoder-bridge.js.
-    faxDecoderBridge = new FaxDecoderBridge({ controlServer, audioBridge, saveDir: process.env.FAX_SAVE_DIR || undefined });
+    faxDecoderBridge = new FaxDecoderBridge({
+      controlServer,
+      audioBridge,
+      saveDir: process.env.FAX_SAVE_DIR || undefined,
+      stateFile: process.env.FAX_STATE_FILE || undefined, // the measured clock error, kept across restarts
+    });
     faxDecoderBridge.start();
     console.log(`Radiofax receive ready${process.env.FAX_SAVE_DIR ? ` (saving charts to ${process.env.FAX_SAVE_DIR})` : ''}.`);
 

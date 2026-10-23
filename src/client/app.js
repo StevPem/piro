@@ -2570,7 +2570,8 @@ function faxPictureLine(p) {
   const d = new Date(p.time);
   const mins = Math.round((p.endTime - p.time) / 60000);
   const how = p.complete ? '' : ` · ended by ${p.reason}`;
-  return `Chart · ${pad2(d.getUTCHours())}:${pad2(d.getUTCMinutes())} UTC · ${p.lines} lines (${mins} min)${p.phased ? '' : ' · started by hand'}${how}`;
+  const fixed = p.slantPxPerLine ? ' · slant corrected' : '';
+  return `Chart · ${pad2(d.getUTCHours())}:${pad2(d.getUTCMinutes())} UTC · ${p.lines} lines (${mins} min)${p.phased ? '' : ' · started by hand'}${fixed}${how}`;
 }
 
 function showFaxPicture(p) {

@@ -1,6 +1,7 @@
 'use strict';
 
 const fs = require('fs');
+const os = require('os');
 const path = require('path');
 const { StreamDecimator } = require('../audio/decimator');
 const { FaxReceiver, FAX_SAMPLE_RATE } = require('../audio/fax-rx');
@@ -8,6 +9,10 @@ const { EVENT, BINARY_TYPE } = require('./protocol');
 const { encodePngGrey } = require('./png');
 
 const DEFAULT_KEEP_PICTURES = 6; // charts are big (a few hundred kB as PNG)
+// The sound card's clock error, as measured on lined-up charts, is kept here
+// so a chart started by hand (or after a restart) is straight from its first line.
+const DEFAULT_STATE_FILE = path.join(process.env.XDG_CONFIG_HOME || path.join(os.homedir(), '.config'), 'piro', 'fax.json');
+const CLOCK_HISTORY = 5;
 
 /** One received line as a BINARY_TYPE.FAX_LINE frame (see protocol.js). */
 function encodeFaxLineFrame(id, y, grey) {
@@ -34,7 +39,10 @@ function encodeFaxLineFrame(id, y, grey) {
  * (REQUEST.GET_FAX_PICTURES), and optionally saved to FAX_SAVE_DIR.
  */
 class FaxDecoderBridge {
-  constructor({ controlServer, audioBridge, saveDir, keep = DEFAULT_KEEP_PICTURES, now } = {}) {
+  /**
+   * @param {string|null} [opts.stateFile] - where the measured clock error is kept (null: not kept)
+   */
+  constructor({ controlServer, audioBridge, saveDir, keep = DEFAULT_KEEP_PICTURES, now, stateFile = DEFAULT_STATE_FILE } = {}) {
     if (!controlServer) throw new Error('FaxDecoderBridge requires opts.controlServer');
     if (!audioBridge) throw new Error('FaxDecoderBridge requires opts.audioBridge');
     this.controlServer = controlServer;
@@ -56,6 +64,8 @@ class FaxDecoderBridge {
     this._id = 0;
     this._current = null; // {id, width, time, ..., lines: Uint8Array[]}
     this._pending = Promise.resolve(); // PNG encodes, in order
+    this.stateFile = stateFile;
+    this._clockHistory = this._loadClock();
 
     this._onPcm = (chunk) => this._handlePcm(chunk);
     this._onActive = (on) => {
@@ -116,7 +126,7 @@ class FaxDecoderBridge {
     }
     this._decimator = new StreamDecimator(this.audioBridge.sampleRate, FAX_SAMPLE_RATE, { cutoffHz: 3200 });
     // a fresh receiver each time, but it keeps the clock correction measured before
-    const ppm = this._rx?.clockPpm ?? 0;
+    const ppm = this._rx?.clockPpm || this.clockPpm;
     this._rx = new FaxReceiver();
     if (ppm) {
       this._rx.clockPpm = ppm;
@@ -177,9 +187,42 @@ class FaxDecoderBridge {
     return rest;
   }
 
+  /** The sound card's clock error (ppm): the median of the last few lined-up charts. */
+  get clockPpm() {
+    const h = [...this._clockHistory].sort((a, b) => a - b);
+    return h.length ? h[h.length >> 1] : 0;
+  }
+
+  _loadClock() {
+    if (!this.stateFile) return [];
+    try {
+      const j = JSON.parse(fs.readFileSync(this.stateFile, 'utf8'));
+      return Array.isArray(j.clockPpm) ? j.clockPpm.filter(Number.isFinite).slice(-CLOCK_HISTORY) : [];
+    } catch {
+      return [];
+    }
+  }
+
+  _rememberClock(ppm) {
+    this._clockHistory = [...this._clockHistory, ppm].slice(-CLOCK_HISTORY);
+    if (!this.stateFile) return;
+    fs.promises
+      .mkdir(path.dirname(this.stateFile), { recursive: true })
+      .then(() => fs.promises.writeFile(this.stateFile, JSON.stringify({ clockPpm: this._clockHistory }) + '\n'))
+      .catch((err) => console.warn(`Radiofax: couldn't keep the clock correction in ${this.stateFile}: ${err.message}`));
+  }
+
   _finish(e) {
     const cur = this._current ?? { id: (this._id = (this._id + 1) & 0xffff), width: e.width, time: this.now() };
     this._current = null;
+    if (e.phased && e.clockPpm) {
+      this._rememberClock(e.clockPpm);
+      // later hand-started charts in this session use the remembered figure too
+      if (this._rx && !this._rx._phased) {
+        this._rx.clockPpm = this.clockPpm;
+        this._rx.spl = this._rx.nominalSpl * (1 + this.clockPpm / 1e6);
+      }
+    }
     if (!e.lines) return; // nothing arrived
     const endTime = this.now();
     this._pending = this._pending.then(async () => {
@@ -193,8 +236,9 @@ class FaxDecoderBridge {
           endTime,
           complete: e.complete,
           reason: e.reason,
-          phased: cur.phased ?? false,
+          phased: e.phased ?? cur.phased ?? false,
           clockPpm: e.clockPpm,
+          slantPxPerLine: e.slantPxPerLine || 0,
           png: png.toString('base64'),
         };
         const list = this.controlServer.faxPictures;

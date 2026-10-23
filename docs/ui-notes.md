@@ -3966,3 +3966,36 @@ model for how to approach that.
   S-meter in schedule order, a chart received in both browsers and kept,
   Start now / Stop, a station button tunes). Not tested on an off-air
   signal. Service-worker cache bumped to v94.
+
+### Radiofax: slanted charts (v95)
+
+- Reported: a received chart slanted about 0.2 pixels a line (about 120
+  ppm) and wrapped round, with phasing lines at its top. Cause: the chart
+  was started with Start now during its phasing (or its start signal was
+  missed), so the phasing was drawn instead of measured, and the line
+  length stayed nominal.
+- Fixes in `audio/fax-rx.js`:
+  - Phasing lines are looked for all the time (listening, after a start
+    signal, and during a chart started by hand), not only after a start
+    signal. Six in a row, sitting on a straight line (median distance from
+    the fitted line under 0.5% of a line), line the chart up. If a
+    hand-started chart runs into phasing, what came before the phasing is
+    kept as its own chart (if 20 lines or more) and the new one is lined up.
+  - `deslant()`: a chart that wasn't lined up by phasing is straightened
+    when it ends. Ink per column (each line's own average removed, so noise
+    streaks don't count) is summed with each candidate drift (up to 1.5
+    pixels a line, coarse then fine); the drift with the sharpest columns
+    (largest sum of squares) wins if it beats no correction by 10%. Each
+    line is then shifted back round the edge, with linear interpolation.
+    On the reported chart it found -0.22 px/line and straightened it
+    (checked by eye); 0.2 s on a desktop.
+- `server/fax-decoder-bridge.js` keeps the measured clock error (median of
+  the last 5 lined-up charts) in `FAX_STATE_FILE`
+  (`~/.config/piro/fax.json` by default) and starts every receiver with it,
+  so hand-started charts and the first after a restart are close from the
+  first line.
+- Client: a corrected chart's line says "slant corrected".
+- Tests: fax.test.js (phasing with no start signal; Start now during
+  phasing; a 150 ppm chart with no phasing straightened, measured slant
+  within 0.02 px/line; a straight chart left alone), fax-decoder-bridge
+  (clock kept and used after a restart). Service-worker cache bumped to v95.
