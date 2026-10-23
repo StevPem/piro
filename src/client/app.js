@@ -128,7 +128,7 @@ const MODES = ['LSB', 'USB', 'AM', 'CW', 'RTTY', 'FM'];
 // reads "LSB"/"USB" while selected. 'DIGI' is the FT8/FT4 chip (it reads
 // "FT8" or "FT4" while selected). 'SSTV' is the SSTV receiver (app-level,
 // on the band's sideband like voice); see enterSstvMode().
-const MODE_CHIPS = ['SSB', 'AM', 'FM', 'CW', 'TTY', 'DIGI', 'FreeDV', 'SSTV'];
+const MODE_CHIPS = ['SSB', 'AM', 'FM', 'CW', 'TTY', 'DIGI', 'FreeDV', 'Image'];
 
 // Standard FT8 calling/dial frequencies (USB dial, i.e. the frequency the
 // radio is tuned to — the actual audio tone sits ~1-3kHz above this
@@ -451,6 +451,18 @@ const jttyRxEl = document.getElementById('jtty-rx');
 const jttyTableBodyEl = document.getElementById('jtty-table-body');
 const oliviaRxEl = document.getElementById('olivia-rx');
 const sstvRxEl = document.getElementById('sstv-rx');
+const faxRxEl = document.getElementById('fax-rx');
+const faxViewEl = document.getElementById('fax-view');
+const faxCanvas = document.getElementById('fax-canvas');
+const faxStationsEl = document.getElementById('fax-stations');
+const faxStationsListEl = document.getElementById('fax-stations-list');
+const faxStatusEl = document.getElementById('fax-status');
+const faxStartBtn = document.getElementById('fax-start-btn');
+const faxStopBtn = document.getElementById('fax-stop-btn');
+const faxSaveBtn = document.getElementById('fax-save-btn');
+const faxStripEl = document.getElementById('fax-strip');
+const scopeCanvasesEl = document.querySelector('.scope__canvases');
+const scopeHeadingEl = document.querySelector('.scope__range .row-group__label');
 const sstvStatusEl = document.getElementById('sstv-status');
 const sstvCanvas = document.getElementById('sstv-canvas');
 const sstvStripEl = document.getElementById('sstv-strip');
@@ -571,6 +583,8 @@ let oliviaLastOffsetHz = 0; // the latest decoded signal's offset from the centr
 // Feld-Hell: the fourth, also app-level on USB + DATA MODE. Nothing is decoded: the scope paints the picture.
 let sstvActive = false; // the SSTV receiver is selected (on LSB/USB, no DATA MODE)
 let sstvSidebandSeen = false;
+let faxActive = false; // the radiofax receiver is selected (Image button on Fax; USB)
+let faxUsbSeen = false;
 let hellActive = false;
 let hellUsbSeen = false;
 const ttyFreqByMode = { JTTY: 1450, OLIVIA: OLIVIA_DEFAULT_CENTRE_HZ, HELL: HELL_DEFAULT_TONE_HZ };
@@ -817,7 +831,7 @@ const scopeDisplay = new ScopeDisplay({
   },
 });
 link.addEventListener('scope-line', (event) => {
-  if (ft8Active || wsprActive || jttyActive || oliviaActive || hellActive || sstvActive) return; // audio-domain FFT spectrum takes over the display; see the 'ft8-spectrum' listener below
+  if (ft8Active || wsprActive || jttyActive || oliviaActive || hellActive || sstvActive || faxActive) return; // audio-domain FFT spectrum takes over the display; see the 'ft8-spectrum' listener below
   scopeDisplay.pushLine(event.detail);
 });
 link.addEventListener('ft8-spectrum', (event) => {
@@ -1136,6 +1150,7 @@ function updateFrequencyDisplay(hz) {
   updateBandButtons(hz);
   if (ft8Active) checkFt8BandChange(hz);
   if (wsprActive) checkWsprBandChange(hz);
+  if (faxActive) renderFaxStations();
 }
 
 function beginFreqEdit() {
@@ -1321,12 +1336,20 @@ for (const entry of MODE_CHIPS) {
         .then(() => updateModeButtons(mode))
         .catch((err) => showError(err.message));
     });
-  } else if (entry === 'SSTV') {
+  } else if (entry === 'Image') {
+    // SSTV, then Radiofax, then SSTV again (the chip reads "SSTV" or "Fax" while one is on).
     sstvModeBtn = btn;
     btn.addEventListener('click', () => {
-      if (sstvActive) return;
-      exitAppModes();
-      enterSstvMode();
+      if (sstvActive) {
+        exitSstvMode();
+        enterFaxMode();
+      } else if (faxActive) {
+        exitFaxMode();
+        enterSstvMode();
+      } else {
+        exitAppModes();
+        enterSstvMode();
+      }
     });
   } else if (entry === 'DIGI') {
     ft8ModeBtn = btn;
@@ -1348,6 +1371,7 @@ for (const entry of MODE_CHIPS) {
       if (oliviaActive) exitOliviaMode();
       if (hellActive) exitHellMode();
       if (sstvActive) exitSstvMode();
+      if (faxActive) exitFaxMode();
       // First click enters FT8/FT4 mode (whichever variant was last
       // active, or 'FT8' the first time); a click while already active
       // toggles the protocol instead — see toggleFt8Variant()'s doc
@@ -1379,6 +1403,7 @@ for (const entry of MODE_CHIPS) {
       if (oliviaActive) exitOliviaMode();
       if (hellActive) exitHellMode();
       if (sstvActive) exitSstvMode();
+      if (faxActive) exitFaxMode();
       // Unlike FT8, there's no second variant to toggle to any more (the
       // '700E' option was removed — see enterFreeDvMode()'s doc comment),
       // so a click while already active is simply a no-op.
@@ -1392,6 +1417,7 @@ for (const entry of MODE_CHIPS) {
       if (wsprActive) exitWsprMode();
       if (freeDvActive) exitFreeDvMode();
       if (sstvActive) exitSstvMode();
+      if (faxActive) exitFaxMode();
       // First click selects RTTY; after that the button cycles RTTY ->
       // JTTY -> Olivia -> Feld-Hell -> RTTY ... until a non-TTY mode is
       // picked (which resets it to "TTY").
@@ -1416,6 +1442,7 @@ for (const entry of MODE_CHIPS) {
       if (oliviaActive) exitOliviaMode();
       if (hellActive) exitHellMode();
       if (sstvActive) exitSstvMode();
+      if (faxActive) exitFaxMode();
       // First click enters CW mode (using whichever decoder variant is
       // already selected); a click while CW mode is already active
       // cycles the variant (CW1 -> CW2 -> CW3 -> CW1) instead of
@@ -1450,6 +1477,7 @@ for (const entry of MODE_CHIPS) {
       if (oliviaActive) exitOliviaMode();
       if (hellActive) exitHellMode();
       if (sstvActive) exitSstvMode();
+      if (faxActive) exitFaxMode();
       link
         .request('setMode', { mode })
         .then(() => updateModeButtons(mode))
@@ -1463,7 +1491,7 @@ for (const entry of MODE_CHIPS) {
 
 /** True while one of the app-level modes layered on LSB/USB is selected. */
 function appModeActive() {
-  return ft8Active || wsprActive || freeDvActive || jttyActive || oliviaActive || hellActive || sstvActive;
+  return ft8Active || wsprActive || freeDvActive || jttyActive || oliviaActive || hellActive || sstvActive || faxActive;
 }
 
 /** Leaves whichever app-level mode is selected (picking SSB or SSTV). */
@@ -1475,6 +1503,7 @@ function exitAppModes() {
   if (oliviaActive) exitOliviaMode();
   if (hellActive) exitHellMode();
   if (sstvActive) exitSstvMode();
+  if (faxActive) exitFaxMode();
 }
 
 /**
@@ -1498,6 +1527,7 @@ function applyAppModes(s) {
   if (!s.oliviaActive) exitOliviaMode({ local: true });
   if (!s.hellActive) exitHellMode({ local: true });
   if (!s.sstvActive) exitSstvMode({ local: true });
+  if (!s.faxActive) exitFaxMode({ local: true });
   // ...then whatever was switched on.
   if (s.ft8Active) reflectFt8ActiveFromServer();
   if (s.wsprActive) reflectWsprActiveFromServer();
@@ -1506,6 +1536,7 @@ function applyAppModes(s) {
   if (s.oliviaActive) reflectOliviaActiveFromServer(s.oliviaCentreHz);
   if (s.hellActive) reflectHellActiveFromServer(s.hellToneHz);
   if (s.sstvActive) reflectSstvActiveFromServer();
+  if (s.faxActive) reflectFaxActiveFromServer();
   // A new audio frequency in the mode already shown (unless it's being typed here).
   const mode = ttyMode();
   if ((mode === 'JTTY' || mode === 'OLIVIA' || mode === 'HELL') && document.activeElement !== ttyFreqEl) {
@@ -1528,7 +1559,7 @@ link.addEventListener('app-modes', (event) => applyAppModes(event.detail));
  * page carries on and re-arms it.
  */
 function syncAppModesOnConnect(data) {
-  const serverAny = data.ft8Active || data.wsprActive || data.freeDvActive || data.jttyActive || data.oliviaActive || data.hellActive || data.sstvActive;
+  const serverAny = data.ft8Active || data.wsprActive || data.freeDvActive || data.jttyActive || data.oliviaActive || data.hellActive || data.sstvActive || data.faxActive;
   const radio = data.mode?.mode;
   const fits = sstvActive || freeDvActive ? radio === 'LSB' || radio === 'USB' : radio === 'USB';
   if (!serverAny && appModeActive() && fits) {
@@ -1539,6 +1570,7 @@ function syncAppModesOnConnect(data) {
     if (oliviaActive) link.request('setOliviaActive', { active: true, centreHz: ttyFreqByMode.OLIVIA }).catch(() => {});
     if (hellActive) link.request('setHellActive', { active: true, toneHz: ttyFreqByMode.HELL }).catch(() => {});
     if (sstvActive) link.request('setSstvActive', { active: true }).catch(() => {});
+    if (faxActive) link.request('setFaxActive', { active: true }).catch(() => {});
     return;
   }
   applyAppModes(data);
@@ -1550,7 +1582,10 @@ function updateSsbChip() {
   const on = (currentMode === 'LSB' || currentMode === 'USB') && !appModeActive();
   ssbModeBtn.textContent = on ? currentMode : 'SSB';
   ssbModeBtn.classList.toggle('chip--active', on);
-  if (sstvModeBtn) sstvModeBtn.classList.toggle('chip--active', sstvActive);
+  if (sstvModeBtn) {
+    sstvModeBtn.classList.toggle('chip--active', sstvActive || faxActive);
+    sstvModeBtn.textContent = sstvActive ? 'SSTV' : faxActive ? 'Fax' : 'Image';
+  }
 }
 
 function updateModeButtons(mode) {
@@ -1563,6 +1598,11 @@ function updateModeButtons(mode) {
   if (sstvActive) {
     if (mode === 'LSB' || mode === 'USB') sstvSidebandSeen = true;
     else if (sstvSidebandSeen) leaveSstv();
+  }
+  // Radiofax is on USB: leaving USB (once confirmed) ends it.
+  if (faxActive) {
+    if (mode === 'USB') faxUsbSeen = true;
+    else if (faxUsbSeen) leaveFax();
   }
   updateSsbChip();
   // JTTY runs on USB: if the radio is later reported in any other mode (a
@@ -1966,8 +2006,21 @@ function updateTtyUi() {
   oliviaRxEl.hidden = mode !== 'OLIVIA';
   hellRxEl.hidden = mode !== 'HELL';
   // JTTY, Olivia and Feld-Hell show the 0-3 kHz audio spectrum (like FT8/FT4), so the RF span buttons don't apply.
-  scopeSpansEl.hidden = ft8Active || wsprActive || freqMode || sstvActive;
+  scopeSpansEl.hidden = ft8Active || wsprActive || freqMode || sstvActive || faxActive;
   sstvRxEl.hidden = !sstvActive;
+  // Radiofax: the chart replaces the spectrum, and the station buttons appear below the S-meter.
+  faxRxEl.hidden = !faxActive;
+  faxViewEl.hidden = !faxActive;
+  faxStationsEl.hidden = !faxActive;
+  scopeCanvasesEl.classList.toggle('scope__canvases--fax', faxActive);
+  // no frequency axis for a chart; the scope heading says what it is
+  scopeAxisEl.hidden = faxActive;
+  scopeSection.classList.toggle('scope--fax', faxActive);
+  scopeHeadingEl.textContent = faxActive ? 'Radiofax chart' : 'Spectrum scope';
+  if (faxActive) {
+    scopePlaceholder.hidden = true;
+    renderFaxStations();
+  }
   // SSTV: faint guides at the sync (1200 Hz), black (1500 Hz) and white (2300 Hz) tones.
   // WSPR: the edges of the 200 Hz WSPR window.
   scopeDisplay.setGuideFreqs(sstvActive ? [1200, 1500, 2300] : wsprActive ? [1400, 1600] : []);
@@ -1976,7 +2029,7 @@ function updateTtyUi() {
   scopeDisplay.setHellMode(mode === 'HELL');
   // Back on the RF scope: show its "not enabled" notice again if it applies
   // (it only has text once the server has said the scope is off).
-  if (!ft8Active && !wsprActive && !freqMode && !sstvActive && scopePlaceholder.textContent) scopePlaceholder.hidden = scopeEnabled;
+  if (!ft8Active && !wsprActive && !freqMode && !sstvActive && !faxActive && scopePlaceholder.textContent) scopePlaceholder.hidden = scopeEnabled;
   if (freqMode) {
     ttyFreqLabelEl.firstChild.textContent = `${TTY_FREQ_LABEL[mode]} `;
     ttyFreqEl.min = String(TTY_FREQ_RANGE[mode][0]);
@@ -2360,6 +2413,292 @@ sstvViewer.addEventListener('click', () => {
 sstvCanvas.addEventListener('click', () => {
   const png = sstvCurrent ? null : sstvTxProgress?.png ?? sstvShown?.png;
   sstvViewerImg.src = png ? `data:image/png;base64,${png}` : sstvCanvas.toDataURL('image/png');
+  sstvViewerImg.alt = 'SSTV picture, full size';
+  sstvViewer.hidden = false;
+});
+
+// --- Radiofax (the Image button's second choice; see server/fax-decoder-bridge.js) ---
+// The Bureau of Meteorology's HF radiofax: VMC (Charleville) and VMW
+// (Wiluna), each on five frequencies, some only by day or night. Hours are
+// UTC from bom.gov.au (vmc-technical-guide / vmw-technical-guide). The
+// listed frequency is the signal's centre (1900 Hz up): the USB dial goes
+// 1.9 kHz below it.
+const FAX_STATIONS = [
+  { call: 'VMC', site: 'Charleville', khz: 2628, from: 9, to: 19 },
+  { call: 'VMC', site: 'Charleville', khz: 5100, from: 0, to: 24 },
+  { call: 'VMC', site: 'Charleville', khz: 11030, from: 0, to: 24 },
+  { call: 'VMC', site: 'Charleville', khz: 13920, from: 0, to: 24 },
+  { call: 'VMC', site: 'Charleville', khz: 20469, from: 19, to: 9 },
+  { call: 'VMW', site: 'Wiluna', khz: 5755, from: 11, to: 21 },
+  { call: 'VMW', site: 'Wiluna', khz: 7535, from: 0, to: 24 },
+  { call: 'VMW', site: 'Wiluna', khz: 10555, from: 0, to: 24 },
+  { call: 'VMW', site: 'Wiluna', khz: 15615, from: 0, to: 24 },
+  { call: 'VMW', site: 'Wiluna', khz: 18060, from: 21, to: 11 },
+];
+const FAX_DIAL_OFFSET_HZ = 1900;
+const FAX_STRIP_MAX = 6;
+const faxDialHz = (st) => st.khz * 1000 - FAX_DIAL_OFFSET_HZ;
+/** On the air at UTC hour h (from/to wrap past midnight). */
+const faxOnAir = (st, h) => (st.from === 0 && st.to === 24) || (st.from < st.to ? h >= st.from && h < st.to : h >= st.from || h < st.to);
+const pad2 = (n) => String(n).padStart(2, '0');
+const faxHours = (st) => (st.from === 0 && st.to === 24 ? '24 h' : `${pad2(st.from)}–${pad2(st.to)}Z`);
+/** By time schedule: the hour each starts (all-day ones first), then frequency. */
+const FAX_STATIONS_SORTED = [...FAX_STATIONS].sort((a, b) => (a.to - a.from === 24 ? -1 : a.from) - (b.to - b.from === 24 ? -1 : b.from) || a.khz - b.khz);
+
+let faxCurrent = null; // the chart coming in: {id, width, lines}
+let faxShown = null; // the finished chart on screen
+const faxCtx = faxCanvas.getContext('2d');
+const faxSeen = new Set();
+let faxFollow = true; // keep the newest line in view unless the operator scrolled up
+
+function renderFaxStations() {
+  const h = new Date().getUTCHours();
+  const key = `${h}:${currentFreqHz}`;
+  if (faxStationsListEl.dataset.key === key) return;
+  faxStationsListEl.dataset.key = key;
+  faxStationsListEl.innerHTML = '';
+  for (const st of FAX_STATIONS_SORTED) {
+    const btn = document.createElement('button');
+    btn.type = 'button';
+    const on = faxOnAir(st, h);
+    btn.className = `chip fax-station${currentFreqHz === faxDialHz(st) ? ' chip--active' : ''}${on ? '' : ' fax-station--off-air'}`;
+    btn.dataset.khz = String(st.khz);
+    btn.title = `${st.call} ${st.site}, ${st.khz} kHz (dial ${(faxDialHz(st) / 1000).toFixed(1)} kHz USB), ${faxHours(st)}${on ? '' : ' — not on the air now'}`;
+    const f = document.createElement('span');
+    f.className = 'fax-station__freq';
+    f.textContent = `${st.call} ${st.khz}`;
+    const hrs = document.createElement('span');
+    hrs.className = 'fax-station__hours';
+    hrs.textContent = faxHours(st);
+    btn.append(f, hrs);
+    btn.addEventListener('click', () => tuneFax(st));
+    faxStationsListEl.appendChild(btn);
+  }
+}
+setInterval(() => faxActive && renderFaxStations(), 60000);
+
+function tuneFax(st) {
+  const hz = faxDialHz(st);
+  link
+    .request('setFrequency', { value: hz })
+    .then(() => {
+      updateFrequencyDisplay(hz);
+      if (currentMode !== 'USB') return link.request('setMode', { mode: 'USB' }).then(() => updateModeButtons('USB'));
+      return null;
+    })
+    .catch((err) => showError(`Couldn't tune to ${st.call} ${st.khz}: ${err.message}`));
+}
+
+/**
+ * Radiofax receive: USB, the receiver armed, the chart in place of the
+ * spectrum and the VMC/VMW buttons below the S-meter. If the radio isn't on
+ * one of their frequencies already, the first on the air now (in the
+ * buttons' order) is tuned. Receive only: no DATA MODE.
+ */
+function enterFaxMode() {
+  faxActive = true;
+  faxUsbSeen = false;
+  const h = new Date().getUTCHours();
+  const onOne = FAX_STATIONS.some((st) => faxDialHz(st) === currentFreqHz);
+  if (!onOne) tuneFax(FAX_STATIONS_SORTED.find((st) => faxOnAir(st, h)) ?? FAX_STATIONS_SORTED[0]);
+  else link.request('setMode', { mode: 'USB' }).then(() => updateModeButtons('USB')).catch((err) => showError(err.message));
+  link.request('setFaxActive', { active: true }).catch((err) => showError(`Couldn't start radiofax receive: ${err.message}`));
+  loadFaxPictures();
+  updateTtyUi();
+}
+
+function leaveFax({ local = false } = {}) {
+  if (!faxActive) return false;
+  faxActive = false;
+  faxUsbSeen = false;
+  if (!local) link.request('setFaxActive', { active: false }).catch(() => {});
+  updateTtyUi();
+  return true;
+}
+
+function reflectFaxActiveFromServer() {
+  if (faxActive) return;
+  faxActive = true;
+  faxUsbSeen = false;
+  loadFaxPictures();
+  updateTtyUi();
+}
+
+function exitFaxMode(opts) {
+  leaveFax(opts);
+}
+
+/** Makes the chart canvas at least `lines` tall, keeping what is drawn. */
+function faxEnsureHeight(width, lines) {
+  if (faxCanvas.width === width && faxCanvas.height >= lines) return;
+  const keep = faxCanvas.width === width ? faxCtx.getImageData(0, 0, faxCanvas.width, faxCanvas.height) : null;
+  faxCanvas.width = width;
+  faxCanvas.height = Math.max(lines, keep ? keep.height * 2 : 1);
+  faxCtx.fillStyle = '#fff';
+  faxCtx.fillRect(0, 0, faxCanvas.width, faxCanvas.height);
+  if (keep) faxCtx.putImageData(keep, 0, 0);
+}
+
+function faxScroll(lines) {
+  if (!faxFollow) return;
+  // the drawn part only: the canvas may be taller than the chart so far
+  const scale = faxViewEl.clientWidth / faxCanvas.width;
+  faxViewEl.scrollTop = Math.max(0, lines * scale - faxViewEl.clientHeight);
+}
+faxViewEl.addEventListener('scroll', () => {
+  const scale = faxViewEl.clientWidth / faxCanvas.width;
+  const drawn = (faxCurrent?.lines ?? faxCanvas.height) * scale;
+  faxFollow = faxViewEl.scrollTop + faxViewEl.clientHeight >= drawn - 8;
+});
+
+function faxStatusText(s) {
+  if (!s) return '';
+  const clock = s.clockPpm ? ` · clock ${s.clockPpm > 0 ? '+' : ''}${s.clockPpm} ppm` : '';
+  switch (s.state) {
+    case 'listening':
+      return 'Listening for a start signal… (Start now to begin a chart already under way)';
+    case 'phasing':
+      return 'Start signal heard: lining up on the phasing lines…';
+    case 'receiving':
+      return `Receiving a chart · line ${faxCurrent?.lines ?? s.lines}${clock}`;
+    default:
+      return 'Radiofax receiver off.';
+  }
+}
+
+function faxPictureLine(p) {
+  const d = new Date(p.time);
+  const mins = Math.round((p.endTime - p.time) / 60000);
+  const how = p.complete ? '' : ` · ended by ${p.reason}`;
+  return `Chart · ${pad2(d.getUTCHours())}:${pad2(d.getUTCMinutes())} UTC · ${p.lines} lines (${mins} min)${p.phased ? '' : ' · started by hand'}${how}`;
+}
+
+function showFaxPicture(p) {
+  const img = new Image();
+  img.onload = () => {
+    if (faxCurrent) return; // a new chart has the screen
+    faxCanvas.width = p.width;
+    faxCanvas.height = p.lines;
+    faxCtx.drawImage(img, 0, 0);
+    faxFollow = true;
+    faxViewEl.scrollTop = 0;
+  };
+  img.src = `data:image/png;base64,${p.png}`;
+  faxShown = p;
+  faxSaveBtn.hidden = false;
+  if (!faxCurrent) faxStatusEl.textContent = faxPictureLine(p);
+  for (const t of faxStripEl.children) t.classList.toggle('sstv-rx__thumb--shown', t.dataset.key === `${p.id}:${p.time}`);
+}
+
+function addFaxThumb(p) {
+  const key = `${p.id}:${p.time}`;
+  if (faxSeen.has(key)) return;
+  faxSeen.add(key);
+  const btn = document.createElement('button');
+  btn.type = 'button';
+  btn.className = 'sstv-rx__thumb';
+  btn.dataset.key = key;
+  btn.title = faxPictureLine(p);
+  const img = document.createElement('img');
+  img.alt = faxPictureLine(p);
+  img.src = `data:image/png;base64,${p.png}`;
+  btn.appendChild(img);
+  btn.addEventListener('click', () => showFaxPicture(p));
+  faxStripEl.prepend(btn);
+  while (faxStripEl.children.length > FAX_STRIP_MAX) faxStripEl.lastElementChild.remove();
+}
+
+function loadFaxPictures() {
+  link
+    .request('getFaxPictures')
+    .then(({ pictures, current }) => {
+      for (const p of pictures || []) addFaxThumb(p);
+      if (current) {
+        // a chart is coming in: show it so far, and the lines that follow add to it
+        faxCurrent = { id: current.id, width: current.width, lines: current.linesSoFar ?? 0 };
+        faxFollow = true;
+        faxEnsureHeight(current.width, Math.max(600, faxCurrent.lines + 200));
+        faxStopBtn.hidden = false;
+        if (current.png) {
+          const img = new Image();
+          img.onload = () => {
+            faxCtx.drawImage(img, 0, 0);
+            faxScroll(faxCurrent?.lines ?? 0);
+          };
+          img.src = `data:image/png;base64,${current.png}`;
+        }
+      } else if (!faxShown && pictures?.length) showFaxPicture(pictures[pictures.length - 1]);
+    })
+    .catch(() => {});
+}
+
+link.addEventListener('fax-status', (event) => {
+  if (!faxCurrent || event.detail.state !== 'receiving') faxStatusEl.textContent = faxStatusText(event.detail);
+  faxStartBtn.hidden = event.detail.state === 'receiving';
+});
+
+link.addEventListener('fax-start', (event) => {
+  const p = event.detail;
+  faxCurrent = { id: p.id, width: p.width, lines: 0, clockPpm: p.clockPpm };
+  faxShown = null;
+  faxFollow = true;
+  faxCanvas.width = 1; // start afresh
+  faxEnsureHeight(p.width, 600);
+  faxViewEl.scrollTop = 0;
+  faxStopBtn.hidden = false;
+  faxStartBtn.hidden = true;
+  faxSaveBtn.hidden = true;
+  faxStatusEl.textContent = p.phased ? 'Receiving a chart…' : 'Receiving a chart (started by hand)…';
+});
+
+link.addEventListener('fax-line', (event) => {
+  const { id, y, width, grey } = event.detail;
+  const cur = faxCurrent;
+  if (!cur || cur.id !== id || width !== cur.width) return;
+  faxEnsureHeight(width, y + 1);
+  const row = faxCtx.createImageData(width, 1);
+  for (let x = 0; x < width; x++) {
+    const o = x * 4;
+    row.data[o] = row.data[o + 1] = row.data[o + 2] = grey[x];
+    row.data[o + 3] = 255;
+  }
+  faxCtx.putImageData(row, 0, y);
+  cur.lines = y + 1;
+  faxScroll(cur.lines);
+  const clock = cur.clockPpm ? ` · clock ${cur.clockPpm > 0 ? '+' : ''}${cur.clockPpm} ppm` : '';
+  faxStatusEl.textContent = `Receiving a chart · line ${y + 1}${clock}`;
+});
+
+link.addEventListener('fax-picture', (event) => {
+  const p = event.detail;
+  faxCurrent = null;
+  faxStopBtn.hidden = true;
+  faxStartBtn.hidden = false;
+  addFaxThumb(p);
+  showFaxPicture(p);
+});
+
+faxStartBtn.addEventListener('click', () => {
+  link.request('faxStartNow').catch((err) => showError(`Couldn't start a chart: ${err.message}`));
+});
+faxStopBtn.addEventListener('click', () => {
+  link.request('faxStop').catch((err) => showError(`Couldn't stop the chart: ${err.message}`));
+});
+faxSaveBtn.addEventListener('click', () => {
+  const p = faxShown;
+  if (!p) return;
+  const d = new Date(p.time);
+  const a = document.createElement('a');
+  a.href = `data:image/png;base64,${p.png}`;
+  a.download = `fax-${d.getUTCFullYear()}${pad2(d.getUTCMonth() + 1)}${pad2(d.getUTCDate())}-${pad2(d.getUTCHours())}${pad2(d.getUTCMinutes())}z.png`;
+  document.body.appendChild(a);
+  a.click();
+  a.remove();
+});
+// Full size: the same viewer as SSTV (pinch-zoom works there; tap to close).
+faxCanvas.addEventListener('click', () => {
+  sstvViewerImg.src = !faxCurrent && faxShown ? `data:image/png;base64,${faxShown.png}` : faxCanvas.toDataURL('image/png');
+  sstvViewerImg.alt = 'Radiofax chart, full size';
   sstvViewer.hidden = false;
 });
 

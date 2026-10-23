@@ -57,4 +57,38 @@ function encodePng(rgb, width, height) {
   ]);
 }
 
-module.exports = { encodePng, crc32 };
+/**
+ * The same for an 8-bit greyscale picture (radiofax charts), compressed
+ * without blocking: a 25-minute chart is several megabytes of pixels.
+ * @param {Uint8Array} grey - width * height bytes
+ * @returns {Promise<Buffer>}
+ */
+function encodePngGrey(grey, width, height) {
+  const raw = Buffer.alloc((width + 1) * height);
+  for (let y = 0; y < height; y++) {
+    const o = y * (width + 1);
+    raw[o] = 1; // Sub
+    for (let i = 0; i < width; i++) raw[o + 1 + i] = (grey[y * width + i] - (i ? grey[y * width + i - 1] : 0)) & 0xff;
+  }
+  const ihdr = Buffer.alloc(13);
+  ihdr.writeUInt32BE(width, 0);
+  ihdr.writeUInt32BE(height, 4);
+  ihdr[8] = 8; // bit depth
+  ihdr[9] = 0; // greyscale
+  return new Promise((resolve, reject) =>
+    zlib.deflate(raw, { level: 6 }, (err, data) =>
+      err
+        ? reject(err)
+        : resolve(
+            Buffer.concat([
+              Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a]),
+              chunk('IHDR', ihdr),
+              chunk('IDAT', data),
+              chunk('IEND', Buffer.alloc(0)),
+            ])
+          )
+    )
+  );
+}
+
+module.exports = { encodePng, encodePngGrey, crc32 };

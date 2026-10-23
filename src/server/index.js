@@ -15,6 +15,7 @@ const { HellDecoderBridge } = require('./hell-decoder-bridge');
 const { SstvDecoderBridge } = require('./sstv-decoder-bridge');
 const { SstvTxBridge, DEFAULT_SSTV_TX_MODE } = require('./sstv-tx-bridge');
 const { WsprBridge, parseBandList, WSPR_DIAL_HZ } = require('./wspr-bridge');
+const { FaxDecoderBridge } = require('./fax-decoder-bridge');
 const { BandConditions } = require('./band-conditions');
 // Outgoing connections: give far-away servers (Europe is ~300 ms from Australia) time to answer; see net-options.js.
 require('./net-options').applyDefaults();
@@ -274,6 +275,7 @@ let hellDecoderBridge;
 let sstvDecoderBridge;
 let sstvTxBridge;
 let wsprBridge;
+let faxDecoderBridge;
 let bandConditions;
 let radeBridge;
 let freeDvReporterBridge;
@@ -550,6 +552,13 @@ async function main() {
     console.log(`SSTV transmit ready (${SSTV_MODES[sstvTxMode].name}).`);
     console.log(`SSTV receive ready (decodes while SSTV is selected${process.env.SSTV_SAVE_DIR ? `; saving pictures to ${process.env.SSTV_SAVE_DIR}` : ''}).`);
 
+    // Radiofax receive (the Image button's second choice): VMC/VMW weather
+    // charts. FAX_SAVE_DIR, if set, also saves each chart there as a PNG.
+    // See server/fax-decoder-bridge.js.
+    faxDecoderBridge = new FaxDecoderBridge({ controlServer, audioBridge, saveDir: process.env.FAX_SAVE_DIR || undefined });
+    faxDecoderBridge.start();
+    console.log(`Radiofax receive ready${process.env.FAX_SAVE_DIR ? ` (saving charts to ${process.env.FAX_SAVE_DIR})` : ''}.`);
+
     // WSPR receive and transmit (the third choice of the DIGI button).
     // WSPR_GRID is the Maidenhead locator sent and reported (defaults to
     // STATION_GRID); spots go to wsprnet.org unless WSPR_UPLOAD=off;
@@ -667,6 +676,7 @@ async function shutdown(signal) {
     if (sstvDecoderBridge) sstvDecoderBridge.stop();
     if (sstvTxBridge) sstvTxBridge.stop();
     if (wsprBridge) wsprBridge.stop();
+    if (faxDecoderBridge) faxDecoderBridge.stop();
     if (bandConditions) bandConditions.stop();
     if (radeBridge) radeBridge.stop();
     if (freeDvReporterBridge) freeDvReporterBridge.stop();

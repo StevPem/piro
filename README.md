@@ -12,7 +12,7 @@ Hamlib, no separate audio server and no extra apps.
 Written by VK3TR. Licensed AGPL-3.0-only (see
 [Licence](#licence)).
 
-**Current build: v93.** This is the version the app shows next to its title.
+**Current build: v94.** This is the version the app shows next to its title.
 It is the `CACHE_NAME` number in `src/client/sw.js`, which goes up with every
 change to the web app.
 
@@ -51,7 +51,11 @@ Several of the cooler features in this app are built on the work of others:
   text is decoded as it arrives, or for Feld-Hell painted in the scope and
   read from the picture as text. See
   [RTTY, JTTY, Olivia and Feld-Hell](#rtty-jtty-olivia-and-feld-hell).
-- **SSTV**: receive pictures in 25 modes (Martin, Scottie, Robot, PD,
+- **Radiofax**: the Image button's second choice receives HF weather
+  charts, such as the Bureau of Meteorology's VMC (Charleville) and VMW
+  (Wiluna) broadcasts, drawn in place of the spectrum as they arrive. See
+  [Radiofax](#radiofax).
+- **SSTV** (the Image button): receive pictures in 25 modes (Martin, Scottie, Robot, PD,
   Wraase, Pasokon), recognised automatically from their VIS header, drawn as
   they arrive and then slant-corrected, with a strip of recent pictures to
   view full size or save; and send a photo from the phone's camera or an
@@ -400,6 +404,7 @@ All settings are environment variables. For the systemd service they go in
 | `OLIVIA_FREQ_HZ` | `1500` | Olivia's default audio centre frequency, in Hz, for sending and receiving, until it is changed in the UI. The signal is 250 Hz wide; the receiver searches 125 Hz either side. |
 | `OLIVIA_SQUELCH` | on | `off` turns off PiRO's filtering of junk characters and decodes exactly as fldigi does with its squelch off. See [Olivia](#rtty-jtty-olivia-and-feld-hell). |
 | `SSTV_SAVE_DIR` | none | If set, every received SSTV picture is also saved in this folder as a PNG (`YYYYMMDD-HHMMSSz-<mode>.png`, UTC). |
+| `FAX_SAVE_DIR` | none | If set, every received radiofax chart is also saved in this folder as a greyscale PNG (`YYYYMMDD-HHMMSSz-fax.png`, UTC, the chart's start). |
 | `SSTV_TX_MODE` | `S1` | SSTV transmit mode: `S1` (Scottie 1), or any mode id the receiver knows (`M1`, `M2`, `S2`, `SDX`, `R36`, `R72`, `PD90`, `PD120`, `PD180`, ...; see `src/audio/sstv-modes.js`). Read at startup. |
 | `SSTV_TX_POWER_W` | none | TX power in watts while sending SSTV (put back afterwards). Unset leaves the power alone. |
 | `SSTV_FSK_ID`, `SSTV_CW_ID` | on | `off` leaves out the FSK ID or the CW ID sent after each SSTV picture. Both use `STATION_CALLSIGN`. |
@@ -711,6 +716,13 @@ test/
   sstv-tx-bridge.test.js  SSTV transmit: radio sequence (DATA MODE, power, PTT),
                            the audio decoded back (picture and FSK ID), Stop,
                            refusals
+  fax.test.js             radiofax receiver: start/phasing/stop signals,
+                           line-up on the phasing pulse, clock errors of
+                           -1000 to +300 ppm corrected, noise (10 and 3 dB),
+                           Start now / Stop, a new start signal
+  fax-decoder-bridge.test.js  radiofax bridge: line frames, the chart as a
+                           greyscale PNG (decoded back), kept and saved, a
+                           page joining part-way, PTT, unsupported rates
   jtty-decoder-bridge.test.js  JTTY receive bridge: arming, PTT, decimation,
                            backlog dropping, broadcasts
   manual-tty-ui.js        optional browser test of the TTY button, text box and
@@ -1369,9 +1381,60 @@ local area, the number of reporters. Both columns use `WSPR_GRID` (or
 `STATION_GRID`); without one, everything is N/A. The window's note gives
 the squares, the time windows and when the local area was last fetched.
 
+### Radiofax
+
+The **Image** button selects SSTV on the first press and **Radiofax** on
+the second (then SSTV again). Its label reads "SSTV" or "Fax" while one is
+on. Radiofax receives HF weather charts: frequency-modulated audio around
+1900 Hz (black 1500 Hz, white 2300 Hz), 120 lines a minute, IOC 576, 1810
+pixels a line. That is what the Bureau of Meteorology sends. It receives
+only, on USB with DATA MODE off.
+
+While Radiofax is on, the chart coming in is drawn where the spectrum
+usually is, newest line at the bottom; tap it to open it full size. Below
+the spectrum, the Radiofax panel shows what the receiver is doing, and has
+**Start now**, **Stop** and **Save** buttons and the last few charts.
+
+Below the S-meter are buttons for the VMC (Charleville, Qld) and VMW
+(Wiluna, WA) frequencies, in order of their broadcast hours (UTC, from the
+Bureau's technical guides). The ones not on the air now are dimmed, and
+the one the radio is on is lit. A button tunes the radio 1.9 kHz below the
+listed frequency, on USB, so the signal's centre is at 1900 Hz. Entering
+Radiofax tunes the first button on the air now, unless the radio is
+already on one of them.
+
+| Station | Frequency (kHz) | Hours (UTC) |
+|---|---|---|
+| VMC, VMW | 5100, 7535, 10555, 11030, 13920, 15615 | all day |
+| VMC | 2628 | 09-19 |
+| VMW | 5755 | 11-21 |
+| VMC | 20469 | 19-09 |
+| VMW | 18060 | 21-11 |
+
+How a chart is received:
+- The start signal (black and white alternating at 300 Hz for 5 s) starts
+  a chart.
+- About 30 s of phasing lines follows: black, with one white pulse at the
+  start of each line. PiRO lines the chart up on the pulse. It also
+  measures how far the pulse drifts from line to line, which is the
+  difference between the sender's clock and the Pi's sound card. Each line
+  is then made that much longer or shorter, so the chart isn't slanted. The
+  measurement is shown as "clock ±N ppm".
+- The stop signal (450 Hz) ends the chart. So do a new start signal,
+  **Stop**, leaving Radiofax, transmitting, or 25 minutes.
+- **Start now** begins a chart straight away, for a broadcast that is
+  already under way. Its left edge is then wherever the line happens to
+  start, and the clock correction is the last one measured.
+
+Each chart is kept as a PNG (the last 6, for pages that open later; a page
+that opens part-way through a chart is sent it so far). `FAX_SAVE_DIR`
+also saves them to a folder. The receiver is PiRO's own JavaScript, run on
+the server: 0.6% of a desktop CPU core (measured), so a few percent of a
+Pi's. Not tested on an off-air signal yet.
+
 ### SSTV
 
-The **SSTV** button turns on SSTV (slow-scan television). It puts the radio
+The **Image** button's first press turns on SSTV (slow-scan television). It puts the radio
 on the band's usual sideband (LSB below 10 MHz, USB above; DATA MODE only
 while sending) and tunes to the band's SSTV frequency. Band buttons then do
 the same:
@@ -1650,6 +1713,16 @@ shapes.
   pictureSec, fskSec, gapSec, cwSec, totalSec`), the picture's `lines` and
   the picture itself (`png`); a page that connects during a transmission is
   sent the current status, with `elapsedSec` how far in it is.
+  `setFaxActive` (`{active}`) starts and stops the radiofax receiver;
+  `faxStartNow` starts a chart without a start signal and `faxStop` ends
+  one. Receiver state goes out as `fax-status` (`{state:
+  'idle'|'listening'|'phasing'|'receiving', lines, clockPpm}`, also the
+  connect snapshot's `fax`). A chart is announced by `fax-start` (`{id,
+  width, lpm, ioc, phased, clockPpm, time}`), its lines follow as binary
+  `BINARY_TYPE.FAX_LINE` frames (chart id, line, width, one grey byte per
+  pixel), and it ends with `fax-picture` (`{id, width, lines, time,
+  endTime, complete, reason, phased, clockPpm, png}`, a greyscale PNG).
+  `getFaxPictures` returns the kept charts and the one coming in so far.
   `setWsprActive` (`{active}`) turns WSPR on and off; `setWsprTx`
   (`{enabled?, txHz?}`) turns WSPR transmit on and off and sets its audio
   frequency (1410-1590 Hz). WSPR's state is the connect snapshot's `wspr`
@@ -1667,9 +1740,9 @@ shapes.
   lastMs?}, local: {tag, rangeKm?, stations?, reporters?}}]}`.
   An `app-modes` broadcast (`{ft8Active, freeDvActive, jttyActive, jttyTxHz,
   oliviaActive, oliviaCentreHz, hellActive, hellToneHz, sstvActive,
-  wsprActive}`) goes to the other browsers after any `setFt8Active`,
-  `setFreeDvActive`, `setJttyActive`, `setOliviaActive`, `setHellActive`,
-  `setSstvActive` or `setWsprActive`, so they show the same mode; the
+  wsprActive, faxActive}`) goes to the other browsers after any
+  `setFt8Active`, `setFreeDvActive`, `setJttyActive`, `setOliviaActive`,
+  `setHellActive`, `setSstvActive`, `setWsprActive` or `setFaxActive`, so they show the same mode; the
   connect snapshot has the same fields.
   `sendCw` (`{text, wpm?}`) sends text with the radio's CW keyer;
   progress arrives as `cw-tx-status` broadcasts (`sending` →
@@ -1693,6 +1766,9 @@ shapes.
 - **SSTV lines (binary frames, tagged `BINARY_TYPE.SSTV_LINE`,
   server→client only)**: one received line as it arrives — picture id,
   line number, width, then RGB; see `src/server/protocol.js`.
+- **Radiofax lines (binary frames, tagged `BINARY_TYPE.FAX_LINE`,
+  server→client only)**: one received chart line — chart id, line number,
+  width, then one grey byte per pixel; see `src/server/protocol.js`.
 - **Feld-Hell picture (binary frames, tagged `BINARY_TYPE.HELL_COLUMNS`,
   server→client only)**: received columns, about ten frames a second —
   rows per column, column count, tone, then the columns' ink values; see

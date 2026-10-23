@@ -17,6 +17,8 @@ const { SstvTxBridge } = require(PKG + '/src/server/sstv-tx-bridge');
 const { CwTxBridge } = require(PKG + '/src/server/cw-tx-bridge');
 const { WsprBridge } = require(PKG + '/src/server/wspr-bridge');
 const { BandConditions } = require(PKG + '/src/server/band-conditions');
+const { FaxDecoderBridge } = require(PKG + '/src/server/fax-decoder-bridge');
+const { encodeFax, FAX_WIDTH } = require(PKG + '/src/audio/fax-tx');
 const { EVENT } = require(PKG + '/src/server/protocol');
 const { encodePng } = require(PKG + '/src/server/png');
 const { encodeJtty } = require(PKG + '/src/audio/jtty-tx');
@@ -83,6 +85,8 @@ class Civ extends EventEmitter {
   const wsprClock = Object.assign(new EventEmitter(), { currentSlotStart: () => Date.now() - (Date.now() % 120000), start() {}, stop() {} });
   const wspr = new WsprBridge({ controlServer: server, audioBridge, callsign: 'VK2IO', grid: 'QF56', slotClock: wsprClock, decoder: { decode: async () => ({ decodes: [], hashtab: [] }), terminate() {} }, wsprnet: { upload: async () => ({ sent: 1 }) }, random: () => 0 });
   wspr.start();
+  const faxRx = new FaxDecoderBridge({ controlServer: server, audioBridge });
+  faxRx.start();
   // "Current conditions", with wspr.live answered by hand
   const conditions = new BandConditions({ controlServer: server, grid: 'QF56', query: async () => [[1409, 'K1ABC', 16500, ['VK2IO']], [704, 'VK3TR', 700, ['VK2IO']]] });
   conditions.start();
@@ -122,10 +126,10 @@ class Civ extends EventEmitter {
   const ttyLabel = async () => (await page.locator('#modes .chip').allTextContents());
   const vis = async (sel) => page.locator(sel).isVisible();
 
-  // Mode rows: SSB AM FM CW on top, TTY DIGI FreeDV SSTV below
+  // Mode rows: SSB AM FM CW on top, TTY DIGI FreeDV Image below
   {
     const chips = await page.locator('#modes .chip').evaluateAll((els) => els.map((e) => ({ t: e.textContent, top: e.offsetTop, on: e.classList.contains('chip--active') })));
-    check(chips.map((c) => c.t).join(' ') === 'LSB AM FM CW TTY DIGI FreeDV SSTV', 'mode chips: ' + chips.map((c) => c.t).join(' ') + ' (the SSB chip reads LSB: the radio is on LSB)');
+    check(chips.map((c) => c.t).join(' ') === 'LSB AM FM CW TTY DIGI FreeDV Image', 'mode chips: ' + chips.map((c) => c.t).join(' ') + ' (the SSB chip reads LSB: the radio is on LSB)');
     check(chips.slice(0, 4).every((c) => c.top === chips[0].top) && chips.slice(4).every((c) => c.top === chips[4].top) && chips[4].top > chips[0].top, 'two rows of four');
     check(chips[0].on && chips.slice(1).every((c) => !c.on), 'only the SSB chip is lit');
   }
@@ -620,8 +624,8 @@ class Civ extends EventEmitter {
     check(await bFollows(() => [...document.querySelectorAll('#modes .chip')].some((c) => c.textContent === 'FT8' && c.classList.contains('chip--active')) && document.getElementById('wspr-panel').hidden), 'the second browser follows back to FT8');
   }
 
-  // SSTV: FT8 -> SSTV on 40 m, a picture comes in, band change, then SSB
-  await chip('SSTV').click();
+  // SSTV: FT8 -> SSTV (the Image button) on 40 m, a picture comes in, band change, then SSB
+  await chip('Image').click();
   await sleep(300);
   check(civ.freq === 7171000 && civ.mode === 'LSB' && server.state.sstvActive && sstvRx.attached && !server.state.ft8Active, 'SSTV on 40 m: 7.171 MHz LSB, receiver armed, FT8 off');
   check((await vis('#sstv-rx')) && (await vis('#ptt-btn')) && !(await vis('#ft8-panel')), 'SSTV panel shown, voice PTT back, FT8 panel gone');
@@ -755,6 +759,70 @@ class Civ extends EventEmitter {
     await sleep(200);
     check(civ.dataMode === false && civ.log.filter((e) => e[0] === 'setPtt').at(-1)[1] === false, 'Cancel while sending: transmission stopped (PTT off, DATA MODE off), editor closed');
   }
+  // Radiofax: the Image button's second press; the chart replaces the spectrum; VMC/VMW buttons below the S-meter
+  {
+    await chip('SSTV').click();
+    await page.waitForFunction(() => [...document.querySelectorAll('#modes .chip')].some((c) => c.textContent === 'Fax'));
+    await sleep(400);
+    check(server.state.faxActive && !server.state.sstvActive && faxRx.attached && civ.mode === 'USB' && civ.freq === 5098100, `Image again: Radiofax, on USB, tuned to VMC 5100 (dial ${civ.freq})`);
+    check((await vis('#fax-view')) && !(await vis('#scope-waterfall')) && !(await vis('#scope-trace')) && (await vis('#fax-rx')) && !(await vis('#sstv-rx')), 'the chart view replaces the spectrum; the fax panel replaces the SSTV one');
+    const meter = await page.locator('.meter').boundingBox();
+    const list = await page.locator('#fax-stations').boundingBox();
+    const labels = await page.locator('#fax-stations-list .fax-station').evaluateAll((bs) => bs.map((b) => b.textContent));
+    check(meter && list && list.y >= meter.y + meter.height - 1, 'the station buttons are below the S-meter');
+    check(
+      labels.join(' | ') === 'VMC 510024 h | VMW 753524 h | VMW 1055524 h | VMC 1103024 h | VMC 1392024 h | VMW 1561524 h | VMC 262809–19Z | VMW 575511–21Z | VMC 2046919–09Z | VMW 1806021–11Z',
+      'VMC and VMW, in order of their broadcast hours: ' + labels.join(' | ')
+    );
+    check(await page.locator('#fax-stations-list .fax-station.chip--active').evaluate((b) => b.textContent === 'VMC 510024 h'), 'the one tuned is lit');
+    check(
+      await bFollows(() => [...document.querySelectorAll('#modes .chip')].some((c) => c.textContent === 'Fax' && c.classList.contains('chip--active')) && !document.getElementById('fax-view').hidden && !document.getElementById('fax-stations').hidden),
+      'the second browser follows into Radiofax'
+    );
+    // a short chart, with start signal, phasing and stop signal
+    const W = FAX_WIDTH;
+    const H = 40;
+    const grey = new Uint8Array(W * H);
+    for (let y = 0; y < H; y++) for (let x = 0; x < W; x++) grey[y * W + x] = x < W / 2 ? 20 : 235;
+    const pcm = upsampleFloatToPcm(encodeFax({ grey, width: W, lines: H, phasingSec: 5, leadSec: 1 }), 12000, 48000);
+    for (let i = 0; i < pcm.length; i += 96000) capture.emit('data', pcm.subarray(i, i + 96000));
+    await faxRx.settled();
+    await page.waitForFunction(() => document.querySelectorAll('#fax-strip .sstv-rx__thumb').length === 1, null, { timeout: 8000 });
+    const shot = await page.evaluate(() => {
+      const c = document.getElementById('fax-canvas');
+      const d = c.getContext('2d').getImageData(0, 0, c.width, c.height).data;
+      const at = (x, y) => d[(y * c.width + x) * 4];
+      return { w: c.width, h: c.height, left: at(400, 10), right: at(1400, 10), status: document.getElementById('fax-status').textContent, save: !document.getElementById('fax-save-btn').hidden };
+    });
+    if (process.env.FAX_SHOT) await page.locator('#scope-section').screenshot({ path: process.env.FAX_SHOT });
+    if (process.env.FAX_SHOT2) await page.locator('.meter').evaluate((m) => m.scrollIntoView());
+    if (process.env.FAX_SHOT2) await page.screenshot({ path: process.env.FAX_SHOT2, clip: await page.locator('#fax-stations').boundingBox() });
+    check(shot.w === 1810 && Math.abs(shot.h - H) <= 3 && shot.left < 60 && shot.right > 200, `the chart is drawn in the view: ${shot.w} x ${shot.h}, dark left (${shot.left}) and light right (${shot.right})`);
+    check(/^Chart · \d\d:\d\d UTC · (3[7-9]|40) lines/.test(shot.status) && shot.save, 'then kept in the strip with Save: ' + shot.status);
+    check(await bFollows(() => document.querySelectorAll('#fax-strip .sstv-rx__thumb').length === 1), 'the second browser has it too');
+    // Start now, then Stop: a chart started by hand
+    await page.locator('#fax-start-btn').click();
+    await sleep(200);
+    check(server.state.fax.state === 'receiving', 'Start now begins a chart without a start signal');
+    const tone = upsampleFloatToPcm(encodeFax({ grey: new Uint8Array(W * 6).fill(128), width: W, lines: 6, apt: false, phasingSec: 0 }), 12000, 48000);
+    capture.emit('data', tone);
+    await page.locator('#fax-stop-btn').click();
+    await sleep(200);
+    await faxRx.settled();
+    await page.waitForFunction(() => document.querySelectorAll('#fax-strip .sstv-rx__thumb').length === 2, null, { timeout: 5000 }).catch(() => {});
+    check((await page.locator('#fax-strip .sstv-rx__thumb').count()) === 2 && /started by hand/.test(await page.locator('#fax-status').textContent()), 'Stop ends it and keeps it: ' + (await page.locator('#fax-status').textContent()));
+    // a station button tunes it
+    await page.locator('#fax-stations-list .fax-station', { hasText: 'VMW 10555' }).click();
+    await sleep(300);
+    check(civ.freq === 10553100 && civ.mode === 'USB', `VMW 10555 tunes 10.5531 MHz USB (${civ.freq})`);
+    // and Image once more: back to SSTV
+    await chip('Fax').click();
+    await page.waitForFunction(() => [...document.querySelectorAll('#modes .chip')].some((c) => c.textContent === 'SSTV'));
+    await sleep(300);
+    check(server.state.sstvActive && !server.state.faxActive && !faxRx.attached && (await vis('#scope-waterfall')) && !(await vis('#fax-view')) && !(await vis('#fax-stations')), 'Image again: SSTV, the spectrum back');
+    await page.locator('#bands .chip', { hasText: /^20m$/ }).click();
+    await sleep(300);
+  }
   await chip('SSB').click();
   await sleep(300);
   check(!server.state.sstvActive && !sstvRx.attached && !(await vis('#sstv-rx')) && civ.mode === 'USB' && (await ttyLabel()).includes('USB'), 'SSB leaves SSTV (USB on 20 m), panel hidden');
@@ -785,6 +853,7 @@ class Civ extends EventEmitter {
   cwTx.stop();
   wspr.stop();
   conditions.stop();
+  faxRx.stop();
   await server.close();
   console.log(failures ? `\n${failures} FAILED` : '\nAll UI checks passed');
   process.exit(failures ? 1 : 0);

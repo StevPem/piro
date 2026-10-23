@@ -3917,3 +3917,52 @@ model for how to approach that.
   headless Chromium (no chime for CQs or others' QSOs, a chime in both
   browsers for a call, row marked, no repeat, a new caller chimes).
   Service-worker cache bumped to v93 (and caches call-alert.js).
+
+### Radiofax; the SSTV button becomes "Image" (v94)
+
+- The SSTV mode chip is now **Image**: first press SSTV, then Radiofax,
+  then SSTV again. It reads "SSTV" or "Fax" while one is on. Radiofax is an
+  app-level mode (`faxActive` in `appModes()`), receive only, on USB, no
+  DATA MODE; leaving USB (once seen) ends it, as SSTV does for LSB/USB.
+- `audio/fax-rx.js` (`FaxReceiver`), PiRO's own: FM demodulation around
+  1900 Hz (mix down, 47-tap low-pass, phase step per sample) to a grey
+  level 0..1 over 1500-2300 Hz. Start (300 Hz) and stop (450 Hz) signals by
+  correlating quarter-second blocks against those frequencies (1 s needed).
+  Phasing lines are found by their shape (bright pulse 1.5-12% of the
+  line); each pulse's centre is measured to a fraction of a sample. A
+  straight-line fit through the centres (outliers dropped, refit) gives the
+  line length, so the clock difference (sender vs our sound card) is
+  measured and corrected; the chart starts at the leading edge (centre less
+  half the median pulse width) one line after the last phasing line. Lines
+  are averaged into 1810 pixels (IOC 576 x pi). Charts end on the stop
+  signal (its own lines dropped), a new start signal, Stop, leaving the
+  mode, PTT or 25 minutes. "Start now" begins a chart with no line-up.
+  `audio/fax-tx.js` makes test signals (start, phasing, chart, stop).
+- Real bugs found while testing: the chart's own bright bars were taken
+  for phasing pulses (a phasing line is now mostly black with one short
+  pulse); a pulse cut at the edge of a window skewed the clock fit (now
+  dropped as an outlier); in noise the leading edge, found by a threshold,
+  was early by a pixel (now centre less half the median width).
+- Measured: lined up to the pixel and slant-free from -1000 to +300 ppm
+  clock error; mean grey error 0.6 of 255 clean, 13 at 10 dB S/N and 23 at
+  3 dB (3 kHz); a minute of noise starts nothing. 0.6% of a desktop core.
+- `server/fax-decoder-bridge.js`: on the main thread (light), attached only
+  while Fax is selected and not transmitting; FAX_LINE binary frames;
+  charts as greyscale PNGs (`png.js` `encodePngGrey`, compressed without
+  blocking), the last 6 kept, `FAX_SAVE_DIR`; `getFaxPictures` also returns
+  the chart coming in so far, for a page that connects part-way.
+- Client: the chart replaces the spectrum (trace and waterfall hidden, no
+  frequency axis, heading "Radiofax chart"), newest line kept in view
+  unless scrolled up; tap for full size (the SSTV viewer). A Radiofax panel
+  (status, Start now, Stop, Save, recent charts). Below the S-meter, the
+  VMC/VMW buttons in order of broadcast hours (all-day first, then by start
+  hour), off-air ones dimmed, the tuned one lit; a button tunes 1.9 kHz
+  below the listed (centre) frequency on USB. Hours are UTC from the
+  Bureau's VMC/VMW technical guides.
+- Tests: fax.test.js and fax-decoder-bridge.test.js (new, in `npm test`),
+  ws-server (setFaxActive, faxStartNow, faxStop, getFaxPictures, off when
+  the last browser leaves), and headless Chromium (Image cycle SSTV -> Fax
+  -> SSTV, chart view in place of the spectrum, station buttons below the
+  S-meter in schedule order, a chart received in both browsers and kept,
+  Start now / Stop, a station button tunes). Not tested on an off-air
+  signal. Service-worker cache bumped to v94.

@@ -182,6 +182,10 @@ class ControlServer extends EventEmitter {
       // WsprBridge.
       wsprActive: false,
       wspr: null,
+      // Whether radiofax receive is on (REQUEST.SET_FAX_ACTIVE /
+      // server/fax-decoder-bridge.js), and the receiver's state (state.fax).
+      faxActive: false,
+      fax: null,
       // Which variant the FreeDV mode button is currently in — '700E' or
       // 'RADE' (see REQUEST.SET_FREEDV_VARIANT / src/server/rade-bridge.js).
       // Defaults to 'RADE' — the only variant the client's FreeDV chip
@@ -357,6 +361,7 @@ class ControlServer extends EventEmitter {
       hellToneHz: s.hellToneHz,
       sstvActive: s.sstvActive,
       wsprActive: s.wsprActive,
+      faxActive: s.faxActive,
     };
   }
 
@@ -391,6 +396,12 @@ class ControlServer extends EventEmitter {
     this.emit('wspr-active', active);
   }
 
+  _setFaxActive(active) {
+    this.state.faxActive = active;
+    // Handled by FaxDecoderBridge (internal-only event).
+    this.emit('fax-active', active);
+  }
+
   _setSstvActive(active) {
     this.state.sstvActive = active;
     // Handled by SstvDecoderBridge (internal-only event).
@@ -413,6 +424,7 @@ class ControlServer extends EventEmitter {
     if (this.state.oliviaActive) this._setOliviaActive(false);
     if (this.state.hellActive) this._setHellActive(false);
     if (this.state.sstvActive) this._setSstvActive(false);
+    if (this.state.faxActive) this._setFaxActive(false);
     // WSPR too (it may transmit). WSPR_UNATTENDED can start a receive-only run later; see wspr-bridge.js.
     if (this.state.wsprActive) {
       this._setWsprActive(false);
@@ -638,6 +650,31 @@ class ControlServer extends EventEmitter {
           if (text.length > NOTE_MAX_CHARS) throw new Error(`A note can be at most ${NOTE_MAX_CHARS} characters`);
           const notes = this._postNote(text, ws);
           ws.send(makeResult(id, { notes }));
+          break;
+        }
+        case REQUEST.SET_FAX_ACTIVE: {
+          if (typeof msg.active !== 'boolean') {
+            throw new Error('"active" must be a boolean');
+          }
+          this._setFaxActive(msg.active);
+          ws.send(makeResult(id, { active: msg.active }));
+          this._broadcastAppModes(ws);
+          break;
+        }
+        case REQUEST.FAX_START_NOW: {
+          this.emit('fax-start-now');
+          ws.send(makeResult(id, { accepted: true }));
+          break;
+        }
+        case REQUEST.FAX_STOP: {
+          this.emit('fax-stop');
+          ws.send(makeResult(id, { accepted: true }));
+          break;
+        }
+        case REQUEST.GET_FAX_PICTURES: {
+          // Kept here by FaxDecoderBridge (newest last).
+          const current = this.faxCurrent ? await this.faxCurrent() : null;
+          ws.send(makeResult(id, { pictures: this.faxPictures ?? [], current }));
           break;
         }
         case REQUEST.GET_BAND_CONDITIONS: {

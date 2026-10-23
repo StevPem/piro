@@ -1689,3 +1689,79 @@ button {
   color: var(--led-amber);
   font-weight: 600;
 }
+
+/* Radiofax: the chart in the spectrum area (same height as trace + waterfall). */
+.fax-view {
+  position: absolute;
+  inset: 0;
+  overflow-y: auto;
+  background: #08080f;
+}
+
+.fax-view[hidden] {
+  display: none;
+}
+
+.fax-view__canvas {
+  display: block;
+  width: 100%;
+  height: auto;
+  image-rendering: auto;
+  cursor: zoom-in;
+}
+
+.scope__canvases--fax .scope__trace,
+.scope__canvases--fax .scope__waterfall {
+  display: none;
+}
+
+/* Radiofax station buttons, below the S-meter. */
+.fax-stations {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+
+.fax-stations[hidden] {
+  display: none;
+}
+
+.fax-stations__list {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(92px, 1fr));
+  gap: 6px;
+}
+
+.fax-station {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 1px;
+  padding: 5px 4px;
+  line-height: 1.15;
+}
+
+.fax-station__freq {
+  font-family: var(--font-mono);
+  font-size: 0.85rem;
+}
+
+.fax-station__hours {
+  font-family: var(--font-mono);
+  font-size: 0.68rem;
+  color: var(--text-muted);
+}
+
+.fax-station--off-air {
+  opacity: 0.45;
+}
+
+/* Radiofax: no frequency range either side of the heading. */
+.scope--fax #scope-range-lo,
+.scope--fax #scope-range-hi {
+  visibility: hidden;
+}
+
+.scope__axis[hidden] {
+  display: none;
+}

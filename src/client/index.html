@@ -91,6 +91,10 @@
             <canvas class="scope__trace" id="scope-trace"></canvas>
             <canvas class="scope__waterfall" id="scope-waterfall"></canvas>
             <div class="scope__placeholder" id="scope-placeholder" hidden></div>
+            <!-- Radiofax: the chart coming in replaces the spectrum, newest line at the bottom. Tap to open it full size. -->
+            <div class="fax-view" id="fax-view" hidden>
+              <canvas class="fax-view__canvas" id="fax-canvas" width="1810" height="1" title="Tap to open full size"></canvas>
+            </div>
           </div>
           <div class="rx-gain" aria-label="RX gain">
             <input
@@ -131,6 +135,14 @@
           <span id="meter-value">&mdash;</span>
         </div>
         <div class="meter__bar" id="meter-bar"></div>
+      </section>
+
+      <!-- Radiofax stations: the Bureau of Meteorology's VMC (Charleville) and
+           VMW (Wiluna) frequencies, in order of their broadcast hours (UTC).
+           Shown while the Image button is on Fax; see app.js "Radiofax". -->
+      <section class="fax-stations" id="fax-stations" aria-label="Radiofax stations" hidden>
+        <span class="row-group__label">Radiofax stations · broadcast hours UTC</span>
+        <div class="fax-stations__list" id="fax-stations-list"></div>
       </section>
 
       <section class="cw-ticker-section" id="cw-ticker-section" aria-label="CW decode" hidden>
@@ -248,6 +260,19 @@
             <div class="ft8-panel__slot sstv-tx__status" id="sstv-tx-status" aria-live="polite"></div>
           </div>
         </div>
+      </section>
+
+      <!-- Radiofax receive: status, Start now / Stop / Save, and recent charts.
+           The chart itself is drawn in the spectrum area (#fax-view). -->
+      <section class="ft8-panel sstv-rx fax-rx" id="fax-rx" aria-label="Radiofax received" hidden>
+        <div class="ft8-panel__header">
+          <span class="row-group__label">Radiofax</span>
+          <button class="chip sstv-rx__btn" id="fax-start-btn" type="button" title="Start a chart now, without waiting for the start signal (for a broadcast already under way)">Start now</button>
+          <button class="chip sstv-rx__btn" id="fax-stop-btn" type="button" hidden title="End this chart now, keeping what has arrived">Stop</button>
+          <button class="chip sstv-rx__btn" id="fax-save-btn" type="button" hidden title="Save this chart as a PNG">Save</button>
+        </div>
+        <div class="ft8-panel__slot sstv-rx__status" id="fax-status" aria-live="polite">listening for a start signal…</div>
+        <div class="sstv-rx__strip" id="fax-strip" aria-label="Recent radiofax charts"></div>
       </section>
 
       <section class="ft8-panel" id="ft8-panel" aria-label="FT8" hidden>
