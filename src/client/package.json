@@ -1,0 +1,4 @@
+{
+  "//": "The browser code is ES modules. This lets Node import it too (the server shares audio-codec.js).",
+  "type": "module"
+}

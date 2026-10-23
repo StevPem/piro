@@ -1,6 +1,6 @@
 import { RigLink } from './rpc.js';
 import { CallAlert, baseCall } from './call-alert.js';
-import { AudioPipeline } from './audio.js';
+import { AudioPipeline, opusSupport, isLanHost } from './audio.js';
 import { ScopeDisplay } from './scope.js';
 import { S_METER_LEVELS, sMeterLevelIndex, sMeterLabel } from './smeter.js';
 import { rawToVswr, vswrZone } from './vswr.js';
@@ -435,6 +435,7 @@ const meterValue = document.getElementById('meter-value');
 const meterBarEl = document.getElementById('meter-bar');
 
 const speakerBtn = document.getElementById('speaker-btn');
+const audioFormatBtn = document.getElementById('audio-format-btn');
 const tunerBtn = document.getElementById('tuner-btn');
 const tuneBtn = document.getElementById('tune-btn');
 const txPowerSelect = document.getElementById('tx-power-select');
@@ -768,6 +769,12 @@ const link = new RigLink();
 link.addEventListener('audio-frame', (event) => {
   if (audioPipeline) audioPipeline.playChunk(event.detail);
 });
+link.addEventListener('audio-opus', (event) => {
+  if (audioPipeline) audioPipeline.playOpus(event.detail);
+});
+link.addEventListener('audio-adpcm', (event) => {
+  if (audioPipeline) audioPipeline.playAdpcm(event.detail);
+});
 
 const scopeDisplay = new ScopeDisplay({
   traceCanvas: scopeTraceCanvas,
@@ -1021,16 +1028,27 @@ link.addEventListener('connected', (event) => {
       audioPipeline = new AudioPipeline({
         sampleRate: data.audio.sampleRate,
         channels: data.audio.channels,
-        onMicFrame: (frame) => {
-          if (pttActive) link.sendAudioFrame(frame);
+        onMicFrame: (type, frame) => {
+          if (pttActive) link.sendAudioFrame(frame, type);
+        },
+        onCodecError: (direction, err) => {
+          console.warn(`Opus ${direction === 'rx' ? 'decoding' : 'encoding'} failed, using ADPCM:`, err);
+          if (direction === 'rx') setAudioCodecs('adpcm', audioPipeline.txCodec);
+          else renderAudioFormat();
         },
       });
     }
     speakerBtn.disabled = false;
     speakerBtn.title = '';
+    serverAudioCodecs = data.audio.codecs || ['pcm'];
+    serverOpusBitrate = data.audio.opusBitrate || 24000;
+    // the server forgets each browser's format when it disconnects
+    applyAudioFormat();
   } else {
     speakerBtn.disabled = true;
     speakerBtn.title = 'Audio is not configured on the server (AUDIO_RX_DEVICE unset)';
+    audioFormatBtn.disabled = true;
+    audioFormatBtn.title = speakerBtn.title;
   }
 
   scopeEnabled = !!(data.scope && data.scope.enabled);
@@ -4416,6 +4434,88 @@ speakerBtn.addEventListener('click', async () => {
     speakerBtn.textContent = 'Speaker: off';
     speakerBtn.classList.remove('chip--active');
   }
+});
+
+// --- Audio format: full or compressed ---
+// Each browser chooses for itself (see server/audio-bridge.js). Full is raw
+// PCM, 768 kbit/s each way at 48 kHz: fine on a LAN. Compressed is Opus
+// (WebCodecs) at about 24 kbit/s, or 12 kHz ADPCM at 48 kbit/s where the
+// browser can't do Opus. RX and TX are chosen separately: some browsers
+// decode Opus but can't encode it. The default is full when the page was
+// opened by a LAN address or name, compressed otherwise (e.g. through a
+// VPN or port forward). A choice made with the button is remembered on
+// this device only.
+const AUDIO_FORMAT_KEY = 'piro.audioFormat';
+let serverAudioCodecs = ['pcm'];
+let serverOpusBitrate = 24000;
+let opusCaps = null;
+
+function loadAudioFormat() {
+  try {
+    const v = localStorage.getItem(AUDIO_FORMAT_KEY);
+    if (v === 'full' || v === 'compressed') return v;
+  } catch {
+    // storage blocked: use the default
+  }
+  return isLanHost(location.hostname) ? 'full' : 'compressed';
+}
+let audioFormat = loadAudioFormat();
+
+const CODEC_NAMES = { pcm: 'raw PCM', opus: 'Opus', adpcm: 'ADPCM' };
+function codecRate(codec) {
+  if (codec === 'opus') return `about ${Math.round(serverOpusBitrate / 1000)} kbit/s`;
+  if (codec === 'adpcm') return '48 kbit/s';
+  return `${Math.round((audioPipeline?.sampleRate || 48000) * 16 / 1000)} kbit/s`;
+}
+
+function renderAudioFormat() {
+  if (!audioPipeline) return;
+  const { rxCodec: rx, txCodec: tx } = audioPipeline;
+  const canCompress = serverAudioCodecs.length > 1;
+  audioFormatBtn.disabled = !canCompress && audioFormat === 'full';
+  audioFormatBtn.textContent = rx === 'pcm' ? 'Audio: full' : `Audio: ${CODEC_NAMES[rx]}`;
+  audioFormatBtn.classList.toggle('chip--active', rx !== 'pcm');
+  const each = rx === tx ? `${CODEC_NAMES[rx]}, ${codecRate(rx)} each way` : `receive ${CODEC_NAMES[rx]} (${codecRate(rx)}), transmit ${CODEC_NAMES[tx]} (${codecRate(tx)})`;
+  audioFormatBtn.title = canCompress
+    ? `${each}. Tap for ${audioFormat === 'full' ? 'compressed audio (for use away from home)' : 'full audio (for the home network)'}.`
+    : `${each}. This server can't compress audio (it needs mono audio).`;
+}
+
+/** Asks the server for this browser's RX format and sets the pipeline to match. */
+async function setAudioCodecs(rx, tx) {
+  if (!audioPipeline) return;
+  try {
+    await link.request('setAudioCodec', { codec: rx });
+  } catch (err) {
+    showError(`Couldn't change the audio format: ${err.message}`);
+    rx = 'pcm';
+    tx = 'pcm';
+  }
+  audioPipeline.setCodecs(rx, tx);
+  renderAudioFormat();
+}
+
+async function applyAudioFormat() {
+  if (!audioPipeline) return;
+  let rx = 'pcm';
+  let tx = 'pcm';
+  if (audioFormat === 'compressed' && serverAudioCodecs.length > 1) {
+    opusCaps ??= await opusSupport();
+    const opus = serverAudioCodecs.includes('opus');
+    rx = opus && opusCaps.rx ? 'opus' : 'adpcm';
+    tx = opus && opusCaps.tx ? 'opus' : 'adpcm';
+  }
+  await setAudioCodecs(rx, tx);
+}
+
+audioFormatBtn.addEventListener('click', () => {
+  audioFormat = audioFormat === 'full' ? 'compressed' : 'full';
+  try {
+    localStorage.setItem(AUDIO_FORMAT_KEY, audioFormat);
+  } catch {
+    // storage blocked: the choice lasts until the page is reloaded
+  }
+  applyAudioFormat();
 });
 
 // --- Tuner ---

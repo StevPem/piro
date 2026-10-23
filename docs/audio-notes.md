@@ -5,17 +5,49 @@ Working notes for `src/audio/` and `src/server/audio-bridge.js`.
 ## Data flow
 
 ```
-Radio RX audio --USB--> ALSA capture device --arecord--> PcmFramer --> Opus encode --> WS binary broadcast --> clients
-Client mic audio --WS binary--> Opus decode --> AlsaPlayback (aplay) --USB--> Radio TX (mic) input
+Radio RX audio --USB--> ALSA capture --arecord--> AudioBridge --+--> raw PCM ------------------------> browsers on full audio
+                                                                +--> resample 16k --> Opus encode --> browsers on Opus
+                                                                +--> resample 12k --> ADPCM --------> browsers on ADPCM
+Browser mic audio --WS binary (PCM, Opus or ADPCM)--> that browser's decoder --> resample --> aplay --USB--> Radio TX (mic) input
 ```
 
-## Wire codec: PCM (default) vs Opus
+## Wire formats: full or compressed, per browser (v96)
 
-As of phase 5, the browser client speaks raw PCM, not Opus — see
-`src/server/audio-bridge.js`'s doc comment for the full reasoning, and
-`docs/ui-notes.md` for the client-side consequences. `AUDIO_CODEC=opus`
-still works server-side and is covered by tests, but nothing in the
-shipped PWA client uses it currently.
+Each browser picks its RX format with `setAudioCodec`, and tags its mic
+frames with the format it sends (see `src/server/protocol.js`):
+
+| Format | Tag | Audio | Bit rate | Browser side |
+| --- | --- | --- | --- | --- |
+| raw PCM | `AUDIO` 0x01 | server rate (48 kHz) | 768 kbit/s | Web Audio only |
+| Opus | `AUDIO_OPUS` 0x07 | 16 kHz | ~24 kbit/s (`AUDIO_OPUS_BITRATE`) | WebCodecs AudioDecoder/AudioEncoder |
+| ADPCM | `AUDIO_ADPCM` 0x08 | 12 kHz, IMA, 4 bits | 48 kbit/s | plain JS (`client/audio-codec.js`) |
+
+Choices made:
+- **Opus through WebCodecs, ADPCM as the fallback.** No WASM Opus is
+  shipped to the browser (no build step, and it would be large). WebCodecs
+  Opus covers Chrome, Edge, Firefox desktop and Safari 26+. ADPCM covers
+  the rest: it is trivial in JS and every frame carries its own start
+  state, so a dropped frame does no harm. RX and TX are decided apart,
+  since `isConfigSupported()` can say yes to one and no to the other.
+- **16 kHz for Opus, 12 kHz for ADPCM.** The radio passes at most about
+  3.6 kHz, so both keep everything. Opus at 16 kHz with application
+  `AUDIO` (not `VOIP`: CW and data tones aren't speech), complexity 5 for
+  the Pi. Measured on a desktop: 9 ms of CPU per second of audio for
+  Opus, 3 ms for ADPCM.
+- **One encoder per format, shared.** All browsers on Opus get the same
+  packets. An encoder exists only while some browser wants its format.
+  Mic decoders are per browser (Opus decoders keep state).
+- **Shared code.** `src/client/audio-codec.js` (ADPCM, a streaming
+  resampler for any pair of rates, frame buffering) is an ES module the
+  server loads with `import()`. `src/client/package.json` marks the
+  folder as ES modules so Node can.
+- **Jitter.** Compressed audio is played 0.2 s behind; full audio as
+  soon as it arrives. More than 0.5 s beyond that is skipped.
+- The decoders on the Pi (FT8, CW, RTTY, ...) always read the full-rate
+  capture; compression only touches what browsers hear and send.
+
+`AUDIO_CODEC` (the old server-wide `pcm`/`opus` switch, whose Opus no
+browser could play) is gone; setting it logs a warning.
 
 ## Why child processes instead of a native ALSA binding
 
@@ -37,18 +69,20 @@ interface without touching the rest of the pipeline.
 
 ## Framing
 
-Default: 48kHz, mono, 16-bit PCM, 20ms Opus frames (960 samples / 1920
-PCM bytes per frame). 20ms is the conventional choice for voice — good
-balance of latency and compression efficiency. All three are
-configurable via env vars (`AUDIO_SAMPLE_RATE`, `AUDIO_CHANNELS`) if a
-given USB codec needs something different — check with `arecord -l` and
-test capture manually (`arecord -D plughw:X,0 -f S16_LE -r 48000 -c 1
-test.wav`) before assuming 48kHz/mono works for your specific radio.
+Default: 48kHz, mono, 16-bit PCM. Compressed formats use 20 ms frames
+(320 samples at 16 kHz for Opus, 240 at 12 kHz for ADPCM). The sample
+rate and channel count are configurable via env vars (`AUDIO_SAMPLE_RATE`,
+`AUDIO_CHANNELS`) if a given USB codec needs something different — check
+with `arecord -l` and test capture manually (`arecord -D plughw:X,0 -f
+S16_LE -r 48000 -c 1 test.wav`) before assuming 48kHz/mono works for your
+specific radio. Compressed audio needs mono; any rate works, since the
+resampler handles any pair of rates.
 
-`PcmFramer` exists because `arecord`'s stdout delivers data in whatever
-chunk sizes the OS/pipe buffering happens to produce — never reliably
-aligned to Opus frame boundaries — so incoming bytes are accumulated and
-sliced into exact frame-sized pieces before encoding.
+`arecord`'s stdout arrives in whatever chunk sizes the pipe produces, so
+the compressed path resamples each chunk and collects the result into
+exact frames (`FrameBuffer` in `client/audio-codec.js`). `PcmFramer`
+(`src/audio/pcm-framer.js`) did this for the old server-wide Opus mode
+and is no longer used by the bridge.
 
 ## Mixer levels on startup
 
@@ -110,8 +144,8 @@ rather than opening its own capture/playback devices:
   later).
 - **TX audio**: `audioBridge.on('tx-pcm', ...)` — emitted right alongside
   (not instead of) the existing `playback.write()` calls in
-  `_handleBinaryMessage()`, after Opus decode if `AUDIO_CODEC=opus` is in
-  use — so a listener that needs to *observe* the operator's own outgoing
+  `_handleBinaryMessage()`, after the browser's Opus or ADPCM is decoded
+  — so a listener that needs to *observe* the operator's own outgoing
   mic audio (rather than just RX) always gets raw PCM regardless of which
   wire codec is configured, and normal TX playback is completely
   unaffected either way.

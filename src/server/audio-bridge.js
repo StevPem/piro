@@ -1,9 +1,8 @@
 'use strict';
 
 const { EventEmitter } = require('events');
-const { PcmFramer } = require('../audio/pcm-framer');
 const { AlsaCapture, AlsaPlayback } = require('../audio/alsa');
-const { OpusCodec } = require('../audio/opus-codec');
+const { loadSharedCodec, RxEncoder, TxDecoder, DEFAULT_OPUS_BITRATE } = require('./audio-codecs');
 const { maximizeVolume, alsaDeviceToCardId } = require('../audio/mixer');
 const { RnnoiseFilter } = require('../audio/rnnoise-filter');
 const { HamnoiseFilter } = require('../audio/hamnoise-filter');
@@ -22,23 +21,23 @@ const DEFAULT_RNNOISE_WET_LEVELS = [0.25, 0.5, 0.75, 1.0];
  *   radio RX audio -> arecord -> [encode] -> broadcast to clients
  *   client mic audio -> [decode] -> aplay -> radio TX (mic) input
  *
- * Two wire codecs are supported, via opts.codec:
+ * Each browser chooses how its RX audio is sent (REQUEST.SET_AUDIO_CODEC,
+ * handled by setClientCodec()):
  *
- * - 'pcm' (default): raw 16-bit PCM straight over the WebSocket binary
- *   channel, no framing or encoding at all. This is the simplest option
- *   and works via the standard Web Audio API in every browser (including
- *   Safari/iOS) with no WASM/WebCodecs dependency client-side. Chosen as
- *   the default because this app is LAN-only (see project README) where
- *   the extra bandwidth of uncompressed audio is a non-issue.
- * - 'opus': the phase-3 pipeline (PcmFramer -> Opus encode/decode via
- *   opusscript). Kept available for a future bandwidth-constrained
- *   scenario (e.g. if remote-over-internet access is layered on via VPN
- *   later, per the project's original scope) where compression would
- *   actually matter. Not used by the current PWA client.
+ * - 'pcm' (default): raw 16-bit PCM at the server's rate, in AUDIO frames.
+ *   768 kbit/s at 48 kHz; fine on a LAN.
+ * - 'opus': AUDIO_OPUS frames, 16 kHz audio at about 24 kbit/s.
+ * - 'adpcm': AUDIO_ADPCM frames, 12 kHz IMA ADPCM at 48 kbit/s, for
+ *   browsers without WebCodecs Opus.
  *
- * `capture`/`playback`/`codec` can be injected (e.g. for testing without
- * real ALSA hardware or to swap devices); otherwise real AlsaCapture /
- * AlsaPlayback / OpusCodec instances are created from rxDevice/txDevice.
+ * Each compressed format is encoded once and sent to every browser that
+ * chose it (see broadcastRxAudio()). Mic audio arrives in whichever of the
+ * three frame types the browser sends, and is decoded per browser. See
+ * server/audio-codecs.js. Compression needs mono audio.
+ *
+ * `capture`/`playback` can be injected (e.g. for testing without real
+ * ALSA hardware or to swap devices); otherwise real AlsaCapture /
+ * AlsaPlayback instances are created from rxDevice/txDevice.
  *
  * Every binary WebSocket frame this class sends/reads is prefixed with a
  * 1-byte type tag (BINARY_TYPE.AUDIO, see protocol.js) so audio and scope
@@ -161,11 +160,9 @@ class AudioBridge extends EventEmitter {
       txDevice,
       sampleRate = 48000,
       channels = 1,
-      frameMs = 20,
-      codecType = 'pcm',
+      opusBitrate = DEFAULT_OPUS_BITRATE,
       capture,
       playback,
-      codec,
       mixer,
       maximizeVolumeOnStart = true,
       rnnoiseBin,
@@ -178,13 +175,9 @@ class AudioBridge extends EventEmitter {
     if (!controlServer) throw new Error('AudioBridge requires opts.controlServer');
     if (!capture && !rxDevice) throw new Error('AudioBridge requires opts.rxDevice (or an injected capture)');
     if (!playback && !txDevice) throw new Error('AudioBridge requires opts.txDevice (or an injected playback)');
-    if (codecType !== 'pcm' && codecType !== 'opus') {
-      throw new Error(`AudioBridge codecType must be "pcm" or "opus", got "${codecType}"`);
-    }
 
     this.controlServer = controlServer;
     this.civ = civ ?? null;
-    this.codecType = codecType;
     this.sampleRate = sampleRate;
     this.channels = channels;
     this.rxDevice = rxDevice;
@@ -192,10 +185,14 @@ class AudioBridge extends EventEmitter {
     this._mixer = mixer ?? maximizeVolume;
     this.maximizeVolumeOnStart = maximizeVolumeOnStart;
 
-    if (codecType === 'opus') {
-      this.codec = codec ?? new OpusCodec({ sampleRate, channels, frameMs });
-      this.framer = new PcmFramer(this.codec.frameBytes);
-    }
+    // Compressed audio (see this class's doc comment). The shared format
+    // code is an ES module, loaded in start() (or ready()).
+    this.opusBitrate = opusBitrate;
+    this._codecLib = null;
+    this._clientCodec = new Map(); // ws -> 'opus' | 'adpcm' (absent: 'pcm')
+    this._rxEncoders = new Map(); // 'opus' | 'adpcm' -> RxEncoder
+    this._txDecoders = new Map(); // ws -> TxDecoder
+    controlServer.setClientAudioCodec = (ws, codec) => this.setClientCodec(ws, codec);
 
     this.capture = capture ?? new AlsaCapture({ device: rxDevice, sampleRate, channels });
     this.playback = playback ?? new AlsaPlayback({ device: txDevice, sampleRate, channels });
@@ -244,7 +241,8 @@ class AudioBridge extends EventEmitter {
     this._onCivMode = (info) => this._handleCivModeChange(info.mode);
     if (this.civ) this.civ.on('mode', this._onCivMode);
 
-    this._onBinaryMessage = (ws, data) => this._handleBinaryMessage(data);
+    this._onBinaryMessage = (ws, data) => this._handleBinaryMessage(data, ws);
+    this._onClientGone = (ws) => this._forgetClient(ws);
     this._onRnnoiseLevel = (level) => this.setRnnoiseLevel(level);
     this._onHamNoiseEnabled = (enabled) => this.setHamNoiseEnabled(enabled);
 
@@ -311,10 +309,7 @@ class AudioBridge extends EventEmitter {
       this._disableHamNoise();
       const filter = this._makeRnnoiseFilter({ bin: this._rnnoiseBin, wet: this._rnnoiseWetLevels[level] });
       this._rnnoiseFilter = filter;
-      filter.on('data', (chunk) => {
-        if (this.codecType === 'opus') this._encodeAndPublishRx(chunk);
-        else this._publishRx(chunk);
-      });
+      filter.on('data', (chunk) => this._publishRx(chunk));
       filter.on('error', (err) => this._handleRnnoiseError(err));
       filter.on('stderr', (msg) => console.error('[rnnoise]', msg));
       filter.start();
@@ -342,10 +337,7 @@ class AudioBridge extends EventEmitter {
         quality: this._hamNoiseQuality,
       });
       this._hamNoiseFilter = filter;
-      filter.on('data', (chunk) => {
-        if (this.codecType === 'opus') this._encodeAndPublishRx(chunk);
-        else this._publishRx(chunk);
-      });
+      filter.on('data', (chunk) => this._publishRx(chunk));
       filter.on('error', (err) => this._handleHamNoiseError(err));
       filter.start();
     }
@@ -487,72 +479,129 @@ class AudioBridge extends EventEmitter {
     this.controlServer.broadcastJsonEvent(EVENT.RNNOISE_LEVEL, { level: 0 });
   }
 
-  /** pcm mode: broadcasts one RX chunk (raw or RNNoise-filtered, whichever this call actually received) to clients, and emits it as 'rx-pcm' for other server-side listeners — see this class's own doc comment. */
+  /** Sends one RX chunk (raw or denoised, whichever this call received) to the browsers unless muted (see setRxMuted()), and emits it as 'rx-pcm' for other server-side listeners — see this class's own doc comment. */
   _publishRx(chunk) {
-    if (!this._rxMuted) this.controlServer.broadcastBinary(tagAudio(chunk));
+    if (!this._rxMuted) this.broadcastRxAudio(chunk);
     this.emit('rx-pcm', chunk);
   }
 
-  /** opus mode: same idea as _publishRx(), but Opus-encodes the (raw or filtered) PCM before broadcasting — 'rx-pcm' still carries the raw PCM, never the encoded packet, since a server-side listener needs samples it can actually read. */
-  _encodeAndPublishRx(pcm) {
-    this.emit('rx-pcm', pcm);
+  /** Which compressed formats this server can send: [] until start() has loaded them, or if the audio isn't mono. */
+  get compressedCodecs() {
+    return this._codecLib && this.channels === 1 ? ['opus', 'adpcm'] : [];
+  }
+
+  /** Resolves once the compressed formats are loaded (start() does this too). */
+  async ready() {
+    if (this._codecLib) return;
     try {
-      const packet = this.codec.encode(pcm);
-      if (!this._rxMuted) this.controlServer.broadcastBinary(tagAudio(packet));
+      this._codecLib = await loadSharedCodec();
     } catch (err) {
-      this._reportError('encode', err);
+      this._reportError('codec', new Error(`compressed audio is unavailable: ${err.message}`));
+    }
+  }
+
+  /**
+   * One browser's RX format (REQUEST.SET_AUDIO_CODEC). Throws if the format
+   * isn't one this server can send.
+   * @returns {string} the format now in use
+   */
+  setClientCodec(ws, codec) {
+    if (codec === 'pcm') {
+      this._clientCodec.delete(ws);
+      return 'pcm';
+    }
+    if (!this.compressedCodecs.includes(codec)) {
+      throw new Error(
+        this.compressedCodecs.length ? `Unknown audio format "${codec}"` : 'This server cannot send compressed audio'
+      );
+    }
+    this._clientCodec.set(ws, codec);
+    return codec;
+  }
+
+  _forgetClient(ws) {
+    this._clientCodec.delete(ws);
+    const dec = this._txDecoders.get(ws);
+    if (dec) {
+      dec.close();
+      this._txDecoders.delete(ws);
+    }
+  }
+
+  /**
+   * Sends RX audio (S16LE mono at `sampleRate`) to every browser in its
+   * chosen format. Ignores setRxMuted(): RadeBridge uses this to send its
+   * decoded speech while the raw audio is muted. A compressed format is
+   * only encoded while some browser wants it; its encoder is dropped when
+   * none does, and a fresh one starts when one asks again.
+   */
+  broadcastRxAudio(pcm) {
+    let raw = null;
+    const wants = new Map();
+    for (const ws of this.controlServer.clients ?? []) {
+      if (ws.readyState !== ws.OPEN) continue;
+      const codec = this._clientCodec.get(ws);
+      if (codec) {
+        if (!wants.has(codec)) wants.set(codec, []);
+        wants.get(codec).push(ws);
+      } else {
+        raw ??= tagAudio(pcm);
+        ws.send(raw);
+      }
+    }
+    for (const [codec, enc] of this._rxEncoders) {
+      if (!wants.has(codec)) {
+        enc.close();
+        this._rxEncoders.delete(codec);
+      }
+    }
+    for (const [codec, clients] of wants) {
+      let enc = this._rxEncoders.get(codec);
+      let packets;
+      try {
+        if (!enc) {
+          enc = new RxEncoder(codec, this.sampleRate, this._codecLib, { opusBitrate: this.opusBitrate });
+          this._rxEncoders.set(codec, enc);
+        }
+        packets = enc.encode(pcm);
+      } catch (err) {
+        this._reportError('encode', err);
+        continue;
+      }
+      const type = codec === 'opus' ? BINARY_TYPE.AUDIO_OPUS : BINARY_TYPE.AUDIO_ADPCM;
+      for (const p of packets) {
+        const frame = tagFrame(type, p);
+        for (const ws of clients) ws.send(frame);
+      }
     }
   }
 
   _wire() {
-    if (this.codecType === 'opus') {
-      this.framer.on('frame', (pcm) => {
-        if (this._rnnoiseEnabled && this._rnnoiseFilter) {
-          // Filtered result arrives asynchronously via the filter's own
-          // 'data' event (wired in setRnnoiseLevel()) — a child-process
-          // round trip, not a synchronous call — so this branch does
-          // nothing further with `pcm` itself here.
-          this._rnnoiseFilter.write(pcm);
-          return;
-        }
-        if (this._hamNoiseEnabled && this._hamNoiseFilter) {
-          // filtered result arrives via the 'data' handler in
-          // setHamNoiseEnabled(); see _writeHamNoiseFilterSafely()'s own
-          // doc comment for why this call is guarded.
-          this._writeHamNoiseFilterSafely(pcm, (raw) => this._encodeAndPublishRx(raw));
-          return;
-        }
-        this._encodeAndPublishRx(pcm);
-      });
-      this.capture.on('data', (chunk) => this.framer.push(chunk));
-    } else {
-      // pcm mode: no framing needed at all — raw PCM playback doesn't
-      // care about chunk boundaries, so pass arecord's output straight
-      // through as-is (just tagged), unless muted (see setRxMuted()) or
-      // routed through RNNoise first (see setRnnoiseLevel()). This is
-      // the ONE listener on `capture`'s 'data' event that decides what
-      // gets broadcast to clients — CW/RTTY/FT8/RADE each register their
-      // own SEPARATE 'data' listener directly on `capture` (see
-      // cw-decoder-bridge.js etc.) and are completely unaffected by
-      // anything this listener does; they always see the original,
-      // unfiltered chunk.
-      this.capture.on('data', (chunk) => {
-        if (this._rnnoiseEnabled && this._rnnoiseFilter) {
-          this._rnnoiseFilter.write(chunk); // filtered result arrives asynchronously — see the 'data' handler in setRnnoiseLevel()
-          return;
-        }
-        if (this._hamNoiseEnabled && this._hamNoiseFilter) {
-          // filtered result arrives via the 'data' handler in
-          // setHamNoiseEnabled() — may be a different-length chunk than
-          // written, see hamnoise-filter.js's resampling; see
-          // _writeHamNoiseFilterSafely()'s own doc comment for why this
-          // call is guarded.
-          this._writeHamNoiseFilterSafely(chunk, (raw) => this._publishRx(raw));
-          return;
-        }
-        this._publishRx(chunk);
-      });
-    }
+    // No framing needed for the raw path: PCM playback doesn't care about
+    // chunk boundaries, so arecord's output goes straight through (the
+    // compressed formats frame it themselves, see broadcastRxAudio()),
+    // unless muted (see setRxMuted()) or routed through RNNoise/HamNoise
+    // first. This is the ONE listener on `capture`'s 'data' event that
+    // decides what gets sent to browsers — CW/RTTY/FT8/RADE each register
+    // their own SEPARATE 'data' listener directly on `capture` (see
+    // cw-decoder-bridge.js etc.) and are completely unaffected by anything
+    // this listener does; they always see the original, unfiltered chunk.
+    this.capture.on('data', (chunk) => {
+      if (this._rnnoiseEnabled && this._rnnoiseFilter) {
+        this._rnnoiseFilter.write(chunk); // filtered result arrives asynchronously — see the 'data' handler in setRnnoiseLevel()
+        return;
+      }
+      if (this._hamNoiseEnabled && this._hamNoiseFilter) {
+        // filtered result arrives via the 'data' handler in
+        // setHamNoiseEnabled() — may be a different-length chunk than
+        // written, see hamnoise-filter.js's resampling; see
+        // _writeHamNoiseFilterSafely()'s own doc comment for why this
+        // call is guarded.
+        this._writeHamNoiseFilterSafely(chunk, (raw) => this._publishRx(raw));
+        return;
+      }
+      this._publishRx(chunk);
+    });
 
     this.capture.on('error', (err) => this._reportError('capture', err));
     this.capture.on('stderr', (msg) => console.error('[arecord]', msg.trim()));
@@ -569,6 +618,7 @@ class AudioBridge extends EventEmitter {
     });
 
     this.controlServer.on('binary-message', this._onBinaryMessage);
+    this.controlServer.on('client-disconnected', this._onClientGone);
     // Self-contained wiring, no index.js glue needed beyond normal
     // construction — same pattern RttyDecoderBridge already uses for its
     // own 'rtty-reversed' subscription (see rtty-decoder-bridge.js).
@@ -576,29 +626,40 @@ class AudioBridge extends EventEmitter {
     this.controlServer.on('hamnoise-enabled', this._onHamNoiseEnabled);
   }
 
-  _handleBinaryMessage(data) {
-    if (data.length < 1 || data[0] !== BINARY_TYPE.AUDIO) {
-      // Not tagged as audio (e.g. a scope-related or future tag) — not ours.
-      return;
-    }
+  /**
+   * Mic audio from a browser: raw PCM (AUDIO) or compressed (AUDIO_OPUS,
+   * AUDIO_ADPCM), decoded with that browser's own decoder. Emitted as
+   * 'tx-pcm' (always raw PCM at `sampleRate`) and written to the radio
+   * unless muted (see setTxMuted()).
+   */
+  _handleBinaryMessage(data, ws) {
+    if (data.length < 1) return;
+    const type = data[0];
     const payload = data.subarray(1);
-    if (this.codecType === 'pcm') {
-      // pcm mode: `payload` is already raw S16LE PCM, the same shape
-      // `capture`'s own 'data' event carries for RX — emit it as-is.
-      this.emit('tx-pcm', payload);
-      if (!this._txMuted) this.playback.write(payload);
-      return;
+    let pcm;
+    if (type === BINARY_TYPE.AUDIO) {
+      pcm = payload;
+    } else if (type === BINARY_TYPE.AUDIO_OPUS || type === BINARY_TYPE.AUDIO_ADPCM) {
+      if (!this.compressedCodecs.length) return;
+      const kind = type === BINARY_TYPE.AUDIO_OPUS ? 'opus' : 'adpcm';
+      try {
+        let dec = this._txDecoders.get(ws);
+        if (!dec || dec.kind !== kind) {
+          dec?.close();
+          dec = new TxDecoder(kind, this.sampleRate, this._codecLib);
+          this._txDecoders.set(ws, dec);
+        }
+        pcm = dec.decode(payload);
+      } catch (err) {
+        this._reportError('decode', err);
+        return;
+      }
+    } else {
+      return; // tagged for something else (e.g. scope) — not ours
     }
-    try {
-      const pcm = this.codec.decode(payload);
-      // opus mode: emit the *decoded* PCM, not the still-encoded Opus
-      // packet — a server-side listener needs raw audio samples,
-      // not a codec it doesn't know how to decode itself.
-      this.emit('tx-pcm', pcm);
-      if (!this._txMuted) this.playback.write(pcm);
-    } catch (err) {
-      this._reportError('decode', err);
-    }
+    if (!pcm.length) return;
+    this.emit('tx-pcm', pcm);
+    if (!this._txMuted) this.playback.write(pcm);
   }
 
   _reportError(context, err) {
@@ -617,6 +678,7 @@ class AudioBridge extends EventEmitter {
    */
   async start() {
     this._stopping = false;
+    await this.ready();
 
     if (this.maximizeVolumeOnStart) {
       const cardIds = new Set(
@@ -655,6 +717,7 @@ class AudioBridge extends EventEmitter {
   stop() {
     this._stopping = true;
     this.controlServer.off('binary-message', this._onBinaryMessage);
+    this.controlServer.off('client-disconnected', this._onClientGone);
     this.controlServer.off('rnnoise-level', this._onRnnoiseLevel);
     this.controlServer.off('hamnoise-enabled', this._onHamNoiseEnabled);
     if (this.civ) this.civ.off('mode', this._onCivMode);
@@ -663,13 +726,17 @@ class AudioBridge extends EventEmitter {
       this._rnnoiseFilter = null;
     }
     this._stopHamNoiseFilterSafely();
-    if (this.framer) this.framer.reset();
+    for (const enc of this._rxEncoders.values()) enc.close();
+    this._rxEncoders.clear();
+    for (const dec of this._txDecoders.values()) dec.close();
+    this._txDecoders.clear();
+    this._clientCodec.clear();
     this.capture.stop();
     this.playback.stop();
   }
 }
 
-module.exports = { AudioBridge, tagAudio };
+module.exports = { AudioBridge, tagAudio, tagFrame };
 
 /**
  * Prefix a payload with the AUDIO binary-frame type tag (see
@@ -680,5 +747,9 @@ module.exports = { AudioBridge, tagAudio };
  * src/server/rade-bridge.js).
  */
 function tagAudio(payload) {
-  return Buffer.concat([Buffer.from([BINARY_TYPE.AUDIO]), payload]);
+  return tagFrame(BINARY_TYPE.AUDIO, payload);
+}
+
+function tagFrame(type, payload) {
+  return Buffer.concat([Buffer.from([type]), payload]);
 }

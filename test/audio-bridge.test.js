@@ -2,14 +2,14 @@
 
 // Run with: node test/audio-bridge.test.js
 // Exercises the full RX (radio->clients) and TX (client->radio) audio
-// paths over a real WebSocket connection, for both the default 'pcm'
-// codec and the legacy 'opus' codec, with fake ALSA capture/playback
+// paths over a real WebSocket connection, raw PCM and the compressed
+// formats each browser can choose (Opus, ADPCM), with fake ALSA capture/playback
 // standing in for arecord/aplay so this needs no sound hardware.
 
 const { EventEmitter } = require('events');
 const WebSocket = require('ws');
 const { ControlServer } = require('../src/server/ws-server');
-const { AudioBridge } = require('../src/server/audio-bridge');
+const { AudioBridge, tagFrame } = require('../src/server/audio-bridge');
 const { OpusCodec } = require('../src/audio/opus-codec');
 const { BINARY_TYPE, EVENT } = require('../src/server/protocol');
 
@@ -827,44 +827,152 @@ async function testHamNoiseResilientToThrows() {
   await server.close();
 }
 
-async function testOpusMode() {
-  console.log('\n-- opus mode (legacy/optional) --');
+/** Waits for (and removes) the first queued/arriving message matching `pred`, keeping the rest queued. */
+async function waitFor(ws, pred, ms = 2000) {
+  const deadline = Date.now() + ms;
+  while (Date.now() < deadline) {
+    const i = ws._queue.findIndex(pred);
+    if (i >= 0) return ws._queue.splice(i, 1)[0];
+    await new Promise((r) => setTimeout(r, 10));
+  }
+  throw new Error('timed out waiting for a message');
+}
+
+let reqId = 1000;
+async function request(ws, type, extra = {}) {
+  const id = String(++reqId);
+  ws.send(JSON.stringify({ id, type, ...extra }));
+  return (await waitFor(ws, (m) => !m.isBinary && m.data.id === id)).data;
+}
+
+function binaries(ws, type) {
+  const out = ws._queue.filter((m) => m.isBinary && m.data[0] === type).map((m) => m.data.subarray(1));
+  ws._queue = ws._queue.filter((m) => !(m.isBinary && m.data[0] === type));
+  return out;
+}
+
+/** Zero crossings per second of Int16 samples: about 2 x the tone's frequency. */
+function crossingsPerSec(int16, rate) {
+  let z = 0;
+  for (let i = 1; i < int16.length; i++) if ((int16[i - 1] < 0) !== (int16[i] < 0)) z++;
+  return (z * rate) / int16.length;
+}
+
+function rmsInt16(int16) {
+  let s = 0;
+  for (const v of int16) s += v * v;
+  return Math.sqrt(s / int16.length);
+}
+
+async function testCompressedAudio() {
+  console.log('\n-- compressed audio for remote use (per browser) --');
+  const lib = await import(require('url').pathToFileURL(require('path').join(__dirname, '..', 'src', 'client', 'audio-codec.js')).href);
   const civ = new StubCivDriver();
   const server = new ControlServer({ civ, port: 0 });
   const port = await server.listen();
-
   const capture = new FakeCapture();
   const playback = new FakePlayback();
-  const bridge = new AudioBridge({ controlServer: server, capture, playback, codecType: 'opus' });
-  bridge.start();
+  const bridge = new AudioBridge({ controlServer: server, capture, playback, maximizeVolumeOnStart: false });
+  const txPcm = [];
+  bridge.on('tx-pcm', (p) => txPcm.push(p));
+  await bridge.start();
+  check(bridge.compressedCodecs.join() === 'opus,adpcm', 'a mono server offers Opus and ADPCM');
 
-  const client = await connect(port);
-  await nextMessage(client); // hello
+  const a = await connect(port); // stays on raw PCM
+  const b = await connect(port);
+  const c = await connect(port);
+  for (const ws of [a, b, c]) await waitFor(ws, (m) => !m.isBinary && m.data.type === EVENT.CONNECTED);
+  const rb = await request(b, 'setAudioCodec', { codec: 'opus' });
+  const rc = await request(c, 'setAudioCodec', { codec: 'adpcm' });
+  check(rb.ok && rb.data.codec === 'opus' && rc.ok && rc.data.codec === 'adpcm', 'setAudioCodec is accepted per browser');
+  const bad = await request(c, 'setAudioCodec', { codec: 'mp3' });
+  check(bad.ok === false && /Unknown audio format/.test(bad.error), 'an unknown format is refused');
 
-  const codec = new OpusCodec(); // mirrors the bridge's default opus config
-  const originalFrame = sineFrame(codec.samplesPerFrame);
-  capture.emit('data', originalFrame);
+  // 400 ms of a 1 kHz tone at 48 kHz, in arecord-sized odd chunks
+  const tone = sineFrame(19200, 1000, 48000, 8000);
+  for (let off = 0; off < tone.length; off += 2 * 1111) capture.emit('data', tone.subarray(off, Math.min(tone.length, off + 2 * 1111)));
+  await new Promise((r) => setTimeout(r, 150));
 
-  const rxMsg = await nextMessage(client);
-  check(rxMsg.isBinary === true, '[opus] RX audio arrives as a binary WebSocket frame');
-  check(rxMsg.data[0] === BINARY_TYPE.AUDIO, '[opus] RX audio frame is tagged as BINARY_TYPE.AUDIO');
-  const decodedRx = codec.decode(rxMsg.data.subarray(1));
-  check(decodedRx.length === codec.frameBytes, '[opus] decoded RX audio has the expected PCM frame length');
-  check(rxMsg.data.subarray(1).length < originalFrame.length, '[opus] RX audio is actually compressed on the wire');
+  const rawA = binaries(a, BINARY_TYPE.AUDIO);
+  const opusB = binaries(b, BINARY_TYPE.AUDIO_OPUS);
+  const adpcmC = binaries(c, BINARY_TYPE.AUDIO_ADPCM);
+  const rawBytes = rawA.reduce((n, p) => n + p.length, 0);
+  check(rawBytes === tone.length, 'the PCM browser still gets every raw sample');
+  check(binaries(b, BINARY_TYPE.AUDIO).length === 0 && binaries(c, BINARY_TYPE.AUDIO).length === 0, 'the compressed browsers get no raw audio');
+  check(opusB.length === 19 || opusB.length === 20, `Opus: one packet per 20 ms (${opusB.length} for 400 ms)`);
+  check(adpcmC.length === 19 || adpcmC.length === 20, `ADPCM: one frame per 20 ms (${adpcmC.length} for 400 ms)`);
+  const opusBytes = opusB.reduce((n, p) => n + p.length, 0);
+  const adpcmBytes = adpcmC.reduce((n, p) => n + p.length, 0);
+  check(opusBytes * 15 < rawBytes, `Opus is over 15 times smaller (${opusBytes} vs ${rawBytes} bytes)`);
+  check(adpcmBytes * 12 < rawBytes, `ADPCM is over 12 times smaller (${adpcmBytes} vs ${rawBytes} bytes)`);
 
-  const txFrame = sineFrame(codec.samplesPerFrame, 220);
-  const txPacket = codec.encode(txFrame);
-  client.send(tagAudio(txPacket));
-  await new Promise((resolve) => setTimeout(resolve, 100));
-  check(playback.written.length === 1, '[opus] TX audio from the client reaches the (fake) playback device');
-  check(
-    playback.written[0] && playback.written[0].length === codec.frameBytes,
-    '[opus] decoded TX PCM has the expected frame length'
-  );
+  const dec = new OpusCodec({ sampleRate: 16000, encode: false });
+  const opusPcm = Buffer.concat(opusB.map((p) => dec.decode(p)));
+  const opusInt = new Int16Array(opusPcm.buffer, opusPcm.byteOffset, opusPcm.length >> 1).slice(1600); // skip the start-up
+  check(Math.abs(crossingsPerSec(opusInt, 16000) - 2000) < 60, `Opus decodes back to the 1 kHz tone (${crossingsPerSec(opusInt, 16000).toFixed(0)} crossings/s)`);
+  check(rmsInt16(opusInt) > 4000 && rmsInt16(opusInt) < 7500, `at about the right level (rms ${rmsInt16(opusInt).toFixed(0)}, sent 5657)`);
+  dec.delete();
+  const adInt = Int16Array.from(adpcmC.flatMap((p) => Array.from(lib.adpcmDecode(new Uint8Array(p), lib.ADPCM_FRAME_SAMPLES)))).slice(1200);
+  check(Math.abs(crossingsPerSec(adInt, 12000) - 2000) < 60, `ADPCM decodes back to the 1 kHz tone (${crossingsPerSec(adInt, 12000).toFixed(0)} crossings/s)`);
+  check(rmsInt16(adInt) > 5000 && rmsInt16(adInt) < 6300, `at the right level (rms ${rmsInt16(adInt).toFixed(0)}, sent 5657)`);
+
+  // TX: Opus from B (a browser's WebCodecs encoder runs at 48 kHz), ADPCM from C
+  const enc = new OpusCodec({ sampleRate: 48000, decode: false });
+  for (let i = 0; i < 5; i++) b.send(tagFrame(BINARY_TYPE.AUDIO_OPUS, enc.encode(sineFrame(960, 500, 48000))));
+  enc.delete();
+  await new Promise((r) => setTimeout(r, 100));
+  check(playback.written.length === 5 && playback.written.every((p) => p.length === 1920), 'Opus mic audio is decoded to 20 ms of 48 kHz PCM for the radio');
+  check(txPcm.length === 5, "and emitted as 'tx-pcm'");
+  playback.written.length = 0;
+  const mic12k = new Int16Array(lib.ADPCM_FRAME_SAMPLES).map((_, i) => Math.round(6000 * Math.sin((2 * Math.PI * 500 * i) / 12000)));
+  for (let i = 0; i < 4; i++) c.send(tagFrame(BINARY_TYPE.AUDIO_ADPCM, Buffer.from(lib.adpcmEncode(mic12k))));
+  await new Promise((r) => setTimeout(r, 100));
+  const txSamples = playback.written.reduce((n, p) => n + p.length / 2, 0);
+  check(Math.abs(txSamples - 4 * 960) <= 40, `ADPCM mic audio is resampled 12 -> 48 kHz (${txSamples} samples for 80 ms; the filter adds a few)`);
+
+  // muted RX (RADE active): the capture stops reaching browsers, broadcastRxAudio() still does
+  bridge.setRxMuted(true);
+  capture.emit('data', tone.subarray(0, 1920 * 2));
+  await new Promise((r) => setTimeout(r, 50));
+  check(binaries(a, BINARY_TYPE.AUDIO).length === 0 && binaries(b, BINARY_TYPE.AUDIO_OPUS).length === 0, 'muted: no capture audio reaches any browser');
+  bridge.broadcastRxAudio(tone.subarray(0, 1920 * 2));
+  await new Promise((r) => setTimeout(r, 50));
+  check(binaries(a, BINARY_TYPE.AUDIO).length === 1 && binaries(b, BINARY_TYPE.AUDIO_OPUS).length === 2, 'but broadcastRxAudio() (decoded FreeDV speech) does, in each format');
+  bridge.setRxMuted(false);
+
+  // encoders only while wanted
+  check((await request(b, 'setAudioCodec', { codec: 'pcm' })).data.codec === 'pcm', 'a browser can go back to raw PCM');
+  c.close();
+  await new Promise((r) => setTimeout(r, 50));
+  capture.emit('data', tone.subarray(0, 960 * 2));
+  await new Promise((r) => setTimeout(r, 50));
+  check(bridge._rxEncoders.size === 0, 'an encoder stops once no browser wants its format');
+  check(bridge._txDecoders.size === 1 && !bridge._txDecoders.has(c), "a browser's mic decoder goes when it disconnects");
+  check(binaries(b, BINARY_TYPE.AUDIO).length === 1, 'and the browser that went back gets raw PCM again');
 
   bridge.stop();
-  client.close();
+  a.close();
+  b.close();
   await server.close();
+
+  // stereo servers and servers without audio refuse compressed audio
+  const s2 = new ControlServer({ civ: new StubCivDriver(), port: 0 });
+  const p2 = await s2.listen();
+  const b2 = new AudioBridge({ controlServer: s2, capture: new FakeCapture(), playback: new FakePlayback(), channels: 2, maximizeVolumeOnStart: false });
+  await b2.start();
+  const w2 = await connect(p2);
+  const r2 = await request(w2, 'setAudioCodec', { codec: 'opus' });
+  check(r2.ok === false && /cannot send compressed/.test(r2.error), 'a stereo server refuses compressed audio');
+  b2.stop();
+  w2.close();
+  await s2.close();
+  const s3 = new ControlServer({ civ: new StubCivDriver(), port: 0 });
+  const p3 = await s3.listen();
+  const w3 = await connect(p3);
+  const r3 = await request(w3, 'setAudioCodec', { codec: 'opus' });
+  check(r3.ok === false && /not enabled/.test(r3.error), 'a server without audio refuses setAudioCodec');
+  w3.close();
+  await s3.close();
 }
 
 async function testVolumeMaximizedOnStart() {
@@ -972,7 +1080,7 @@ async function run() {
   await testHamNoise();
   await testRnnoiseHamNoiseMutualExclusion();
   await testHamNoiseResilientToThrows();
-  await testOpusMode();
+  await testCompressedAudio();
   await testVolumeMaximizedOnStart();
   await testVolumeMaximizeCanBeDisabled();
   await testVolumeMaximizeFailureDoesNotBlockStart();

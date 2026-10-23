@@ -136,9 +136,9 @@ encoding. For the browser client, the wire format was changed to **raw
 `src/server/audio-bridge.js`'s doc comment and `audio-notes.md`. Short
 version: this is LAN-only, so compression doesn't earn its complexity,
 and raw PCM works via plain Web Audio API in every browser without
-WebCodecs (patchy Safari support) or a bundled WASM encoder. Opus is
-still available server-side via `AUDIO_CODEC=opus` for a possible future
-bandwidth-constrained scenario, but the shipped client doesn't use it.
+WebCodecs (patchy Safari support) or a bundled WASM encoder. (v96 added
+compressed audio for remote use, chosen per browser; see "Compressed
+audio for remote use (v96)" below. Full PCM is still the LAN default.)
 
 **Consequence**: `AUDIO_SAMPLE_RATE`/`AUDIO_CHANNELS` on the server and
 the client's audio graph must agree — the client reads these from the
@@ -3999,3 +3999,48 @@ model for how to approach that.
   phasing; a 150 ppm chart with no phasing straightened, measured slant
   within 0.02 px/line; a straight chart left alone), fax-decoder-bridge
   (clock kept and used after a restart). Service-worker cache bumped to v95.
+
+### Compressed audio for remote use (v96)
+
+- Asked for: compressed audio for remote use. Full audio is raw PCM, about
+  770 kbit/s each way, too much for mobile data or a slow VPN.
+- New **Audio** button beside Speaker: "Audio: full", "Audio: Opus" or
+  "Audio: ADPCM". Tapping it switches this browser between full and
+  compressed. Compressed means Opus (about 24 kbit/s, WebCodecs) where the
+  browser can, else 12 kHz IMA ADPCM (48 kbit/s, plain JS). RX and TX are
+  chosen apart; the tooltip says both.
+- Per browser, not shared: it is a property of the link, not of the radio
+  or the server. The server keeps it per WebSocket (`setAudioCodec`) and
+  forgets it on disconnect; the page sends it again on every connect.
+- Default: full when the page's host is a LAN address or name (private
+  IPv4, `localhost`, `.local`, `.lan`, a name without dots), compressed
+  otherwise (Tailscale's 100.64/10 counts as remote). A choice made with
+  the button is kept in `localStorage` on that device. This is the first
+  thing the app keeps across page loads; it is a per-device setting, like
+  the browser's own volume, so it belongs there rather than on the server.
+- Server: `AudioBridge` sends RX through `broadcastRxAudio()`, which sends
+  raw PCM to browsers on full audio and encodes once per compressed format
+  for the others (encoders exist only while used). Mic frames are decoded
+  per browser and resampled to the server rate, then emitted as `tx-pcm`
+  as before. RADE now sends its decoded speech through
+  `broadcastRxAudio()` and takes mic audio from `tx-pcm`, so FreeDV works
+  on compressed audio too. The old server-wide `AUDIO_CODEC=opus` (which
+  no browser could play) is gone. `AUDIO_OPUS_BITRATE` sets the Opus rate.
+- Client: `audio.js` plays Opus through `AudioDecoder` and records through
+  `AudioEncoder`; on a codec error it switches that direction to ADPCM.
+  Playback after a gap restarts 0.2 s ahead for compressed audio (0 for
+  full); a backlog of more than 0.5 s beyond that is dropped.
+- The format code (`client/audio-codec.js`) is shared: the server
+  `import()`s it. `src/client/package.json` (`"type": "module"`) lets Node
+  load client files directly.
+- Tests: `audio-codec.test.mjs` (ADPCM, resampler, LAN detection),
+  `audio-bridge.test.js` (three browsers at once: sizes, the tone decoded
+  back from Opus and ADPCM, mic audio in both, mute and RADE path, encoders
+  dropped when unused, stereo and no-audio servers refuse),
+  `rade-bridge.test.js` updated, and a new browser test
+  `manual-audio-ui.js` (headless Chromium: full, Opus via WebCodecs, ADPCM
+  with WebCodecs hidden; RX played, the fake microphone sent in each
+  format, the button and its remembered choice). `manual-tty-ui.js` passes.
+- Not tested on a Pi or on air. Pi CPU for the Opus encoder is estimated
+  from a desktop measurement (9 ms per second of audio). Service-worker
+  cache bumped to v96.

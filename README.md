@@ -12,7 +12,7 @@ Hamlib, no separate audio server and no extra apps.
 Written by VK3TR. Licensed AGPL-3.0-only (see
 [Licence](#licence)).
 
-**Current build: v95.** This is the version the app shows next to its title.
+**Current build: v96.** This is the version the app shows next to its title.
 It is the `CACHE_NAME` number in `src/client/sw.js`, which goes up with every
 change to the web app.
 
@@ -38,7 +38,9 @@ Several of the cooler features in this app are built on the work of others:
 - **Rig control** over CI-V: frequency, mode, band, filter, PTT, TX power,
   S-meter, SWR and more.
 - **Audio** both ways in the browser, using the radio's built-in USB sound
-  codec through ALSA.
+  codec through ALSA. Compressed audio (Opus, about 24 kbit/s each way)
+  for use away from home over a VPN or mobile data. See
+  [Compressed audio for remote use](#compressed-audio-for-remote-use).
 - **Spectrum scope and waterfall** from the radio's CI-V scope data (opt-in).
 - **A CW decoder** (DeepCW, a neural decoder) and an RTTY decoder.
 - **RTTY, JTTY, Olivia and Feld-Hell**: one "TTY" button selects RTTY, then
@@ -396,7 +398,7 @@ All settings are environment variables. For the systemd service they go in
 | `AUDIO_TX_DEVICE` | same as RX | ALSA playback device for transmit audio. |
 | `AUDIO_SAMPLE_RATE` | `48000` | Audio sample rate. |
 | `AUDIO_CHANNELS` | `1` | Number of audio channels. |
-| `AUDIO_CODEC` | `pcm` | `pcm` or `opus`. The shipped web app uses `pcm`. |
+| `AUDIO_OPUS_BITRATE` | `24000` | Opus bit rate for compressed audio, in bits per second (6000 to 128000). See [Compressed audio for remote use](#compressed-audio-for-remote-use). `AUDIO_CODEC` is no longer used: each browser chooses. |
 | `SCREEN_TITLE` | `SPARC PiRO` | Title shown in the browser tab and on the page. |
 | `JTTY_TX_FREQ_HZ` | `1450` | Audio frequency of JTTY's lowest tone, in Hz. The signal fills about 94 Hz above it. |
 | `JTTY_RX_LOW_HZ`, `JTTY_RX_HIGH_HZ` | `200`, `2900` | Audio range, in Hz, searched for JTTY signals. The default is the whole range the decoder supports. Two extra fixed channels at 1350 and 1650 Hz (±150 Hz) are always searched as well. A narrower range saves a little CPU. |
@@ -499,6 +501,14 @@ one hard refresh (Ctrl+Shift+R, or Cmd+Shift+R on a Mac).
   `STATION_CALLSIGN` or the grid is not set, or the callsign has a `/`.
 - **The microphone is blocked in the browser.** Use HTTPS (see
   [Installing PiRO](#installing-piro)).
+- **Audio breaks up away from home.** Check the Audio button says Opus or
+  ADPCM, not "full"; tap it if not. Full audio needs about 770 kbit/s each
+  way. Compressed audio plays 0.2 s behind, to ride out a slow network;
+  if it still breaks up, the connection is losing packets. A browser that
+  can't decode Opus (Firefox on Android, Safari before 26) uses ADPCM,
+  which needs 48 kbit/s each way.
+- **The Audio button can't be tapped.** The server can't compress audio:
+  `AUDIO_CHANNELS` must be 1.
 
 ## Hardware diagnostics
 
@@ -534,7 +544,9 @@ first page.
 src/
   civ/            CI-V driver: framing, BCD encoding, rig control,
                    spectrum scope decoding (all phases 1 & 6 — done)
-  audio/          ALSA capture/playback, PCM framing, Opus codec (phase 3 — done);
+  audio/          ALSA capture/playback, PCM framing, Opus codec (phase 3 — done)
+                   (compressed audio for browsers: server/audio-codecs.js and
+                   client/audio-codec.js, shared by both ends);
                    also FT8 support: slot-clock (UTC 15s boundaries),
                    resampler (48k<->12k with anti-aliasing), the RX/TX
                    bridge, and its decode worker-thread — see docs/ui-notes.md;
@@ -577,11 +589,17 @@ test/
   pcm-framer.test.js      unit tests for PCM frame accumulation
   opus-codec.test.js      real Opus encode/decode round-trip tests (WASM,
                            no hardware needed)
+  audio-codec.test.mjs    compressed audio shared by browser and server:
+                           ADPCM round trip and edge cases, the streaming
+                           resampler (counts, level, anti-aliasing), frame
+                           buffering, and which page addresses count as LAN
   mixer.test.js           unit tests for the ALSA mixer helper against an
                            injected fake execFile, no real amixer needed
-  audio-bridge.test.js    integration test for the audio bridge, both pcm
-                           (default) and opus codec modes, and the
-                           startup volume-maximizing behavior: real
+  audio-bridge.test.js    integration test for the audio bridge: raw PCM,
+                           per-browser Opus and ADPCM (sizes, the tone
+                           decoded back, mic audio decoded and resampled,
+                           encoders only while wanted, RADE's muted path),
+                           and the startup volume-maximizing behavior: real
                            WebSocket, fake ALSA I/O, tagged binary frame format
   scope-bridge.test.js    integration test for the scope bridge: real
                            WebSocket, tagged binary frame encode/decode
@@ -732,6 +750,11 @@ test/
                            backlog dropping, broadcasts
   manual-tty-ui.js        optional browser test of the TTY button, text box and
                            Send/Stop (needs Playwright and Chromium)
+  manual-audio-ui.js      optional browser test of compressed audio: three
+                           browsers on full, Opus (WebCodecs) and ADPCM, RX
+                           played, the fake microphone sent in each format,
+                           the Audio button and its remembered choice
+                           (needs Playwright and Chromium)
   ft8-bridge.test.js      integration tests for the FT8 RX/TX bridge:
                            attach/detach around active-state and PTT,
                            slot-boundary decode requests to a stub
@@ -1085,6 +1108,41 @@ depends on both stations' equipment), so a signal using the opposite
 polarity from the decoder's assumption previously decoded nothing at all;
 see `docs/ui-notes.md`'s "Real bug found" writeup for the full story.
 Unchecked by default.
+
+### Compressed audio for remote use
+
+Full audio is raw 16-bit PCM: about 770 kbit/s each way at 48 kHz. That
+is fine at home, but too much for most mobile data or a slow VPN. The
+**Audio** button beside Speaker switches this browser between:
+- **Audio: full**: raw PCM, as before.
+- **Audio: Opus**: Opus at about 24 kbit/s each way (`AUDIO_OPUS_BITRATE`),
+  16 kHz audio. The browser uses its built-in codec (WebCodecs): Chrome,
+  Edge, Samsung Internet, Firefox on a desktop, and Safari 26 or later.
+- **Audio: ADPCM**: 12 kHz ADPCM at 48 kbit/s, in plain JavaScript, for
+  browsers without WebCodecs Opus (Firefox on Android, older Safari). A
+  browser that can play Opus but not record it receives Opus and sends
+  ADPCM; the button's tooltip says which.
+
+Each browser chooses for itself, so a phone away from home can use Opus
+while a tablet at home stays on full audio. A page opened by a home
+address (192.168.x.x, 10.x.x.x, 172.16-31.x.x, `localhost`, a `.local` or
+`.lan` name, or a name with no dots, like `piro`) starts on full audio;
+any other address (a VPN such as Tailscale, or a domain name) starts
+compressed. A choice made with the button is remembered by that browser.
+
+Compressed audio plays 0.2 s behind, so short network delays don't break
+it up. On any audio, if more than half a second more than that builds up
+(after the network stalls), the backlog is skipped.
+
+The server encodes each compressed format once for all the browsers that
+use it, and only while one does. On a Raspberry Pi 4 the Opus encoder
+should take a few per cent of one core (it took 1% on a desktop).
+
+The decoders (FT8, CW, RTTY and the rest) always work from the radio's
+full-quality audio on the Pi, whatever the browsers receive. Compression
+only affects what you hear and what your microphone sends. Not tested on
+air: speech sent compressed from a phone has not been checked on a real
+transmission.
 
 ### RTTY, JTTY, Olivia and Feld-Hell
 
@@ -1769,13 +1827,19 @@ shapes.
   cleared?}`) carry the three most recent (`{id, text, time}`, newest
   last). `posted` is set only for a newly added note, which the browsers
   chime for.
-- **Audio (binary frames, tagged `BINARY_TYPE.AUDIO`)**: by default
-  (`AUDIO_CODEC=pcm`), raw 16-bit PCM in both directions — no
-  framing/codec requirement, chunk sizes are whatever arrives. With
-  `AUDIO_CODEC=opus` (not used by the shipped client, see
-  `docs/audio-notes.md`), each frame's payload is one Opus packet
-  instead, and *does* require exact frame-size PCM in/out — see
-  `src/audio/opus-codec.js`.
+- **Audio (binary frames, tagged `BINARY_TYPE.AUDIO`)**: raw 16-bit PCM
+  at the server's rate in both directions — no framing/codec requirement,
+  chunk sizes are whatever arrives. The default for every browser.
+- **Compressed audio (binary frames, tagged `BINARY_TYPE.AUDIO_OPUS` or
+  `BINARY_TYPE.AUDIO_ADPCM`)**: a browser asks for one format for its RX
+  audio with `setAudioCodec` (`{codec: 'pcm'|'opus'|'adpcm'}`, replies
+  `{codec}`); it applies to that browser only and is forgotten when it
+  disconnects. Each frame is 20 ms: one Opus packet (16 kHz audio) or one
+  12 kHz IMA ADPCM frame (a 4-byte header with the first sample and step
+  index, then 4 bits a sample). Mic audio may be sent in any of the three.
+  The connect snapshot's `audio.codecs` lists what the server can send,
+  and `audio.opusBitrate` the Opus rate. The format code is shared by both
+  ends: `src/client/audio-codec.js`.
 - **Scope (binary frames, tagged `BINARY_TYPE.SCOPE_LINE`,
   server→client only)**: one reassembled spectrum line per frame — see
   `src/server/scope-bridge.js` for the exact header format.
@@ -1835,8 +1899,9 @@ devices attached.
 - Audio in/out uses the radio's USB audio codec (present on IC-7300,
   IC-9700, IC-705, IC-7610, etc.) via ALSA on the Pi — no separate sound
   card or virtual audio cable needed.
-- Remote-over-internet access is intentionally out of scope for this
-  app; it's expected to be layered on separately via VPN.
+- Remote-over-internet access is expected to be layered on separately
+  via VPN; PiRO has no login. It does compress audio for such links (see
+  [Compressed audio for remote use](#compressed-audio-for-remote-use)).
 
 See `docs/civ-notes.md` for CI-V protocol specifics.
 
