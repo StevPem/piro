@@ -3,7 +3,7 @@
 
 const { EventEmitter } = require('events');
 const { RadeBridge } = require('../src/server/rade-bridge');
-const { EVENT, BINARY_TYPE } = require('../src/server/protocol');
+const { EVENT } = require('../src/server/protocol');
 
 let failures = 0;
 function check(cond, msg) {
@@ -39,7 +39,11 @@ class StubPlayback {
 }
 
 function makeStubAudioBridge() {
-  const audioBridge = {
+  const audioBridge = Object.assign(new EventEmitter(), {
+    rxSent: [],
+    broadcastRxAudio(pcm) {
+      this.rxSent.push(pcm);
+    },
     capture: new StubCapture(),
     playback: new StubPlayback(),
     sampleRate: 48000,
@@ -51,7 +55,7 @@ function makeStubAudioBridge() {
     setTxMuted(muted) {
       this.txMuted = muted;
     },
-  };
+  });
   return audioBridge;
 }
 
@@ -101,10 +105,6 @@ function samplePcm() {
     buf.writeInt16LE(Math.round(1000 * Math.sin((2 * Math.PI * i) / 20)), i * 2);
   }
   return buf;
-}
-
-function tagAudio(payload) {
-  return Buffer.concat([Buffer.from([BINARY_TYPE.AUDIO]), payload]);
 }
 
 /**
@@ -357,8 +357,8 @@ async function run() {
 
     rxPipeline.emit('data', samplePcm());
 
-    check(controlServer.binaryBroadcasts.length === 1, 'decoded speech from the RX pipeline is broadcast');
-    check(controlServer.binaryBroadcasts[0][0] === BINARY_TYPE.AUDIO, 'the broadcast is tagged as an ordinary AUDIO frame — no client-side changes needed to hear it');
+    check(audioBridge.rxSent.length === 1, 'decoded speech from the RX pipeline is sent with audioBridge.broadcastRxAudio()');
+    check(controlServer.binaryBroadcasts.length === 0, 'and not broadcast raw past it (so each browser gets its own format)');
     bridge.stop();
   }
 
@@ -383,13 +383,13 @@ async function run() {
       "the emitted 'decoded-speech' payload is a non-empty PCM buffer"
     );
     check(
-      Buffer.compare(decodedSpeechEvents[0], controlServer.binaryBroadcasts[0].subarray(1)) === 0,
-      "the emitted 'decoded-speech' PCM is the exact same resampled audio as what got broadcast (untagged — the broadcast payload is tagAudio()'d, so this compares against the buffer AFTER its 1-byte type tag)"
+      Buffer.compare(decodedSpeechEvents[0], audioBridge.rxSent[0]) === 0,
+      "the emitted 'decoded-speech' PCM is the exact same resampled audio as what was sent to the browsers"
     );
     bridge.stop();
   }
 
-  // --- TX: a client's tagged AUDIO binary message is resampled and pushed into the TX pipeline ---
+  // --- TX: a client's mic audio is resampled and pushed into the TX pipeline ---
   {
     const controlServer = new StubControlServer();
     const audioBridge = makeStubAudioBridge();
@@ -400,27 +400,9 @@ async function run() {
     controlServer.emit('ptt', true);
     const txPipeline = pipelineFactory.created[1];
 
-    controlServer.emit('binary-message', null, tagAudio(samplePcm()));
+    audioBridge.emit('tx-pcm', samplePcm());
 
-    check(txPipeline.written.length === 1, "a client's mic audio is pushed into the TX pipeline");
-    bridge.stop();
-  }
-
-  // --- TX: a binary message NOT tagged AUDIO is ignored ---
-  {
-    const controlServer = new StubControlServer();
-    const audioBridge = makeStubAudioBridge();
-    const pipelineFactory = makePipelineFactory();
-    const bridge = new RadeBridge({ controlServer, audioBridge, pipelineFactory });
-    controlServer.emit('freedv-variant', 'RADE');
-    controlServer.emit('freedv-active', true);
-    controlServer.emit('ptt', true);
-    const txPipeline = pipelineFactory.created[1];
-
-    const notAudio = Buffer.concat([Buffer.from([BINARY_TYPE.SCOPE_LINE]), samplePcm()]);
-    controlServer.emit('binary-message', null, notAudio);
-
-    check(txPipeline.written.length === 0, 'a non-AUDIO-tagged binary message is ignored, not fed into the TX pipeline');
+    check(txPipeline.written.length === 1, "a client's mic audio (AudioBridge's 'tx-pcm') is pushed into the TX pipeline");
     bridge.stop();
   }
 
@@ -643,7 +625,7 @@ async function run() {
     check(controlServer.listenerCount('ptt') === 0, "stop() removes this bridge's 'ptt' listener");
     check(controlServer.listenerCount('freedv-active') === 0, "stop() removes this bridge's 'freedv-active' listener");
     check(controlServer.listenerCount('freedv-variant') === 0, "stop() removes this bridge's 'freedv-variant' listener");
-    check(controlServer.listenerCount('binary-message') === 0, "stop() removes this bridge's 'binary-message' listener");
+    check(audioBridge.listenerCount('tx-pcm') === 0, "stop() removes this bridge's 'tx-pcm' listener");
 
     // Further events are ignored post-stop.
     controlServer.emit('freedv-active', true);

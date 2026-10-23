@@ -661,6 +661,13 @@ class ControlServer extends EventEmitter {
           this._broadcastAppModes(ws);
           break;
         }
+        case REQUEST.SET_AUDIO_CODEC: {
+          // per browser, not shared: AudioBridge keeps it (setClientAudioCodec)
+          if (!this.setClientAudioCodec) throw new Error('Audio is not enabled on this server');
+          const codec = this.setClientAudioCodec(ws, msg.codec);
+          ws.send(makeResult(id, { codec }));
+          break;
+        }
         case REQUEST.FAX_START_NOW: {
           this.emit('fax-start-now');
           ws.send(makeResult(id, { accepted: true }));

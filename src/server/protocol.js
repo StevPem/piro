@@ -22,7 +22,9 @@
  * byte of every binary frame (see BINARY_TYPE below):
  *   - AUDIO: server->client = one chunk of the radio's RX audio;
  *     client->server = one chunk of the operator's mic audio (TX). See
- *     src/server/audio-bridge.js.
+ *     src/server/audio-bridge.js. Raw 16-bit PCM at state.audio.sampleRate.
+ *   - AUDIO_OPUS / AUDIO_ADPCM: the same audio compressed, for remote use
+ *     (see REQUEST.SET_AUDIO_CODEC and server/audio-codecs.js).
  *   - SCOPE_LINE: server->client only, one reassembled spectrum scope
  *     line. See src/server/scope-bridge.js. The client-side decoder
  *     mirrors this format in src/client/rpc.js — keep both in sync if
@@ -50,6 +52,12 @@ const BINARY_TYPE = {
   HELL_COLUMNS: 0x04,
   SSTV_LINE: 0x05,
   FAX_LINE: 0x06, // server->client: one received radiofax line: [1..2] chart id UInt16LE, [3..4] line y, [5..6] width, [7..] one grey byte per pixel (0 black, 255 white). See server/fax-decoder-bridge.js
+  // Compressed audio for remote use (see server/audio-codecs.js and
+  // client/audio-codec.js). Both directions, mono. A browser chooses the
+  // RX format with REQUEST.SET_AUDIO_CODEC; its mic audio may use either
+  // tag, whatever it chose for RX.
+  AUDIO_OPUS: 0x07, // [1..] one Opus packet (20 ms). RX is 16 kHz audio; TX any rate.
+  AUDIO_ADPCM: 0x08, // [1..] one IMA ADPCM frame at 12 kHz: [1..2] first sample int16 LE, [3] step index, [4] 0, then 4 bits a sample, low nibble first
 };
 
 const REQUEST = {
@@ -100,6 +108,7 @@ const REQUEST = {
   SET_WSPR_ACTIVE: 'setWsprActive', // {active: boolean} -> WSPR on or off (the third choice of the client's DIGI button). WSPR is an app-level mode on USB + DATA MODE with 2-minute slots on even UTC minutes: every slot that isn't transmitting is decoded and the spots go out as EVENT.WSPR_DECODES (and to wsprnet.org unless WSPR_UPLOAD=off). While on, the TX power is held at 5 W or less; the power before is put back afterwards. Cleared automatically when the last client disconnects. See server/wspr-bridge.js
   SET_WSPR_TX: 'setWsprTx', // {enabled?: boolean, txHz?: number} -> whether WSPR transmits (about 1 slot in 5, as WSJT-X's "Tx Pct 20"), and the transmit audio frequency (1410-1590 Hz, default 1500; the signal is 6 Hz wide). Needs STATION_CALLSIGN (a plain call of up to 6 characters) and WSPR_GRID or STATION_GRID. The result is in EVENT.WSPR_STATUS
   GET_BAND_CONDITIONS: 'getBandConditions', // {} -> the "Current conditions" table: {grid, squares, myWindowMin, localWindowMin, localUpdatedMs, localError, myError, tags: [{tag, km}], bands: [{band, myQth: {tag, rangeKm?, stations?, slots?, lastMs?}, local: {tag, rangeKm?, stations?, reporters?}}]}. tag is Great/Good/Average/Bad/Dismal from the range (80th percentile of the distances of the stations heard), or N/A with no data. myQth is from PiRO's own WSPR decodes (last 90 min); local from wsprnet.org's spots of reporters in the site's square and the 8 around it (last 60 min, via wspr.live, kept 10 min). See server/band-conditions.js
+  SET_AUDIO_CODEC: 'setAudioCodec', // {codec: 'pcm'|'opus'|'adpcm'} -> the format of the RX audio sent to this browser only: 'pcm' (the default, raw 16-bit PCM in AUDIO frames), 'opus' (AUDIO_OPUS frames, about 24 kbit/s) or 'adpcm' (AUDIO_ADPCM frames, 48 kbit/s). Not shared between browsers; forgotten when the browser disconnects. Refused if audio is off or the server can't compress (state.audio.codecs lists what it can). Replies {codec}
   SET_FAX_ACTIVE: 'setFaxActive', // {active: boolean} -> starts/stops the radiofax receiver (the client's Image button on Fax). Receive only, on USB. A chart starts on the start signal (or FAX_START_NOW) and its lines arrive as binary FAX_LINE frames, announced by EVENT.FAX_START and ended by EVENT.FAX_PICTURE. Cleared automatically when the last client disconnects. See server/fax-decoder-bridge.js
   FAX_START_NOW: 'faxStartNow', // {} -> starts a chart now, without waiting for the start signal (joining a broadcast part-way)
   FAX_STOP: 'faxStop', // {} -> ends the chart being received now, keeping what has arrived

@@ -3,8 +3,7 @@
 const { EventEmitter } = require('events');
 const { RadePipeline } = require('../audio/rade-pipeline');
 const { downsamplePcmToFloat, upsampleFloatToPcm } = require('../audio/resample');
-const { tagAudio } = require('./audio-bridge');
-const { EVENT, BINARY_TYPE } = require('./protocol');
+const { EVENT } = require('./protocol');
 
 // Sample rates fixed by the rade_c tools themselves (RADE_FS_SPEECH /
 // RADE_FS in the upstream C sources), not something this bridge chooses —
@@ -72,13 +71,13 @@ const RADE_REAL_INPUT_RESCALE = 32768 / (RADE_INT16_SCALE / 2); // = 4
  *          "Real bug found" note for why both of those were wrong
  *       -> radae_rx --v2 -> lpcnet_demo -fargan-synthesis
  *       -> 16kHz speech PCM --upsample--> audioBridge.sampleRate
- *       -> broadcast as an ordinary tagged AUDIO frame (see tagAudio()),
- *          the exact same channel/format AudioBridge's own RX broadcast
- *          uses, so the client needs zero changes to hear it.
+ *       -> sent with audioBridge.broadcastRxAudio(), the same path (and
+ *          per-browser format, raw or compressed) AudioBridge's own RX
+ *          audio uses, so the client needs zero changes to hear it.
  *
  *   TX (armed, PTT active):
- *     operator's mic audio, arriving the normal way as a client's tagged
- *     AUDIO binary message (see ControlServer's 'binary-message' event)
+ *     operator's mic audio, as AudioBridge's 'tx-pcm' event (already
+ *     decoded to raw PCM, whichever format the browser sent it in)
  *       --downsample--> 16kHz speech PCM
  *       -> lpcnet_demo -features -> radae_tx --v2
  *       -> radae_tx's stdout is complex float32 IQ (8kHz, interleaved
@@ -226,12 +225,12 @@ class RadeBridge extends EventEmitter {
     this._onPtt = (on) => this._handlePttChange(on);
     this._onActiveRequest = (active) => this.setActive(active);
     this._onVariantRequest = (variant) => this.setVariant(variant);
-    this._onBinaryMessage = (ws, data) => this._handleClientAudio(data);
+    this._onTxPcm = (pcm) => this._handleClientAudio(pcm);
 
     this.controlServer.on('ptt', this._onPtt);
     this.controlServer.on('freedv-active', this._onActiveRequest);
     this.controlServer.on('freedv-variant', this._onVariantRequest);
-    this.controlServer.on('binary-message', this._onBinaryMessage);
+    this.audioBridge.on('tx-pcm', this._onTxPcm);
   }
 
   /** No async setup needed (see this class's own doc comment on why there's no CI-V mode to read) — exists for symmetry with the other bridges' start()/stop() lifecycle. */
@@ -244,7 +243,7 @@ class RadeBridge extends EventEmitter {
     this.controlServer.off('ptt', this._onPtt);
     this.controlServer.off('freedv-active', this._onActiveRequest);
     this.controlServer.off('freedv-variant', this._onVariantRequest);
-    this.controlServer.off('binary-message', this._onBinaryMessage);
+    this.audioBridge.off('tx-pcm', this._onTxPcm);
   }
 
   /** Arms/disarms the bridge — the client calls this when opening/closing FreeDV mode (mirrors Ft8Bridge#setActive). */
@@ -399,15 +398,13 @@ class RadeBridge extends EventEmitter {
       this._reportError('rx-resample-out', err);
       return;
     }
-    this.controlServer.broadcastBinary(tagAudio(pcmOut));
+    this.audioBridge.broadcastRxAudio(pcmOut);
     this.emit('decoded-speech', pcmOut);
   }
 
-  /** TX: an operator's raw mic audio, arriving as a client's tagged AUDIO binary message. */
-  _handleClientAudio(data) {
+  /** TX: an operator's mic audio, as raw PCM at audioBridge.sampleRate (AudioBridge's 'tx-pcm'). */
+  _handleClientAudio(payload) {
     if (!this._txPipeline) return;
-    if (data.length < 1 || data[0] !== BINARY_TYPE.AUDIO) return; // not ours (e.g. a scope/FT8-spectrum tag)
-    const payload = data.subarray(1);
     let pcm16k;
     try {
       pcm16k = resamplePcm(payload, this.audioBridge.sampleRate, RADE_SPEECH_SAMPLE_RATE);

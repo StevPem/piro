@@ -17,6 +17,8 @@ const BINARY_TYPE = {
   HELL_COLUMNS: 0x04,
   SSTV_LINE: 0x05,
   FAX_LINE: 0x06,
+  AUDIO_OPUS: 0x07,
+  AUDIO_ADPCM: 0x08,
 };
 
 // Mirrors src/civ/commands.js SCOPE_MODE.
@@ -175,6 +177,14 @@ export class RigLink extends EventTarget {
       this._dispatch('audio-frame', arrayBuffer.slice(1));
       return;
     }
+    if (tag === BINARY_TYPE.AUDIO_OPUS) {
+      this._dispatch('audio-opus', arrayBuffer.slice(1));
+      return;
+    }
+    if (tag === BINARY_TYPE.AUDIO_ADPCM) {
+      this._dispatch('audio-adpcm', arrayBuffer.slice(1));
+      return;
+    }
     if (tag === BINARY_TYPE.SCOPE_LINE) {
       try {
         this._dispatch('scope-line', decodeScopeLine(arrayBuffer));
@@ -239,12 +249,13 @@ export class RigLink extends EventTarget {
     });
   }
 
-  /** Send one captured mic-audio frame (ArrayBuffer of raw PCM) if connected; silently drops otherwise. */
-  sendAudioFrame(buffer) {
+  /** Send one mic-audio frame (raw PCM, or Opus/ADPCM with that `type`) if connected; silently drops otherwise. */
+  sendAudioFrame(buffer, type = BINARY_TYPE.AUDIO) {
     if (!this.connected || !this.ws || this.ws.readyState !== WebSocket.OPEN) return;
-    const tagged = new Uint8Array(buffer.byteLength + 1);
-    tagged[0] = BINARY_TYPE.AUDIO;
-    tagged.set(new Uint8Array(buffer), 1);
+    const bytes = buffer instanceof Uint8Array ? buffer : new Uint8Array(buffer);
+    const tagged = new Uint8Array(bytes.byteLength + 1);
+    tagged[0] = type;
+    tagged.set(bytes, 1);
     this.ws.send(tagged);
   }
 }

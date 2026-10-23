@@ -111,10 +111,20 @@ const AUDIO_SAMPLE_RATE = process.env.AUDIO_SAMPLE_RATE
   ? parseInt(process.env.AUDIO_SAMPLE_RATE, 10)
   : 48000;
 const AUDIO_CHANNELS = process.env.AUDIO_CHANNELS ? parseInt(process.env.AUDIO_CHANNELS, 10) : 1;
-// 'pcm' (default) works in every browser via plain Web Audio; 'opus' is
-// available for a future bandwidth-constrained scenario but isn't used by
-// the current PWA client. See src/server/audio-bridge.js.
-const AUDIO_CODEC = process.env.AUDIO_CODEC || 'pcm';
+// Each browser picks raw PCM (LAN) or compressed audio (remote) for itself;
+// see src/server/audio-bridge.js. AUDIO_OPUS_BITRATE sets the Opus rate.
+if (process.env.AUDIO_CODEC) {
+  console.warn('AUDIO_CODEC is no longer used: each browser now chooses full or compressed audio itself.');
+}
+const AUDIO_OPUS_BITRATE = (() => {
+  const v = parseInt(process.env.AUDIO_OPUS_BITRATE || '', 10);
+  if (!process.env.AUDIO_OPUS_BITRATE) return 24000;
+  if (!(v >= 6000 && v <= 128000)) {
+    console.warn(`AUDIO_OPUS_BITRATE=${process.env.AUDIO_OPUS_BITRATE} is not 6000-128000; using 24000.`);
+    return 24000;
+  }
+  return v;
+})();
 // RNNoise speech-denoiser binary (see src/audio/rnnoise-filter.js and
 // docs/ui-notes.md) for the "RNN" toggle button — expected on PATH by
 // default (matching RADE_TX_BIN/RADE_RX_BIN's own default-to-PATH
@@ -417,7 +427,7 @@ async function main() {
       txDevice: AUDIO_TX_DEVICE,
       sampleRate: AUDIO_SAMPLE_RATE,
       channels: AUDIO_CHANNELS,
-      codecType: AUDIO_CODEC,
+      opusBitrate: AUDIO_OPUS_BITRATE,
       rnnoiseBin: RNNOISE_BIN,
       rnnoiseWetLevels: RNNOISE_WET_LEVELS,
       hamnoiseQuality: HAMNOISE_QUALITY,
@@ -427,11 +437,12 @@ async function main() {
       enabled: true,
       sampleRate: AUDIO_SAMPLE_RATE,
       channels: AUDIO_CHANNELS,
-      codec: AUDIO_CODEC,
+      codecs: ['pcm', ...audioBridge.compressedCodecs], // what a browser may ask for (REQUEST.SET_AUDIO_CODEC)
+      opusBitrate: AUDIO_OPUS_BITRATE,
     });
     console.log(
       `Audio bridge started (rx: ${AUDIO_RX_DEVICE}, tx: ${AUDIO_TX_DEVICE}, ` +
-        `${AUDIO_SAMPLE_RATE}Hz, ${AUDIO_CHANNELS}ch, codec: ${AUDIO_CODEC}, ` +
+        `${AUDIO_SAMPLE_RATE}Hz, ${AUDIO_CHANNELS}ch, compressed: ${audioBridge.compressedCodecs.join("/") || "none"}, ` +
         `HamNoise quality: ${HAMNOISE_QUALITY})`
     );
 
