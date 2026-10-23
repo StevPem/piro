@@ -154,6 +154,42 @@ const COUNT_BUFFERS = () => {
   }
   check(bridge._clientCodec.size === 2, "a closed page's format is forgotten by the server");
 
+  // The voice squelch: one setting for all, mutes noise, passes a voice, pauses outside voice modes
+  {
+    const { bandNoise, voice, toPcm, R } = require('./fixtures/radio-audio');
+    const feed = async (f32) => {
+      const pcm = toPcm(f32);
+      for (let i = 0; i < pcm.length; i += 9600) {
+        capture.emit('data', pcm.subarray(i, i + 9600));
+        await sleep(100);
+      }
+      await sleep(600);
+    };
+    const buffers = (p) => p.page.evaluate(() => Object.values(window.__buffers).reduce((a, b) => a + b, 0));
+    const sq = (p) => p.page.locator('#squelch-button').textContent();
+    check((await sq(adpcm)) === 'Squelch Off', 'the Squelch button starts off');
+    await adpcm.page.click('#squelch-button');
+    await sleep(300);
+    check((await sq(adpcm)) === 'Squelch On' && (await sq(opus)) === 'Squelch On', 'tapping it turns it on for every browser (USB is a voice mode)');
+    await feed(bandNoise(0.5, 0.05)); // let the squelch shut after the earlier tone
+    const before = await buffers(adpcm);
+    await feed(bandNoise(2, 0.05));
+    check((await buffers(adpcm)) === before, 'noise only: nothing is played');
+    const v = bandNoise(3, 0.05);
+    const sp = voice(2, 0.05);
+    for (let i = 0; i < sp.length; i++) v[R / 2 + i] += sp[i];
+    await feed(v);
+    const played = (await buffers(adpcm)) - before;
+    check(played > 50, `a voice: played (${played} frames)`);
+    server.state.mode = { mode: 'CW', filter: 1 };
+    await feed(bandNoise(0.5, 0.05));
+    check((await sq(opus)) === 'Squelch Paused', 'in CW the button says Paused');
+    server.state.mode = { mode: 'USB', filter: 1 };
+    await opus.page.click('#squelch-button');
+    await sleep(300);
+    check((await sq(adpcm)) === 'Squelch Off', 'switched off from another browser');
+  }
+
   await opus.page.screenshot({ path: path.join(process.env.SCREENSHOT_DIR || require('os').tmpdir(), 'piro-audio-ui.png') });
   check(errors.length === 0, `no page errors${errors.length ? ': ' + errors.join(' | ') : ''}`);
   await browser.close();

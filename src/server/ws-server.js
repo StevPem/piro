@@ -661,6 +661,13 @@ class ControlServer extends EventEmitter {
           this._broadcastAppModes(ws);
           break;
         }
+        case REQUEST.SET_VOICE_SQUELCH: {
+          // AudioBridge keeps the state and broadcasts it (EVENT.VOICE_SQUELCH)
+          if (!this.setVoiceSquelch) throw new Error('Audio is not enabled on this server');
+          if (typeof msg.enabled !== 'boolean') throw new Error('setVoiceSquelch needs {enabled: true|false}');
+          ws.send(makeResult(id, this.setVoiceSquelch(msg.enabled)));
+          break;
+        }
         case REQUEST.SET_AUDIO_CODEC: {
           // per browser, not shared: AudioBridge keeps it (setClientAudioCodec)
           if (!this.setClientAudioCodec) throw new Error('Audio is not enabled on this server');

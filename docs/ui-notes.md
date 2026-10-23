@@ -4044,3 +4044,36 @@ model for how to approach that.
 - Not tested on a Pi or on air. Pi CPU for the Opus encoder is estimated
   from a desktop measurement (9 ms per second of audio). Service-worker
   cache bumped to v96.
+
+### Voice squelch (v97)
+
+- Asked for: SyllabicVAD from ham-qso-ai as a squelch beside HamNoise:
+  a "Squelch" toggle under HamNoise, on the server, voice modes only, with
+  a pre-roll, tested on recorded SSB.
+- New `audio/voice-squelch.js`. Its own design, not a port: SyllabicVAD's
+  level and syllable-rhythm tests didn't separate speech from noise on a
+  real AGC'd SSB recording, so it detects the pitch of a voice in the
+  audio's envelope (details and tuning in audio-notes.md). Opens about
+  0.1-0.2 s after a voice starts; audio is delayed 0.3 s so nothing is
+  clipped; closes 1.5 s after; 5 ms fade in, 30 ms fade out.
+- Server: `AudioBridge` runs it in `_publishRx`, after HamNoise/RNNoise, so
+  it only affects what browsers hear (and `rx-pcm`), never the decoders.
+  Between overs nothing is sent. It works only in a voice mode (LSB, USB,
+  AM, FM, WFM; DATA mode off; no FT8, FreeDV, JTTY, Olivia, Feld-Hell,
+  SSTV, WSPR or fax); elsewhere it stands aside and a fresh one starts
+  when a voice mode returns. `setVoiceSquelch {enabled}`; state
+  `voiceSquelch {enabled, active}` in the connect snapshot and the
+  `voice-squelch` broadcast, sent when it is switched and when it pauses or
+  resumes.
+- Client: "Squelch Off" / "Squelch On" / "Squelch Paused" beneath
+  HamNoise. The tooltip says weak stations may stay muted.
+- Bugs found while tuning (each now a test): a lone carrier, a keyed
+  carrier and two beating carriers all opened early versions; a 1 s tone
+  test cut held vowels mid-over (now 2 s).
+- Tests: `voice-squelch.test.js` (new, in `npm test`),
+  `audio-bridge.test.js` (squelch through the bridge: noise muted, an over
+  heard by every browser, pauses in CW, FT8 and DATA mode, switched off by
+  another browser), `manual-audio-ui.js` (the button in Chromium).
+  `test/fixtures/radio-audio.js` holds the synthetic noise and voice.
+  `manual-tty-ui.js` passes.
+- Not tested on air or on a Pi. Service-worker cache bumped to v97.

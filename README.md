@@ -12,7 +12,7 @@ Hamlib, no separate audio server and no extra apps.
 Written by VK3TR. Licensed AGPL-3.0-only (see
 [Licence](#licence)).
 
-**Current build: v96.** This is the version the app shows next to its title.
+**Current build: v97.** This is the version the app shows next to its title.
 It is the `CACHE_NAME` number in `src/client/sw.js`, which goes up with every
 change to the web app.
 
@@ -78,6 +78,9 @@ Several of the cooler features in this app are built on the work of others:
   [FreeDV Reporter](https://qso.freedv.org) map.
 - **A noise reducer for received audio**: "HamNoise" (a neural denoiser
   trained on HF signals). RNNoise is also supported but hidden for now.
+- **A voice squelch** for SSB, AM and FM: mutes the hiss between overs by
+  listening for the pitch of a voice, so it needs no level setting and
+  ignores carriers and static crashes. See [Voice squelch](#voice-squelch).
 
 PiRO is made for Icom radios with a USB CI-V port and USB audio codec. The
 CI-V address table covers the IC-7300, IC-7610, IC-9700, IC-705, IC-7100,
@@ -501,6 +504,12 @@ one hard refresh (Ctrl+Shift+R, or Cmd+Shift+R on a Mac).
   `STATION_CALLSIGN` or the grid is not set, or the callsign has a `/`.
 - **The microphone is blocked in the browser.** Use HTTPS (see
   [Installing PiRO](#installing-piro)).
+- **The Squelch button says Paused.** It only works in SSB, AM and FM
+  voice. In CW, with DATA mode on, or in FT8, FreeDV and the other digital
+  modes it stands aside and lets all the audio through.
+- **The squelch stays shut on a station I can hear.** It needs to hear
+  the pitch of a voice, and very weak or badly distorted signals may not
+  show one. Switch it off for weak stations.
 - **Audio breaks up away from home.** Check the Audio button says Opus or
   ADPCM, not "full"; tap it if not. Full audio needs about 770 kbit/s each
   way. Compressed audio plays 0.2 s behind, to ride out a slow network;
@@ -593,6 +602,12 @@ test/
                            ADPCM round trip and edge cases, the streaming
                            resampler (counts, level, anti-aliasing), frame
                            buffering, and which page addresses count as LAN
+  voice-squelch.test.js   the voice squelch on synthetic radio audio: shut
+                           on noise (with AGC swings and static crashes),
+                           a carrier, a keyed carrier and two beating
+                           carriers; open from the start of an over at 10,
+                           0 and -3 dB SNR and when mistuned, shut 1.5 s
+                           after; the output exact and click-free
   mixer.test.js           unit tests for the ALSA mixer helper against an
                            injected fake execFile, no real amixer needed
   audio-bridge.test.js    integration test for the audio bridge: raw PCM,
@@ -753,8 +768,9 @@ test/
   manual-audio-ui.js      optional browser test of compressed audio: three
                            browsers on full, Opus (WebCodecs) and ADPCM, RX
                            played, the fake microphone sent in each format,
-                           the Audio button and its remembered choice
-                           (needs Playwright and Chromium)
+                           the Audio button and its remembered choice, and
+                           the Squelch button (noise muted, a voice played,
+                           Paused in CW) (needs Playwright and Chromium)
   ft8-bridge.test.js      integration tests for the FT8 RX/TX bridge:
                            attach/detach around active-state and PTT,
                            slot-boundary decode requests to a stub
@@ -1108,6 +1124,38 @@ depends on both stations' equipment), so a signal using the opposite
 polarity from the decoder's assumption previously decoded nothing at all;
 see `docs/ui-notes.md`'s "Real bug found" writeup for the full story.
 Unchecked by default.
+
+### Voice squelch
+
+The **Squelch** button (beneath HamNoise) mutes the hiss between overs in
+SSB, AM and FM. It is one setting for everyone, like HamNoise.
+
+The radio's own squelch opens on level, so on HF it needs resetting as
+the noise changes, and it opens on carriers and static crashes. PiRO's
+listens for the pitch of a voice instead: the envelope of speech repeats
+80 to 300 times a second as the voice's pitch wanders. Noise, a steady
+carrier, CW and static don't do that, and two carriers beating together
+do it at a pitch that never moves.
+- It opens within about 0.2 s of a voice starting, and plays the audio
+  0.3 s behind so the start of the over isn't lost.
+- It stays open for 1.5 s after the voice stops, so it doesn't chop
+  between words.
+- In testing it opened on a synthetic voice 3 dB below the noise (in the
+  receiver's bandwidth) and stayed shut at 10 dB below. Very weak stations may
+  stay muted: switch it off for them.
+- A new pair of carriers can open it for about a second before it works
+  out they are a tone.
+- In CW, with DATA mode on, or in FT8, FreeDV and the other digital modes,
+  the button says **Paused** and all the audio passes.
+- With HamNoise on, it judges HamNoise's cleaned-up audio.
+- The decoders never see it: they read the radio's audio directly.
+- Between overs nothing is sent to the browsers, which saves data on a
+  phone.
+
+It was tuned on a real 285 s recording of an SSB contact (with a weak
+station, static crashes and AGC) and on synthetic audio. Not yet tried on
+the air with PiRO; the Pi's CPU use is estimated from a desktop (about 2%
+of a core there).
 
 ### Compressed audio for remote use
 
@@ -1840,6 +1888,10 @@ shapes.
   The connect snapshot's `audio.codecs` lists what the server can send,
   and `audio.opusBitrate` the Opus rate. The format code is shared by both
   ends: `src/client/audio-codec.js`.
+- **Voice squelch**: `setVoiceSquelch` (`{enabled}`) switches it for
+  everyone; the reply and the `voice-squelch` broadcast carry
+  `{enabled, active}` (`active`: on and in a voice mode), and the connect
+  snapshot has `voiceSquelch`.
 - **Scope (binary frames, tagged `BINARY_TYPE.SCOPE_LINE`,
   server→client only)**: one reassembled spectrum line per frame — see
   `src/server/scope-bridge.js` for the exact header format.

@@ -6,6 +6,7 @@ const { loadSharedCodec, RxEncoder, TxDecoder, DEFAULT_OPUS_BITRATE } = require(
 const { maximizeVolume, alsaDeviceToCardId } = require('../audio/mixer');
 const { RnnoiseFilter } = require('../audio/rnnoise-filter');
 const { HamnoiseFilter } = require('../audio/hamnoise-filter');
+const { VoiceSquelch } = require('../audio/voice-squelch');
 const { EVENT, BINARY_TYPE } = require('./protocol');
 
 // Fallback wet-ratio list if the caller (src/server/index.js, from the
@@ -193,6 +194,12 @@ class AudioBridge extends EventEmitter {
     this._rxEncoders = new Map(); // 'opus' | 'adpcm' -> RxEncoder
     this._txDecoders = new Map(); // ws -> TxDecoder
     controlServer.setClientAudioCodec = (ws, codec) => this.setClientCodec(ws, codec);
+
+    // Voice squelch (REQUEST.SET_VOICE_SQUELCH; see setVoiceSquelch()).
+    this._squelchEnabled = false;
+    this._squelch = null; // a VoiceSquelch while enabled and in a voice mode
+    controlServer.state.voiceSquelch = { enabled: false, active: false };
+    controlServer.setVoiceSquelch = (enabled) => this.setVoiceSquelch(enabled);
 
     this.capture = capture ?? new AlsaCapture({ device: rxDevice, sampleRate, channels });
     this.playback = playback ?? new AlsaPlayback({ device: txDevice, sampleRate, channels });
@@ -481,8 +488,63 @@ class AudioBridge extends EventEmitter {
 
   /** Sends one RX chunk (raw or denoised, whichever this call received) to the browsers unless muted (see setRxMuted()), and emits it as 'rx-pcm' for other server-side listeners — see this class's own doc comment. */
   _publishRx(chunk) {
+    if (this._squelchEnabled) {
+      chunk = this._squelchRx(chunk);
+      if (!chunk) return; // muted between overs: nothing to send
+    }
     if (!this._rxMuted) this.broadcastRxAudio(chunk);
     this.emit('rx-pcm', chunk);
+  }
+
+  /**
+   * The voice squelch (../audio/voice-squelch.js): mutes the hiss between
+   * overs. Shared by every browser, like HamNoise, and on the same path:
+   * after HamNoise or RNNoise (it then judges the cleaned-up audio), never
+   * the raw capture the decoders read. It works only in a voice mode (LSB,
+   * USB, AM, FM with DATA mode off and no app mode such as FT8 or FreeDV
+   * on); elsewhere it stands aside and the audio passes untouched, since
+   * CW and data are not speech.
+   * @returns {{enabled: boolean, active: boolean}} the state now
+   */
+  setVoiceSquelch(enabled) {
+    if (enabled && !this._codecLib) throw new Error('The voice squelch is not ready yet');
+    this._squelchEnabled = !!enabled;
+    if (!this._squelchEnabled) this._squelch = null;
+    return this._reportSquelch(this._squelchEnabled && this._isVoiceMode());
+  }
+
+  _isVoiceMode() {
+    const cs = this.controlServer.state;
+    const mode = this._currentMode ?? cs.mode?.mode ?? cs.mode;
+    if (!['LSB', 'USB', 'AM', 'FM', 'WFM'].includes(mode)) return false;
+    if (cs.dataMode) return false;
+    const m = this.controlServer.appModes?.() ?? {};
+    return !(m.ft8Active || m.freeDvActive || m.jttyActive || m.oliviaActive || m.hellActive || m.sstvActive || m.wsprActive || m.faxActive);
+  }
+
+  /** Broadcasts the squelch's state if it changed. */
+  _reportSquelch(active) {
+    const s = { enabled: this._squelchEnabled, active };
+    const old = this.controlServer.state.voiceSquelch;
+    if (!old || old.enabled !== s.enabled || old.active !== s.active) {
+      this.controlServer.state.voiceSquelch = s;
+      this.controlServer.broadcastJsonEvent(EVENT.VOICE_SQUELCH, s);
+    }
+    return s;
+  }
+
+  _squelchRx(chunk) {
+    const active = this._isVoiceMode();
+    if (!active) {
+      this._squelch = null; // stand aside; a fresh one starts when a voice mode returns
+    } else if (!this._squelch) {
+      this._squelch = new VoiceSquelch({
+        sampleRate: this.sampleRate,
+        makeResampler: (a, b) => new this._codecLib.StreamResampler(a, b),
+      });
+    }
+    this._reportSquelch(active);
+    return active ? this._squelch.process(chunk) : chunk;
   }
 
   /** Which compressed formats this server can send: [] until start() has loaded them, or if the audio isn't mono. */
