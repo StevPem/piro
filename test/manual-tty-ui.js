@@ -550,6 +550,27 @@ class Civ extends EventEmitter {
     'the second browser leaves JTTY for FT8 too (FT8 panel shown): ' + (await bChips()).join(' ')
   );
 
+  // FT8: a station calling us chimes (once per caller) in every browser, and its row is marked
+  {
+    const chimes = (p) => p.evaluate(() => Number(document.getElementById('ft8-panel').dataset.callChimes || 0));
+    const slot = Date.UTC(2026, 9, 23, 10, 0, 0);
+    const send = (t, ...texts) => server.broadcastJsonEvent(EVENT.FT8_DECODES, { slotStartMs: t, messages: texts.map((msg, i) => ({ msg, snr: -10 - i, dt: 0.1, freq: 1200 + 100 * i })) });
+    send(slot, 'CQ K1ABC FN42', 'JA1XYZ K1ABC -12');
+    await sleep(150);
+    check((await chimes(page)) === 0 && (await chimes(pageB)) === 0, 'CQs and other people\'s QSOs: no chime');
+    send(slot + 15000, 'VK2IO K1ABC FN42', 'CQ G4ABC IO91');
+    await sleep(150);
+    check((await chimes(page)) === 1 && (await chimes(pageB)) === 1, 'a station calling us chimes, in both browsers');
+    const marked = await page.locator('#ft8-table-body .ft8-table__row--to-me').allTextContents();
+    check(marked.length === 1 && /VK2IO K1ABC FN42/.test(marked[0]), 'and its row is marked');
+    send(slot + 45000, 'VK2IO K1ABC R-10');
+    await sleep(150);
+    check((await chimes(page)) === 1, 'the same caller carrying on: no second chime');
+    send(slot + 60000, 'VK2IO/P JA1XYZ PM95');
+    await sleep(150);
+    check((await chimes(page)) === 2, 'a new caller chimes again (also to a portable form of our call)');
+  }
+
   // DIGI: FT8 -> FT4 -> WSPR -> FT8
   {
     const powerMenu = (p) => p.locator('#tx-power-select option').allTextContents();

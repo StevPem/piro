@@ -866,6 +866,26 @@ async function run() {
     bridge.stop();
   }
 
+  {
+    // The FT8/FT4 audio fades in and out (no key clicks): ft8ts applies
+    // WSJT-X's raised-cosine ramp (nsps/8), and it survives the 48 kHz
+    // resampling. Kept as a check so a library update can't lose it.
+    const { encodeFT8, encodeFT4 } = require('@e04/ft8ts');
+    const { upsampleFloatToPcm } = require('../src/audio/resample');
+    for (const [name, encode, minRampMs] of [['FT8', encodeFT8, 10], ['FT4', encodeFT4, 10]]) {
+      const pcm = upsampleFloatToPcm(encode('CQ VK3TR QF22', { sampleRate: 12000, baseFrequency: 1500 }), 12000, 48000);
+      const x = Array.from({ length: pcm.length / 2 }, (_, i) => Math.abs(pcm.readInt16LE(2 * i)) / 32767);
+      const peak = (a, b) => Math.max(...x.slice(a, b));
+      const ms = 48; // samples per ms
+      const full = peak(x.length / 2, x.length / 2 + 2000);
+      const riseMs = Math.floor(x.findIndex((v) => v > 0.95 * full) / ms);
+      let end = x.length - 1;
+      while (x[end] < 0.95 * full) end--;
+      const fallMs = Math.floor((x.length - 1 - end) / ms);
+      check(peak(0, ms) < 0.1 * full && peak(x.length - ms, x.length) < 0.1 * full && riseMs >= minRampMs && fallMs >= minRampMs, `${name} audio fades in over ${riseMs} ms and out over ${fallMs} ms (at least ${minRampMs} ms each)`);
+    }
+  }
+
   if (failures > 0) {
     console.error(`\n${failures} test(s) failed.`);
     process.exitCode = 1;

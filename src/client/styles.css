@@ -1683,3 +1683,9 @@ button {
 .conditions__error[hidden] {
   display: none;
 }
+
+/* A message addressed to this station (someone calling us). */
+.ft8-table__row--to-me > span:last-child {
+  color: var(--led-amber);
+  font-weight: 600;
+}

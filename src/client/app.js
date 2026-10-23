@@ -1,4 +1,5 @@
 import { RigLink } from './rpc.js';
+import { CallAlert, baseCall } from './call-alert.js';
 import { AudioPipeline } from './audio.js';
 import { ScopeDisplay } from './scope.js';
 import { S_METER_LEVELS, sMeterLevelIndex, sMeterLabel } from './smeter.js';
@@ -539,6 +540,14 @@ let hasRequestedDefaultSpan = false; // auto-request the default span exactly on
 let ft8Active = false;
 let ft8LastBandName = null; // which band FT8's auto-tune last targeted, to detect a *new* band change rather than re-tuning on every frequency update
 let ft8SendInFlight = false;
+// Chimes when an FT8/FT4 station calls us (see call-alert.js).
+const callAlert = new CallAlert();
+/** A decoded message addressed to this station. */
+function isToMe(msg) {
+  if (!stationCallsign) return false;
+  const [to, from] = String(msg?.msg || '').trim().toUpperCase().split(/\s+/);
+  return to !== 'CQ' && !!from && baseCall(to) === baseCall(stationCallsign) && baseCall(from) !== baseCall(stationCallsign);
+}
 
 // --- WSPR state ---
 // The third DIGI choice: app-level on USB + DATA MODE like FT8. The server
@@ -3401,6 +3410,7 @@ function setFt8UiVisible(active) {
     // decoding stops, and would otherwise silently resume "mid-QSO" the
     // next time FT8 mode is entered.
     ft8Qso.reset();
+    callAlert.reset();
     hideQsoStatus();
     currentQsoFreqHz = null;
     scopeDisplay.setQsoFreq(null);
@@ -3474,10 +3484,15 @@ link.addEventListener('ft8-decodes', (event) => {
   applyFt8Suggestion(ft8Qso.ingestDecodes(sorted));
   const activeQso = ft8Qso.getQso();
 
+  // Someone calling us: a chime (once per caller; see call-alert.js), and their rows marked.
+  const callers = callAlert.check(sorted, slotStartMs, stationCallsign);
+  if (callers.length) playCallChime();
+
   for (const msg of sorted) {
     const row = document.createElement('div');
     row.className = 'ft8-table__row';
     if (isRelatedToQso(msg, activeQso)) row.classList.add('ft8-table__row--qso');
+    if (isToMe(msg)) row.classList.add('ft8-table__row--to-me');
     row.setAttribute('role', 'row');
     row.title = 'Click to copy this message into the composer';
     const utc = document.createElement('span');
@@ -4365,12 +4380,26 @@ window.addEventListener('keydown', unlockChime, { capture: true });
 /** Two soft rising notes, about half a second in all. */
 function playChime() {
   notesEl.dataset.chimes = String(Number(notesEl.dataset.chimes || 0) + 1);
-  if (!chimeCtx || chimeCtx.state !== 'running') return;
-  const t0 = chimeCtx.currentTime + 0.01;
-  [
+  playTones([
     [880, 0],
     [1318.5, 0.16],
-  ].forEach(([hz, at]) => {
+  ]);
+}
+
+/** An FT8/FT4 station calling us: three quick notes, so it isn't mistaken for a note. */
+function playCallChime() {
+  ft8PanelEl.dataset.callChimes = String(Number(ft8PanelEl.dataset.callChimes || 0) + 1);
+  playTones([
+    [1046.5, 0],
+    [1318.5, 0.11],
+    [1568, 0.22],
+  ]);
+}
+
+function playTones(notes) {
+  if (!chimeCtx || chimeCtx.state !== 'running') return;
+  const t0 = chimeCtx.currentTime + 0.01;
+  notes.forEach(([hz, at]) => {
     const osc = chimeCtx.createOscillator();
     const gain = chimeCtx.createGain();
     osc.type = 'sine';
