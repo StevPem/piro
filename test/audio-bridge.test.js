@@ -975,6 +975,80 @@ async function testCompressedAudio() {
   await s3.close();
 }
 
+async function testVoiceSquelch() {
+  console.log('\n-- voice squelch (shared, voice modes only) --');
+  const { bandNoise, voice, toPcm, R } = require('./fixtures/radio-audio');
+  const civ = new StubCivDriver();
+  const server = new ControlServer({ civ, port: 0 });
+  const port = await server.listen();
+  const capture = new FakeCapture();
+  const bridge = new AudioBridge({ controlServer: server, civ, capture, playback: new FakePlayback(), maximizeVolumeOnStart: false });
+  await bridge.start();
+  const a = await connect(port);
+  const b = await connect(port);
+  await waitFor(a, (m) => !m.isBinary && m.data.type === EVENT.CONNECTED);
+  const hello = await waitFor(b, (m) => !m.isBinary && m.data.type === EVENT.CONNECTED);
+  check(hello.data.data.voiceSquelch && hello.data.data.voiceSquelch.enabled === false, 'the connect snapshot has voiceSquelch (off)');
+  const feed = async (f32) => {
+    const pcm = toPcm(f32);
+    for (let o = 0; o < pcm.length; o += 3840) capture.emit('data', pcm.subarray(o, o + 3840));
+    await new Promise((r) => setTimeout(r, 80));
+  };
+  const rawBytes = (ws) => binaries(ws, BINARY_TYPE.AUDIO).reduce((n, p) => n + p.length, 0);
+  const squelchEvents = (ws) => {
+    const ev = ws._queue.filter((m) => !m.isBinary && m.data.type === EVENT.VOICE_SQUELCH).map((m) => m.data.data);
+    ws._queue = ws._queue.filter((m) => !(!m.isBinary && m.data.type === EVENT.VOICE_SQUELCH));
+    return ev;
+  };
+
+  civ.emit('mode', { mode: 'USB', filter: 1 });
+  const r = await request(a, 'setVoiceSquelch', { enabled: true });
+  check(r.ok && r.data.enabled === true && r.data.active === true, 'setVoiceSquelch in USB: enabled and working');
+  await new Promise((res) => setTimeout(res, 50));
+  check(squelchEvents(b).some((e) => e.enabled && e.active), 'every browser hears that it is on');
+  rawBytes(a);
+  rawBytes(b);
+
+  await feed(bandNoise(3, 0.05));
+  check(rawBytes(a) === 0 && rawBytes(b) === 0, 'band noise only: nothing is sent to the browsers');
+  const v = bandNoise(4, 0.05);
+  const sp = voice(2, 0.05);
+  for (let i = 0; i < sp.length; i++) v[R / 2 + i] += sp[i];
+  await feed(v);
+  const heard = rawBytes(a) / 2 / R;
+  check(heard > 2 && heard < 3.8, `a 2 s over: the squelch opens and the browsers hear it (${heard.toFixed(2)} s, with the hang time)`);
+  check(Math.abs(rawBytes(b) / 2 / R - heard) < 0.01, 'all browsers get the same');
+
+  civ.emit('mode', { mode: 'CW', filter: 1 });
+  const noise = bandNoise(1, 0.05);
+  await feed(noise);
+  check(rawBytes(a) === noise.length * 2, 'in CW the squelch stands aside: all the audio passes');
+  check(squelchEvents(b).some((e) => e.enabled && !e.active), 'and the browsers are told it is paused');
+  civ.emit('mode', { mode: 'USB', filter: 1 });
+  server.state.ft8Active = true;
+  await feed(noise);
+  check(rawBytes(a) === noise.length * 2, 'with FT8 on (USB, but data) it stands aside too');
+  server.state.ft8Active = false;
+  server.state.dataMode = true;
+  await feed(noise);
+  check(rawBytes(a) === noise.length * 2, 'and with DATA mode on');
+  server.state.dataMode = false;
+  await feed(noise);
+  check(rawBytes(a) === 0, 'back in plain USB it works again');
+
+  const off = await request(b, 'setVoiceSquelch', { enabled: false });
+  check(off.ok && off.data.enabled === false && off.data.active === false, 'switched off by another browser');
+  await feed(noise);
+  check(rawBytes(a) === noise.length * 2, 'off: all the audio passes again');
+  const badReq = await request(a, 'setVoiceSquelch', { enabled: 'yes' });
+  check(badReq.ok === false, 'enabled must be true or false');
+
+  bridge.stop();
+  a.close();
+  b.close();
+  await server.close();
+}
+
 async function testVolumeMaximizedOnStart() {
   console.log('\n-- start() maximizes volume on the ALSA card before starting streams --');
   const civ = new StubCivDriver();
@@ -1081,6 +1155,7 @@ async function run() {
   await testRnnoiseHamNoiseMutualExclusion();
   await testHamNoiseResilientToThrows();
   await testCompressedAudio();
+  await testVoiceSquelch();
   await testVolumeMaximizedOnStart();
   await testVolumeMaximizeCanBeDisabled();
   await testVolumeMaximizeFailureDoesNotBlockStart();

@@ -901,6 +901,8 @@ link.addEventListener('rnnoise-level', (event) => {
 link.addEventListener('hamnoise-enabled', (event) => {
   setHamNoiseButtonState(event.detail.enabled);
 });
+// The voice squelch: switched by any browser, or paused/resumed by the server as the mode changes.
+link.addEventListener('voice-squelch', (event) => renderVoiceSquelch(event.detail));
 // Keeps the FT8/FT4 toggle in sync when another connected client changes
 // it — same "broadcast, don't assume" pattern as psk-spot-enabled above.
 // Only updates the label/local state here; doesn't re-tune (a remote
@@ -988,6 +990,7 @@ link.addEventListener('connected', (event) => {
   }
   if (data.rnnoiseLevel != null) setRnnoiseButtonLevel(data.rnnoiseLevel);
   if (data.hamNoiseEnabled != null) setHamNoiseButtonState(data.hamNoiseEnabled);
+  if (data.voiceSquelch) renderVoiceSquelch(data.voiceSquelch);
   // Restores whatever status message was last set (possibly by an
   // earlier connection) — see REQUEST.SET_FREEDV_MESSAGE's doc comment.
   if (data.freeDvMessage != null) freeDvMessageInput.value = data.freeDvMessage;
@@ -4258,6 +4261,38 @@ hamnoiseButton.addEventListener('click', () => {
 if (RNNOISE_IN_UI) rnnoiseButton.insertAdjacentElement('afterend', hamnoiseButton);
 else if (nrControl && nrControl.buttonEl) nrControl.buttonEl.insertAdjacentElement('afterend', hamnoiseButton);
 else functionControlsEl.appendChild(hamnoiseButton);
+
+// --- Voice squelch ("Squelch", beneath HamNoise) ---
+// Mutes the hiss between overs in SSB, AM and FM (see
+// audio/voice-squelch.js). One setting for every browser, kept by the
+// server, which also says whether it is working: in CW, DATA mode or an
+// app mode such as FT8 it stands aside ("Squelch Paused").
+const squelchButton = document.createElement('button');
+squelchButton.type = 'button';
+squelchButton.id = 'squelch-button';
+squelchButton.className = 'chip function-control__button squelch-toggle';
+squelchButton.disabled = true;
+squelchButton.textContent = 'Squelch Off';
+let voiceSquelch = { enabled: false, active: false };
+
+function renderVoiceSquelch(state) {
+  voiceSquelch = state;
+  squelchButton.disabled = false;
+  squelchButton.textContent = !state.enabled ? 'Squelch Off' : state.active ? 'Squelch On' : 'Squelch Paused';
+  squelchButton.title = !state.enabled
+    ? 'Tap to mute the hiss between overs (SSB, AM and FM). Weak stations may stay muted.'
+    : state.active
+      ? 'Muting the hiss between overs. Audio is 0.3 s behind while it works. Weak stations may stay muted: tap to switch off.'
+      : 'On, but paused: it only works in SSB, AM and FM voice, not CW, data or FreeDV.';
+}
+
+squelchButton.addEventListener('click', () => {
+  link
+    .request('setVoiceSquelch', { enabled: !voiceSquelch.enabled })
+    .then((state) => renderVoiceSquelch(state))
+    .catch((err) => showError(`Couldn't change the squelch: ${err.message}`));
+});
+hamnoiseButton.insertAdjacentElement('afterend', squelchButton);
 
 /**
  * Fetches one function control's actual current value from the radio and

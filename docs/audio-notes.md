@@ -49,6 +49,44 @@ Choices made:
 `AUDIO_CODEC` (the old server-wide `pcm`/`opus` switch, whose Opus no
 browser could play) is gone; setting it logs a warning.
 
+## Voice squelch (v97)
+
+`src/audio/voice-squelch.js`, on the browser path after HamNoise/RNNoise
+(`AudioBridge#_publishRx`), only in a voice mode. How it was tuned:
+
+- **Material.** A real 285 s SSB contact (ham-qso-ai's `demo.opus`,
+  Apache-2.0, not in this repo: AGC'd, a weak station at 10-18 s, static
+  crashes, a carrier at 1.1 kHz at 96-120 s, a sweeping interference at
+  0-9 s), checked by eye as a spectrogram with the gate drawn over it; and
+  synthetic noise, crashes, carriers and voices
+  (`test/fixtures/radio-audio.js`).
+- **Syllable rhythm (ham-qso-ai's SyllabicVAD idea) was too weak here.**
+  With AGC, the gaps between overs are only 5-10 dB below the speech and
+  fluctuate a lot, so level and its modulation separate speech from noise
+  poorly.
+- **Pitch of the envelope works.** Band-pass 300-1000 Hz (the voice's
+  strongest harmonics; most of the noise is above), rectify, low-pass
+  600 Hz, high-pass 60 Hz, then the best normalised autocorrelation at
+  lags of 80-296 Hz over 128 ms. With a 64 ms window, real noise reached
+  0.34 and only half the speech steps beat that; with 128 ms, noise stays
+  under 0.31 (synthetic) and 0.4 catches about 40% of speech steps, with
+  none of the real noise steps. 3 voiced steps in 200 ms then opens it,
+  0.07-0.2 s after a voice starts at 0 dB SNR (0.6 s at -3 dB).
+- **Things that fooled earlier versions**, each now a test: a lone
+  carrier (its rectified waveform repeats every half cycle: fixed by the
+  600 Hz envelope low-pass); a carrier switching on and off (a step
+  correlates with itself at every lag: fixed by the 60 Hz high-pass);
+  two carriers beating at a "pitch" (fixed by the tone test: 75% of 40+
+  readings over 2 s within 0.8%; 1 s was too short, as held vowels
+  tripped it and cut speech); a best lag at the edge of the range (taken
+  as no pitch); a 2x or 3x lag winning by chance (the shortest strong
+  peak is used).
+- **Known gaps.** Two carriers keyed together quickly can open it. Speech
+  10 dB below the noise doesn't open it. The first 2 s of a beat note may
+  be heard.
+- **CPU.** 17 ms per second of audio on a desktop (the 128 ms
+  autocorrelation at 74 lags, 50 times a second). Not measured on a Pi.
+
 ## Why child processes instead of a native ALSA binding
 
 There's no ALSA binding for Node that's both well-maintained and doesn't
