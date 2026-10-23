@@ -3891,3 +3891,29 @@ model for how to approach that.
   the process default. Not reproducible here (this machine can't reach
   wspr.live): to be confirmed by running the script on the Pi.
   Service-worker cache bumped to v92.
+
+### FT8 call chime; FT8 fade checked (v93)
+
+- From the TX-5DR review. New `client/call-alert.js` (`CallAlert`): a
+  decoded FT8/FT4 message counts as a call when its first callsign is ours
+  (compared without `<>`, prefixes or suffixes) and the sender is someone
+  else; CQs, others' QSOs, free text and an unresolved `<...>` sender
+  don't. Each caller alerts once; every message from them renews a
+  2-minute window, and only a call after 2 minutes of silence alerts again.
+  A slot chimes at most once. An old or repeated slot never re-arms a
+  caller. Callers not heard for 4 minutes are forgotten. It resets when FT8
+  is left.
+- The page plays three quick rising notes (C, E, G), unlike the notes
+  chime's two, through the same Web Audio context (unlocked by the first
+  tap). Rows addressed to us are shown in amber. Each browser decides for
+  itself; nothing goes to the server.
+- FT8 fade: TX-5DR adds a 10 ms raised-cosine fade to FT8/FT4 audio. PiRO
+  didn't need one: ft8ts already applies WSJT-X's ramp (nsps/8: measured
+  16 ms for FT8 and 40 ms for FT4 after resampling to 48 kHz, starting and
+  ending at zero). Adding another would only shorten the full-power part.
+  ft8-bridge.test.js now checks the ramp (at least 10 ms each end), so a
+  library update can't lose it.
+- Tests: call-alert.test.mjs (new, in `npm test`), ft8-bridge (ramp), and
+  headless Chromium (no chime for CQs or others' QSOs, a chime in both
+  browsers for a call, row marked, no repeat, a new caller chimes).
+  Service-worker cache bumped to v93 (and caches call-alert.js).

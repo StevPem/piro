@@ -12,7 +12,7 @@ Hamlib, no separate audio server and no extra apps.
 Written by VK3TR. Licensed AGPL-3.0-only (see
 [Licence](#licence)).
 
-**Current build: v92.** This is the version the app shows next to its title.
+**Current build: v93.** This is the version the app shows next to its title.
 It is the `CACHE_NAME` number in `src/client/sw.js`, which goes up with every
 change to the web app.
 
@@ -58,8 +58,8 @@ Several of the cooler features in this app are built on the work of others:
   image file, cropped and tagged with your callsign, followed by an FSK ID
   and a CW ID. See [SSTV](#sstv).
 - **FT8**: band-activity decoding, manual TX, and a guided QSO sequence that
-  suggests each reply (you still send every message yourself). Optional PSK
-  Reporter spotting.
+  suggests each reply (you still send every message yourself), and a chime
+  when someone calls you. Optional PSK Reporter spotting.
 - **WSPR** (the third choice of the DIGI button, after FT8 and FT4): receive
   and transmit, with the decoder ported to JavaScript from WSJT-X's wsprd.
   Spots go to [wsprnet.org](https://www.wsprnet.org). It can also receive
@@ -732,6 +732,9 @@ test/
                            — the actual DSP/codec is covered above, and
                            the real @e04/ft8ts calls are exercised
                            manually against real hardware, not unit-tested
+  call-alert.test.mjs     the FT8 "someone is calling you" chime rules: what
+                           counts as a call, once per caller, 2-minute quiet
+                           window, no re-arming from old slots
   ft8-qso.test.mjs        unit tests for the guided FT8 QSO sequencer
                            (src/client/ft8-qso.js): parsing the standard
                            FT8 message set (CQ, reply-with-grid, signal
@@ -1516,6 +1519,19 @@ margin before releasing, since handing PCM to the ALSA playback pipe
 doesn't mean it's already reached the speaker — releasing PTT too early
 truncates the tail of the transmission; see `docs/ui-notes.md`'s "Real bug
 found" writeup for the full story.
+
+**Someone calling you**: when an FT8 or FT4 message addressed to
+`STATION_CALLSIGN` is decoded (for example `VK3TR K1ABC FN42`), every
+browser in FT8 plays three quick rising notes, and the message is shown in
+amber. A portable or hashed form of your call (`VK3TR/P`, `<VK3TR>`)
+counts too. Each caller chimes once: while they keep calling, it stays
+quiet, and only after 2 minutes without hearing them does a new call chime
+again. CQs and other people's QSOs never chime. As with the notes chime,
+a browser only plays sound after the page has been tapped once.
+
+The FT8 and FT4 transmit audio fades in and out, which avoids key clicks:
+the encoder applies WSJT-X's raised-cosine ramp (about 16 ms for FT8 and
+40 ms for FT4), and a test checks it survives the resampling to 48 kHz.
 
 **Guided FT8 QSOs**: with `STATION_CALLSIGN`/`STATION_GRID` configured
 (see above), the FT8 composer starts each session with a default
