@@ -1214,6 +1214,42 @@ async function run() {
     await sServer.close();
   }
 
+  // Radiofax: setFaxActive (an app mode, shared), faxStartNow / faxStop passed on, getFaxPictures, off when the last client leaves
+  {
+    const fServer = new ControlServer({ civ: new StubCivDriver(), port: 0 });
+    const fPort = await fServer.listen();
+    const seen = [];
+    fServer.on('fax-active', (e) => seen.push(`active ${e}`));
+    fServer.on('fax-start-now', () => seen.push('start'));
+    fServer.on('fax-stop', () => seen.push('stop'));
+    fServer.faxPictures = [{ id: 1, width: 1810, lines: 3, png: 'iVBOR' }];
+    fServer.faxCurrent = async () => ({ id: 2, width: 1810, linesSoFar: 5 });
+    const a = await connect(fPort);
+    const b = await connect(fPort);
+    const hello = await nextMessage(a);
+    await nextMessage(b);
+    check(hello.data.faxActive === false && 'fax' in hello.data, 'connected snapshot reports faxActive=false and the receiver state');
+    a.send(JSON.stringify({ id: 'f1', type: 'setFaxActive', active: 'yes' }));
+    check((await nextMessage(a)).ok === false, 'setFaxActive rejects a non-boolean');
+    a.send(JSON.stringify({ id: 'f2', type: 'setFaxActive', active: true }));
+    const ok = await nextMessage(a);
+    const toB = await nextMessage(b);
+    check(ok.data.active === true && fServer.state.faxActive === true && toB.type === 'app-modes' && toB.data.faxActive === true && toB.data.sstvActive === false, 'setFaxActive turns Radiofax on, and the other browser hears it');
+    a.send(JSON.stringify({ id: 'f3', type: 'faxStartNow' }));
+    await nextMessage(a);
+    a.send(JSON.stringify({ id: 'f4', type: 'faxStop' }));
+    await nextMessage(a);
+    check(seen.join() === 'active true,start,stop', 'faxStartNow and faxStop are passed on');
+    a.send(JSON.stringify({ id: 'f5', type: 'getFaxPictures' }));
+    const pics = await nextMessage(a);
+    check(pics.data.pictures.length === 1 && pics.data.current.linesSoFar === 5, 'getFaxPictures returns the kept charts and the one coming in');
+    a.close();
+    b.close();
+    await new Promise((r) => setTimeout(r, 100));
+    check(fServer.state.faxActive === false && seen.at(-1) === 'active false', 'last client disconnecting turns Radiofax off');
+    await fServer.close();
+  }
+
   // getBandConditions: answered by the BandConditions the server is given
   {
     const bServer = new ControlServer({ civ: new StubCivDriver(), port: 0 });

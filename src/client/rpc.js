@@ -16,6 +16,7 @@ const BINARY_TYPE = {
   FT8_SPECTRUM: 0x03,
   HELL_COLUMNS: 0x04,
   SSTV_LINE: 0x05,
+  FAX_LINE: 0x06,
 };
 
 // Mirrors src/civ/commands.js SCOPE_MODE.
@@ -80,6 +81,13 @@ function decodeSstvLine(arrayBuffer) {
   const view = new DataView(arrayBuffer);
   const width = view.getUint16(5, true);
   return { id: view.getUint16(1, true), y: view.getUint16(3, true), width, rgb: new Uint8Array(arrayBuffer, 7, width * 3) };
+}
+
+/** BINARY_TYPE.FAX_LINE: [1..2] chart id, [3..4] line, [5..6] width, then one grey byte per pixel (see server/fax-decoder-bridge.js). */
+function decodeFaxLine(arrayBuffer) {
+  const view = new DataView(arrayBuffer);
+  const width = view.getUint16(5, true);
+  return { id: view.getUint16(1, true), y: view.getUint16(3, true), width, grey: new Uint8Array(arrayBuffer, 7, width) };
 }
 
 export class RigLink extends EventTarget {
@@ -194,6 +202,14 @@ export class RigLink extends EventTarget {
     if (tag === BINARY_TYPE.SSTV_LINE) {
       try {
         this._dispatch('sstv-line', decodeSstvLine(arrayBuffer));
+      } catch {
+        // malformed frame — drop it
+      }
+      return;
+    }
+    if (tag === BINARY_TYPE.FAX_LINE) {
+      try {
+        this._dispatch('fax-line', decodeFaxLine(arrayBuffer));
       } catch {
         // malformed frame — drop it
       }
