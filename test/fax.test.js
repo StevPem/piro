@@ -2,7 +2,7 @@
 'use strict';
 
 const { encodeFax, FAX_WIDTH } = require('../src/audio/fax-tx');
-const { FaxReceiver, toneStrength } = require('../src/audio/fax-rx');
+const { FaxReceiver, toneStrength, deslant } = require('../src/audio/fax-rx');
 
 let failures = 0;
 function check(cond, msg) {
@@ -179,6 +179,70 @@ for (const [snr, maxErr] of [[10, 25], [3, 45]]) {
   const drift = rowShift(end, 20, end.lines - 20);
   check(Math.abs(drift) <= 2, `and comes out straight (${drift} px between lines 20 and ${end.lines - 20})`);
 }
+{
+  // Seen on VMC: HF noise spoils a few phasing lines. Before v98 the first
+  // bad line ended the phasing after 6-10 lines: a poor clock measurement
+  // (each chart slanted differently, by up to 0.7 px a line) and the rest
+  // of the phasing drawn as a black band at the top.
+  for (const [ppm, hits, snr] of [
+    [120, [8, 15, 27], 20],
+    [-300, [10], 15],
+  ]) {
+    const H = 200;
+    const truth = chart(H);
+    const audio = encodeFax({ grey: truth, width: W, lines: H, rateError: ppm * 1e-6 });
+    const spl = 6000 / (1 + ppm * 1e-6);
+    for (const h of hits) {
+      const at = Math.round(5 * 12000 + h * spl + 1500);
+      for (let i = 0; i < 2500; i++) audio[at + i] = 0.5 * Math.sin((2 * Math.PI * 2300 * i) / 12000); // a burst of white in that phasing line
+    }
+    const { ends } = run(noisy(audio, snr));
+    const end = ends[0];
+    let darkTop = 0;
+    for (let y = 0; y < 10; y++) {
+      let sum = 0;
+      for (let x = 0; x < W; x++) sum += end.grey[y * W + x];
+      if (sum / W < 60) darkTop++;
+    }
+    check(end && end.phased && end.clockMeasured && Math.abs(end.clockPpm + ppm) <= 10, `phasing with ${hits.length} noise-hit line(s), ${ppm} ppm: all of it measured (clock ${end?.clockPpm} ppm)`);
+    check(darkTop === 0 && Math.abs(firstBrightAvg(end, 10, 20) - 181) <= 2 && Math.abs(firstBrightAvg(end, H - 30, H - 20) - 181) <= 2, `none of the phasing drawn as chart (${darkTop} dark lines at the top); lined up and straight`);
+  }
+}
+{
+  // Real VMC charts, as received slanted (every 4th line kept, each repeated
+  // 4 times): a satellite picture (big dark areas) and a page of text (no
+  // vertical lines, only a left margin). Straightened by their edges.
+  const zlib = require('zlib');
+  const fs = require('fs');
+  const path = require('path');
+  for (const [name, expected] of [
+    ['fax-vmc-satellite', 0.665],
+    ['fax-vmc-text', 0.19],
+  ]) {
+    const small = zlib.gunzipSync(fs.readFileSync(path.join(__dirname, 'fixtures', `${name}.grey.gz`)));
+    const L = (small.length / W) * 4;
+    const g = new Uint8Array(L * W);
+    for (let y = 0; y < L; y++) g.set(small.subarray((y >> 2) * W, ((y >> 2) + 1) * W), y * W);
+    const d = deslant(g, W, L);
+    check(Math.abs(d.pxPerLine - expected) < 0.03, `${name}: slant found (${d.pxPerLine.toFixed(3)} px a line; straight at ${expected}, checked by eye)`);
+    check(deslant(d.grey, W, L).pxPerLine === 0, `${name}: and straight afterwards`);
+  }
+  // and noise is left alone
+  const n = new Uint8Array(W * 600);
+  for (let i = 0; i < n.length; i++) n[i] = rnd() < 0.5 ? 0 : 255;
+  check(deslant(n, W, 600).pxPerLine === 0, 'a chart of pure noise is not "straightened"');
+}
+{
+  // A slanted chart with no phasing tells the clock error too (slantPpm)
+  const H = 300;
+  const audio = encodeFax({ grey: chart(H), width: W, lines: H, rateError: 1.5e-4, apt: false, phasingSec: 0 });
+  const rx = new FaxReceiver();
+  rx.startNow();
+  run(audio, rx);
+  const end = rx.flush().find((e) => e.type === 'end');
+  check(end && !end.clockMeasured && Math.abs(end.slantPpm + 150) <= 10, `the slant gives the clock error: ${end?.slantPpm} ppm (phasing would say -150)`);
+}
+
 {
   // a straight chart is left alone
   const H = 200;

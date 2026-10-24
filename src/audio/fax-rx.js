@@ -39,6 +39,13 @@ const TONE_THRESHOLD = 0.35;
 const START_BLOCKS = 4; // 1 s of start tone
 const STOP_BLOCKS = 4;
 const MIN_PHASING_LINES = 6;
+const MISSES_TO_END = 3; // lines in a row that aren't phasing before the phasing is taken as over
+// The line length is measured from the phasing only when it is good to
+// within this (the fit's standard error); a short or noisy run of phasing
+// lines still lines the chart up, but keeps the line length we had.
+const MAX_CLOCK_UNCERTAINTY = 25e-6;
+// deslant()'s pixels a line -> clock error: a line SLANT_SIGN * px/W too long
+const SLANT_SIGN = 1;
 const MAX_PHASING_LINES = 120; // 60 s
 const MAX_LINES = 25 * FAX_LPM; // 25 minutes
 const MAX_CLOCK_ERROR = 0.002; // 2000 ppm: anything more is a bad measurement
@@ -66,10 +73,13 @@ function toneStrength(block, hz) {
  * Straightens a slanted chart. A clock difference between the sender and
  * us makes every line a little long or short, so features drift sideways
  * by the same amount on each line (and wrap round the edge). Charts are full
- * of vertical lines (frames, grids, coastlines): try drifts from -1.5 to
- * +1.5 pixels a line, and keep the one where the ink lines up into the
- * sharpest columns (the largest sum of squared column totals). Then shift
- * each line back, round the edge, by that drift.
+ * of vertical edges (frames, grids, coastlines, the left edge of text):
+ * try drifts from -1.5 to +1.5 pixels a line, and keep the one where the
+ * edges line up into the sharpest columns (the largest sum of squared
+ * column totals). Then shift each line back, round the edge, by that drift.
+ * Edges (the change from each pixel to the next), not ink: on a satellite
+ * picture the big dark areas would otherwise outweigh the frame and
+ * coastlines and pull the answer off (seen on a VMC chart).
  * @returns {{grey: Uint8Array, pxPerLine: number}}
  */
 function deslant(grey, width, lines, { maxPxPerLine = 1.5 } = {}) {
@@ -81,10 +91,13 @@ function deslant(grey, width, lines, { maxPxPerLine = 1.5 } = {}) {
     const r = new Float32Array(cols);
     for (let c = 0; c < cols; c++) {
       let ink = 0;
-      for (let b = 0; b < bin; b++) ink += 255 - grey[y * width + c * bin + b];
+      for (let b = 0; b < bin; b++) {
+        const x = c * bin + b;
+        ink += Math.abs(grey[y * width + x] - grey[y * width + ((x + 1) % width)]);
+      }
       r[c] = ink;
     }
-    // remove the line's own average, so dark streaks (noise) don't count
+    // remove the line's own average, so noisy lines don't count
     let mean = 0;
     for (let c = 0; c < cols; c++) mean += r[c];
     mean /= cols;
@@ -108,10 +121,12 @@ function deslant(grey, width, lines, { maxPxPerLine = 1.5 } = {}) {
   let best = 0;
   let bestScore = score(0);
   const flat = bestScore;
+  const tried = [];
   // fine enough that the best step is within about 5 pixels over the chart
   const coarse = Math.min(0.04, Math.max(0.01, 10 / lines));
   for (let d = -maxPxPerLine; d <= maxPxPerLine + 1e-9; d += coarse) {
     const sc = score(d);
+    tried.push(sc);
     if (sc > bestScore) {
       bestScore = sc;
       best = d;
@@ -124,8 +139,13 @@ function deslant(grey, width, lines, { maxPxPerLine = 1.5 } = {}) {
       best = d;
     }
   }
-  // not worth it unless clearly better than leaving it alone
-  if (Math.abs(best) < 0.01 || bestScore < flat * 1.1) return { grey, pxPerLine: 0 };
+  // Only when the best drift is a clear peak (well above the typical drift
+  // tried: on real charts 2-3.6 times, on noise about 1.1) and better than
+  // leaving it alone. A small gain over "as is" is fine: a slight slant
+  // (0.1 px a line, seen on a VMC chart) only gains 10%.
+  tried.sort((a, b) => a - b);
+  const typical = tried[tried.length >> 1];
+  if (Math.abs(best) < 0.01 || bestScore < typical * 1.5 || bestScore < flat * 1.02) return { grey, pxPerLine: 0 };
   const out = new Uint8Array(grey.length);
   for (let y = 0; y < lines; y++) {
     const shift = best * y;
@@ -172,6 +192,7 @@ class FaxReceiver {
     // Start now was pressed during the phasing.
     this._scan = { next: 0, positions: [], widths: [] };
     this._phased = false; // the chart coming in was lined up by phasing
+    this._clockMeasured = false; // ... and its phasing measured the line length
     this._lineStart = 0; // sample number where the next line starts
     this._lines = [];
   }
@@ -316,14 +337,19 @@ class FaxReceiver {
         ph.widths.push(count);
       }
       ph.next += spl;
+      // HF noise spoils the odd phasing line (a crash, a fade): only
+      // MISSES_TO_END lines in a row that aren't phasing end it, so the
+      // whole 30 s is measured and none of it is drawn as the chart
+      ph.misses = isPhasing ? 0 : (ph.misses ?? 0) + 1;
       if (isPhasing && ph.positions.length === 3 && this.state === 'listening') this._setState('phasing', events);
       const enough = ph.positions.length >= MIN_PHASING_LINES;
-      if ((!isPhasing && enough) || ph.positions.length >= MAX_PHASING_LINES) {
+      if ((ph.misses >= MISSES_TO_END && enough) || ph.positions.length >= MAX_PHASING_LINES) {
         const ok = this._beginFromPhasing(ph.positions, ph.widths, events);
         this._scan = { next: ph.next, positions: [], widths: [] };
         if (ok) return;
         continue;
       }
+      if (!isPhasing && ph.misses < MISSES_TO_END && ph.positions.length) continue; // one bad line: keep going
       if (!isPhasing && ph.positions.length) {
         // a few pulse-like lines and then not: noise, start again
         ph.positions = [];
@@ -358,7 +384,10 @@ class FaxReceiver {
         den += (k[i] - mk) ** 2;
       }
       const slope = den > 0 ? num / den : spl;
-      return { slope, at: (i) => mp + (k[i] - mk) * slope };
+      let ss = 0;
+      for (const i of idx) ss += (positions[i] - (mp + (k[i] - mk) * slope)) ** 2;
+      const se = m > 2 && den > 0 ? Math.sqrt(ss / (m - 2) / den) : Infinity;
+      return { slope, se, at: (i) => mp + (k[i] - mk) * slope };
     };
     let measured = spl;
     let line = null;
@@ -381,9 +410,11 @@ class FaxReceiver {
       if (res[res.length >> 1] > spl * 0.005) return false;
     }
     const err = measured / spl - 1;
-    if (Math.abs(err) <= MAX_CLOCK_ERROR) {
+    this._clockMeasured = false;
+    if (Math.abs(err) <= MAX_CLOCK_ERROR && line && line.se / spl <= MAX_CLOCK_UNCERTAINTY) {
       this.spl = measured;
       this.clockPpm = Math.round(err * 1e6);
+      this._clockMeasured = true;
     }
     if (this.state === 'receiving') {
       // a chart started by hand ran into phasing: keep what came before the
@@ -442,15 +473,31 @@ class FaxReceiver {
     const lines = this._lines;
     let grey = new Uint8Array(this.width * lines.length);
     lines.forEach((l, y) => grey.set(l, y * this.width));
-    // A chart that wasn't lined up by phasing may slant: straighten it from
-    // its own vertical lines (see deslant()).
+    // Unless this chart's own phasing measured the line length, it may
+    // slant: straighten it from its own vertical edges (see deslant()). The
+    // slant found is also a measurement of the clock error (slantPpm), so
+    // later charts can start with the right line length.
     let slantPxPerLine = 0;
-    if (!this._phased && lines.length >= 60) {
+    let slantPpm = null;
+    if (!(this._phased && this._clockMeasured) && lines.length >= 60) {
       const d = deslant(grey, this.width, lines.length);
       grey = d.grey;
       slantPxPerLine = d.pxPerLine;
+      if (d.pxPerLine) slantPpm = Math.round(this.clockPpm + (d.pxPerLine / this.width) * 1e6 * SLANT_SIGN);
     }
-    events.push({ type: 'end', width: this.width, lines: lines.length, grey, complete, reason, clockPpm: this.clockPpm, phased: this._phased, slantPxPerLine });
+    events.push({
+      type: 'end',
+      width: this.width,
+      lines: lines.length,
+      grey,
+      complete,
+      reason,
+      clockPpm: this.clockPpm,
+      phased: this._phased,
+      clockMeasured: this._phased && this._clockMeasured,
+      slantPxPerLine,
+      slantPpm,
+    });
     this._lines = [];
     this._phased = false;
     this._scan = { next: Math.max(this._scan.next, Math.floor(this._lineStart)), positions: [], widths: [] };

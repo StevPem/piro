@@ -87,6 +87,13 @@ function decodeGreyPng(buf) {
     check(again.clockPpm === kept.clockPpm[0] && again._rx.clockPpm === kept.clockPpm[0], 'and used from the start after a restart, so a chart started by hand is straight too');
     again.stop();
   }
+  {
+    // a chart without measured phasing teaches the clock by its slant
+    const b3 = new FaxDecoderBridge({ controlServer: new StubControlServer(), audioBridge: { capture: new EventEmitter(), sampleRate: 48000 }, stateFile: null });
+    b3._finish({ type: 'end', lines: 0, phased: false, clockMeasured: false, slantPpm: -140 });
+    b3._finish({ type: 'end', lines: 0, phased: true, clockMeasured: false, clockPpm: 400, slantPpm: null });
+    check(b3.clockPpm === -140, `the clock error from a straightened chart's slant is kept too (${b3.clockPpm}); a phasing that didn't measure the clock is not`);
+  }
   const types = cs.broadcasts.map((b) => b.type);
   check(types.includes(EVENT.FAX_START) && types.includes(EVENT.FAX_PICTURE), 'a chart is announced and, at its end, broadcast');
   const lines = cs.binary.filter((b) => b[0] === BINARY_TYPE.FAX_LINE);
