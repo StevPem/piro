@@ -215,8 +215,10 @@ class FaxDecoderBridge {
   _finish(e) {
     const cur = this._current ?? { id: (this._id = (this._id + 1) & 0xffff), width: e.width, time: this.now() };
     this._current = null;
-    if (e.phased && e.clockPpm) {
-      this._rememberClock(e.clockPpm);
+    // the clock error, as this chart's phasing measured it, or as its slant showed it
+    const measured = e.clockMeasured ? e.clockPpm : e.slantPpm;
+    if (Number.isFinite(measured)) {
+      this._rememberClock(measured);
       // later hand-started charts in this session use the remembered figure too
       if (this._rx && !this._rx._phased) {
         this._rx.clockPpm = this.clockPpm;
@@ -239,6 +241,7 @@ class FaxDecoderBridge {
           phased: e.phased ?? cur.phased ?? false,
           clockPpm: e.clockPpm,
           slantPxPerLine: e.slantPxPerLine || 0,
+          clockMeasured: !!e.clockMeasured,
           png: png.toString('base64'),
         };
         const list = this.controlServer.faxPictures;

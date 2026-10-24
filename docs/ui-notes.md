@@ -4077,3 +4077,41 @@ model for how to approach that.
   `test/fixtures/radio-audio.js` holds the synthetic noise and voice.
   `manual-tty-ui.js` passes.
 - Not tested on air or on a Pi. Service-worker cache bumped to v97.
+
+### Radiofax: charts still slanted (v98)
+
+- Reported: four VMC charts, each slanted differently (about +0.67, -0.09,
+  +0.19 and -0.64 pixels a line, that is +370 to -350 ppm), each with a
+  black band of phasing lines at the top.
+- Cause: noise. A phasing line spoilt by a static crash or fade (too much
+  white) ended the phasing at once, after only 6-10 lines. The clock
+  measured from so few noisy pulses was off by hundreds of ppm, and
+  because the chart counted as "lined up by phasing", it was never
+  straightened; the remaining 40-50 phasing lines were drawn at the top.
+  The pulses in those drawn bands drift at the same rate as the charts
+  slant, which confirmed it. A sound card can't change by 700 ppm between
+  charts.
+- Fixes in `audio/fax-rx.js`:
+  - Phasing ends only after 3 non-phasing lines in a row; odd bad lines
+    are skipped, so all ~60 lines are measured and none are drawn.
+  - The line length is taken from the phasing only if the fit's standard
+    error is under 25 ppm; otherwise the phasing only lines the chart up.
+  - Every chart whose clock wasn't measured by its own phasing is
+    straightened at the end (before, only charts with no phasing).
+  - `deslant()` now scores vertical edges (pixel-to-pixel changes), not
+    ink. On the satellite chart, ink found 1.09 px a line (wrong: the big
+    dark areas dominated); edges find 0.665, and the frame comes out
+    square. The text page (no vertical lines) was not corrected before;
+    edges line up its left margin (0.19). It applies only when the best
+    slant is a clear peak (at least 1.5 times the typical slant tried: 2
+    to 3.6 on real charts, 1.1 on noise) and at least 2% better than none
+    (a 0.1 px slant gains only 10%).
+  - The slant found is reported as a clock measurement (`slantPpm`), and
+    the bridge keeps it with the phasing measurements.
+- All four reported charts come out straight with the new `deslant()`
+  (checked by eye).
+- Tests: fax.test.js (phasing with noise-hit lines at 120 and -300 ppm:
+  clock within 1 ppm, no phasing band, straight; two of the reported
+  charts as fixtures, every 4th line, 650 kB; pure noise left alone;
+  slantPpm), fax-decoder-bridge.test.js (the slant's clock is kept, a
+  phasing that measured nothing is not). Service-worker cache v98.

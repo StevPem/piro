@@ -12,7 +12,7 @@ Hamlib, no separate audio server and no extra apps.
 Written by VK3TR. Licensed AGPL-3.0-only (see
 [Licence](#licence)).
 
-**Current build: v97.** This is the version the app shows next to its title.
+**Current build: v98.** This is the version the app shows next to its title.
 It is the `CACHE_NAME` number in `src/client/sw.js`, which goes up with every
 change to the web app.
 
@@ -756,11 +756,15 @@ test/
                            Start now / Stop, a new start signal, phasing
                            with no start signal, Start now during phasing,
                            an unphased slanted chart straightened, a straight
-                           chart left alone
+                           chart left alone, phasing with noise-hit lines
+                           (all measured, none drawn), real VMC charts
+                           (satellite picture, text page) straightened,
+                           noise left alone, the clock from the slant
   fax-decoder-bridge.test.js  radiofax bridge: line frames, the chart as a
                            greyscale PNG (decoded back), kept and saved, a
                            page joining part-way, PTT, unsupported rates,
-                           the clock error kept across a restart
+                           the clock error kept across a restart, and learnt
+                           from a straightened chart's slant
   jtty-decoder-bridge.test.js  JTTY receive bridge: arming, PTT, decimation,
                            backlog dropping, broadcasts
   manual-tty-ui.js        optional browser test of the TTY button, text box and
@@ -1534,14 +1538,22 @@ How a chart is received:
 - PiRO looks for phasing lines all the time, so a chart still lines up if
   its start signal was missed, or if **Start now** was pressed during the
   phasing.
-- The clock measurement is kept (the median of the last 5, in
+- A few phasing lines spoilt by noise (a static crash, a fade) don't end
+  the phasing: it takes three bad lines in a row. So the whole 30 s is
+  measured, and none of it is drawn as part of the chart.
+- The clock is only measured from the phasing when the measurement is
+  good to 25 ppm. Otherwise the phasing still lines the chart up, and the
+  line length stays as it was.
+- The clock error is kept (the median of the last 5, in
   `FAX_STATE_FILE`), so a chart without phasing, or the first one after a
   restart, starts with the right line length.
-- A chart that had no phasing is straightened when it ends: PiRO tries
-  slants of up to 1.5 pixels a line and keeps the one that lines its
-  vertical lines (frames, grids, coasts) up best, then shifts each line
-  back. The chart then says "slant corrected". Its left edge stays wherever
-  the line happened to start.
+- Any chart whose clock wasn't measured from its own phasing is
+  straightened when it ends: PiRO tries slants of up to 1.5 pixels a line
+  and keeps the one that lines up its vertical edges best (frames, grids,
+  coasts, the left edge of text), then shifts each line back. The chart
+  then says "slant corrected". The slant found also counts as a clock
+  measurement for later charts. Its left edge stays wherever the line
+  happened to start, unless phasing lined it up.
 - The stop signal (450 Hz) ends the chart. So do a new start signal,
   **Stop**, leaving Radiofax, transmitting, or 25 minutes.
 - **Start now** begins a chart straight away, for a broadcast that is
