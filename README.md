@@ -16,25 +16,35 @@ Written by VK3TR. Licensed AGPL-3.0-only (see
 It is the `CACHE_NAME` number in `src/client/sw.js`, which goes up with every
 change to the web app.
 
+This README has two parts:
+
+- **[Part 1: For radio operators](#part-1-for-radio-operators)**: what
+  PiRO is and does, how to install it, and how to use each mode.
+- **[Part 2: For developers](#part-2-for-developers)**: how PiRO is built,
+  its parts, the WebSocket protocol, and the tests.
+
+[Credits](#credits) and the [Licence](#licence) are at the end.
+
 ## Warning!
 Note that it DOES NOT include any form of login or password - so don't present it to the big bad internet or some rando will start controlling your rig! Always put it behind a firewall or VPN.
 
-## Credits
-Several of the cooler features in this app are built on the work of others:
-- FreeDV support = https://github.com/freedv/rade_c
-- FT8/FT4 support = https://github.com/e04/ft8ts
-- CW 2 decoder = https://github.com/dawsonjon/HamFist
-- CW 3 decoder = https://github.com/e04/web-deep-cw-decoder
-- HamNoise denoiser = https://github.com/e04/HamNoise
-- RNnoise denoiser = https://jmvalin.ca/demo/rnnoise/
-- JTTY support = Ported to JS from https://wsjtx.github.io/wsjtx/index.html
-- Olivia support = Ported to JS from Pawel Jalocha's (SP9VRC) MFSK code in fldigi, https://github.com/w1hkj/fldigi
-- Feld-Hell support = Ported to JS from fldigi's Feld-Hell modem and font, https://github.com/w1hkj/fldigi
-- SSTV receiver = Ported to JS from slowrx by Oona Räisänen (OH2EIQ), https://github.com/windytan/slowrx
-- EasyPal (HamDRM) receiver and transmitter = Ported to JS from QSSTV by Johan Maes (ON4QZ) and M. Bos (PA0MBO), https://github.com/ON4QZ/QSSTV, whose transmitter builds on Dream by Volker Fischer (TU Darmstadt)
-- WSPR support = Ported to JS from wsprd and wsprsim (K1JT, K9AN) in WSJT-X, https://wsjtx.github.io/wsjtx/index.html
+---
 
-## Features
+## Part 1: For radio operators
+
+1. [What PiRO does](#what-piro-does)
+2. [What you need](#what-you-need)
+3. [Installing PiRO](#installing-piro)
+4. [Running PiRO as a systemd service](#running-piro-as-a-systemd-service)
+5. [Optional components](#optional-components) (RNNoise, HamNoise, DeepCW, FreeDV RADE)
+6. [Using PiRO](#using-piro): the screen, sharing the radio, voice, CW,
+   the text modes, FT8 and FT4, WSPR, FreeDV, the picture modes
+7. [Configuration reference](#configuration-reference)
+8. [Updating](#updating)
+9. [Troubleshooting](#troubleshooting)
+10. [Hardware diagnostics](#hardware-diagnostics)
+
+### What PiRO does
 
 - **Rig control** over CI-V: frequency, mode, band, filter, PTT, TX power,
   S-meter, SWR and more.
@@ -92,20 +102,7 @@ CI-V address table covers the IC-7300, IC-7610, IC-9700, IC-705, IC-7100,
 IC-7850 and IC-7851, and `IC-7300` is the default model. Spectrum-scope
 behaviour varies by radio and firmware (see `docs/civ-notes.md`).
 
-## Contents
-
-1. [What you need](#what-you-need)
-2. [Installing PiRO](#installing-piro)
-3. [Optional components](#optional-components) (RNNoise, HamNoise, DeepCW, FreeDV RADE)
-4. [Running PiRO as a systemd service](#running-piro-as-a-systemd-service)
-5. [Configuration reference](#configuration-reference)
-6. [Updating](#updating)
-7. [Troubleshooting](#troubleshooting)
-8. [Hardware diagnostics](#hardware-diagnostics)
-9. [Project layout](#project-layout) and the rest of the developer reference
-10. [Licence](#licence)
-
-## What you need
+### What you need
 
 | | |
 |---|---|
@@ -116,7 +113,7 @@ behaviour varies by radio and firmware (see `docs/civ-notes.md`).
 | System packages | `alsa-utils` (audio), `git`. `build-essential` and `python3` are only needed if `npm install` has to compile the serial-port module itself. |
 | Accurate clock | FT8 works in UTC 15-second slots, so the clock must be right. Raspberry Pi OS runs `systemd-timesyncd` by default. A Pi has no battery clock, so it needs the network at boot. |
 
-## Installing PiRO
+### Installing PiRO
 
 These steps take a fresh Raspberry Pi OS or Debian install as far as the app
 running in a browser. `docs/install-debian.md` has the same steps with more
@@ -191,6 +188,11 @@ make it start at boot.
 Leave out `AUDIO_RX_DEVICE` if you only want CI-V control. Audio, and the
 decoders that use it, are then switched off.
 
+The radio's CI-V port usually shows up as `/dev/ttyUSB0` or
+`/dev/ttyACM0`. Check `dmesg` after plugging it in. If you have other
+USB serial devices, a udev rule gives the radio a name that never
+changes.
+
 **Microphone access from other devices.** Browsers only allow the microphone
 on HTTPS pages (or `localhost`). To transmit from a phone or laptop, serve
 PiRO over HTTPS with `TLS_CERT_PATH` and `TLS_KEY_PATH`. For a quick
@@ -207,7 +209,66 @@ Browsers show a warning for self-signed certificates the first time. See
 `docs/pwa-notes.md` for alternatives (mkcert, a reverse proxy) and for
 installing PiRO to a home screen.
 
-## Optional components
+### Running PiRO as a systemd service
+
+A service starts PiRO at boot, restarts it if it stops, and keeps its log in
+the journal. Two files in [`deploy/`](deploy/) do the work: `piro.service` (the
+unit) and `piro.env.example` (all your settings).
+
+**1. Put your settings in `/etc/piro/piro.env`.**
+
+```bash
+cd ~/PiRO
+sudo install -D -m 644 deploy/piro.env.example /etc/piro/piro.env
+sudo nano /etc/piro/piro.env      # set CIV_SERIAL_PATH, CIV_RADIO_MODEL, CIV_BAUD_RATE,
+                                  # AUDIO_RX_DEVICE, STATION_CALLSIGN, ... and save
+```
+
+**2. Install the unit.** This fills in your username, the PiRO folder and the
+path to Node:
+
+```bash
+sed -e "s|@USER@|$USER|" -e "s|@DIR@|$PWD|" -e "s|@NODE@|$(command -v node)|" \
+  deploy/piro.service | sudo tee /etc/systemd/system/piro.service > /dev/null
+```
+
+The unit runs PiRO as your user, adds the `dialout` and `audio` groups for it,
+and reads `/etc/piro/piro.env`.
+
+**3. Enable and start it.**
+
+```bash
+sudo systemctl daemon-reload
+sudo systemctl enable --now piro
+systemctl status piro               # should say "active (running)"
+journalctl -u piro -f               # live log; Ctrl+C to leave
+```
+
+**Everyday commands.**
+
+```bash
+sudo systemctl restart piro         # after editing /etc/piro/piro.env
+sudo systemctl stop piro            # frees the serial port (only one program can hold it)
+sudo systemctl disable piro         # stop it starting at boot
+```
+
+**Notes.**
+
+- Only one program can use the CI-V serial port at a time. Stop the service
+  before running a manual diagnostic script or another CAT program.
+- Under systemd the `PATH` is minimal but includes `/usr/local/bin`, which is
+  where the instructions above put `rnnoise_demo` and the RADE tools. If you
+  installed them elsewhere, set `RNNOISE_BIN` and the `RADE_*_BIN` variables
+  to full paths in `/etc/piro/piro.env`.
+- USB devices can appear a moment after boot. If the radio is switched on
+  later than the Pi, `Restart=on-failure` brings PiRO back up when it exits.
+  For a device name that never changes, write a udev rule for the radio's
+  serial number and point `CIV_SERIAL_PATH` at it.
+- If you already run an older install under another unit name (for example
+  `icom-rig-pwa`), keep using that name in the commands above, or disable it
+  and install this one. Do not run two services on the same port.
+
+### Optional components
 
 PiRO works with just the steps above. Each feature in this section needs
 something extra, and each one switches itself off cleanly (the button does
@@ -220,7 +281,7 @@ nothing and an error is shown) if its part is missing.
 | "RNN" button (hidden for now) | A patched `rnnoise_demo` that you build | [RNNoise](#rnnoise-rnn-button) |
 | FreeDV RADE mode | `rade_c` built and installed | [FreeDV RADE](#freedv-rade) |
 
-### RNNoise ("RNN" button)
+#### RNNoise ("RNN" button)
 
 **Hidden for now.** The RNN button is not shown in the app (since v84);
 the server's RNNoise support is unchanged. To show it again, set
@@ -280,7 +341,7 @@ RNNoise only changes the audio you hear in the browser. The CW, RTTY, FT8
 and FreeDV decoders always read the raw audio. It requires
 `AUDIO_RX_DEVICE`.
 
-### HamNoise ("HamNoise" button)
+#### HamNoise ("HamNoise" button)
 
 [HamNoise](https://github.com/e04/HamNoise) is a neural denoiser trained on HF
 signals, with separate CW and voice models. Its WebAssembly models are
@@ -299,7 +360,7 @@ In the author's testing, HamNoise helps on moderate signals (around S4 and up) w
 RNNoise, which was trained on general speech noise rather than HF noise, is
 more likely to mute them.
 
-### DeepCW ("CW 3" decoder)
+#### DeepCW ("CW 3" decoder)
 
 The model is bundled in `models/deepcw/` and runs in Node through
 `onnxruntime-node`, which `npm install` fetches. It needs a 64-bit OS on a Pi.
@@ -307,7 +368,7 @@ If `onnxruntime-node` cannot load, the "CW 3" decoder is unavailable, and
 since v84 that is the only CW decoder the app shows. The other two still
 work: show them again with `CW_DECODERS_IN_UI` (see the CW section).
 
-### FreeDV RADE
+#### FreeDV RADE
 
 FreeDV mode needs the compiled tools from
 [rade_c](https://github.com/freedv/rade_c): `radae_tx`, `radae_rx` and
@@ -330,66 +391,868 @@ which is already present on Debian and Raspberry Pi OS. `docs/ui-notes.md`
 if the transmit level seems low or distorted. RADE is installed separately,
 and nothing else in PiRO needs it.
 
-## Running PiRO as a systemd service
+### Using PiRO
 
-A service starts PiRO at boot, restarts it if it stops, and keeps its log in
-the journal. Two files in [`deploy/`](deploy/) do the work: `piro.service` (the
-unit) and `piro.env.example` (all your settings).
+Open `http://<pi-hostname-or-ip>:8080` (or `https://` if you set up a
+certificate) in a browser. A phone works well. You can add PiRO to the
+home screen: see `docs/pwa-notes.md`.
 
-**1. Put your settings in `/etc/piro/piro.env`.**
+#### The screen
 
-```bash
-cd ~/PiRO
-sudo install -D -m 644 deploy/piro.env.example /etc/piro/piro.env
-sudo nano /etc/piro/piro.env      # set CIV_SERIAL_PATH, CIV_RADIO_MODEL, CIV_BAUD_RATE,
-                                  # AUDIO_RX_DEVICE, STATION_CALLSIGN, ... and save
-```
+From the top:
 
-**2. Install the unit.** This fills in your username, the PiRO folder and the
-path to Node:
+- **Frequency.** Tap it to type a new one, in MHz. The **−10**, **−1**,
+  **+1** and **+10** kHz buttons step it. It is shown in groups, like
+  14.195.000.
+- **Band**: 160 m to 6 m. In the digital and picture modes a band button
+  goes to that mode's usual frequency on the band (see each mode below).
+  **Current conditions**, beside "Band", opens the band conditions table
+  (see [Current conditions](#current-conditions)).
+- **Mode**: two rows of four.
+  - **SSB**, **AM**, **FM** and **CW** are the radio's own modes. SSB picks
+    the usual sideband (LSB below 10 MHz, USB above). Press it again to
+    swap sidebands. It reads **LSB** or **USB** while selected.
+  - **TTY** steps through RTTY, JTTY, Olivia and Feld-Hell.
+  - **DIGI** steps through FT8, FT4 and WSPR.
+  - **FreeDV** is RADE digital voice.
+  - **Image** steps through SSTV, EasyPal and Radiofax.
 
-```bash
-sed -e "s|@USER@|$USER|" -e "s|@DIR@|$PWD|" -e "s|@NODE@|$(command -v node)|" \
-  deploy/piro.service | sudo tee /etc/systemd/system/piro.service > /dev/null
-```
+  Each button shows the mode it is in.
+- **Receive buttons**: **P.Amp** (Off, 1, 2), **NR**, **Notch** and
+  **Filter** (1, 2, 3). Each press steps to the next setting. Below them
+  are **HamNoise** (see [HamNoise](#hamnoise-hamnoise-button)) and
+  **Squelch** (see [Voice squelch](#voice-squelch)).
+- **S-meter**: S0 to S9, then +10 to +60 dB. While you transmit it shows
+  SWR instead: green up to 1.5, orange to 3, red above (shown up to 5).
+- **Speaker** starts the received audio. Browsers only play sound after a
+  tap, so it starts off. **Audio** picks full or compressed audio for this
+  browser (see [Compressed audio for remote use](#compressed-audio-for-remote-use)).
+- **Tuner** turns the antenna tuner on and off. **Tune** starts one tune.
+- **Power**: 100, 75, 50, 25 or 5 W (1 to 5 W in WSPR).
+- **Spectrum scope and waterfall**, if `CIV_SCOPE_ENABLED=true` and your
+  radio sends scope data. It stays centred on your frequency. **Scope
+  Span** sets its width, 2.5 to 500 kHz (100 kHz to start). Tap the trace
+  or the waterfall to tune there: to the nearest kHz, or exactly in CW and
+  RTTY. The **RX Gain** slider (0 to 255) is on the right. In the digital
+  and picture modes the scope shows the 0 to 3 kHz audio from the radio
+  instead, like WSJT-X's waterfall.
+- **PUSH TO TALK**: hold the button, or hold the Space bar. The microphone
+  needs HTTPS (see [Installing PiRO](#installing-piro)). In CW and in the
+  text modes the PTT button is replaced (see below).
+- **Notes**, under PTT, for messages to the other operators (see below).
 
-The unit runs PiRO as your user, adds the `dialout` and `audio` groups for it,
-and reads `/etc/piro/piro.env`.
+The buttons show what the radio is really set to, including changes made
+on its front panel. On HTTPS the page also keeps a phone's screen on, so
+it doesn't lock while you listen.
 
-**3. Enable and start it.**
+**The 10-minute limit.** PiRO stops any transmission that has gone on for
+10 minutes. The Australian class licence requires this for remotely
+controlled stations. The server does it, so it works even if your browser
+crashes or the network drops. Modes that transmit without PTT (CW text,
+for example) have their own limits.
 
-```bash
-sudo systemctl daemon-reload
-sudo systemctl enable --now piro
-systemctl status piro               # should say "active (running)"
-journalctl -u piro -f               # live log; Ctrl+C to leave
-```
+#### Sharing the radio
 
-**Everyday commands.**
+Several people can have PiRO open at once, on any device.
 
-```bash
-sudo systemctl restart piro         # after editing /etc/piro/piro.env
-sudo systemctl stop piro            # frees the serial port (only one program can hold it)
-sudo systemctl disable piro         # stop it starting at boot
-```
+- Every browser shows the same radio settings and the same mode. Pick SSTV
+  on one phone and the others switch to SSTV too. A browser opened later
+  starts in the same mode. What you are typing, and an FT8 QSO you are
+  working, stay in your own browser.
+- Everyone has the same control. Nothing stops two people transmitting at
+  once, and two microphones at once garble the audio. Agree who has the
+  radio: the notes help.
+- When the last browser closes, PiRO stops any transmission and the
+  receivers. Phones disconnect often, so don't rely on a page staying open.
 
-**Notes.**
+**Notes.** Under the PTT button is a box for short notes to the other
+people using the radio, for example "VK3ABC: on 40 m FT8 until 16:30" or
+"can I have it after the net?". Type one and press Enter or Send; it
+appears in every browser with the time, and the three most recent are
+shown, newest first. In the other browsers a new note plays a short chime
+and flashes the screen once (on a device set to reduce motion, only the
+notes light up). Opening or reconnecting PiRO makes no sound. Nobody signs
+in, so put your callsign in the note. The notes are kept on the Pi (a
+browser opened later sees them) and cleared after an hour with no new
+note, or two minutes after the last browser closes. Browsers only play
+sound once the page has been tapped, and a phone that is locked or has the
+browser in the background usually won't chime at all.
 
-- Only one program can use the CI-V serial port at a time. Stop the service
-  before running a manual diagnostic script or another CAT program.
-- Under systemd the `PATH` is minimal but includes `/usr/local/bin`, which is
-  where the instructions above put `rnnoise_demo` and the RADE tools. If you
-  installed them elsewhere, set `RNNOISE_BIN` and the `RADE_*_BIN` variables
-  to full paths in `/etc/piro/piro.env`.
-- USB devices can appear a moment after boot. If the radio is switched on
-  later than the Pi, `Restart=on-failure` brings PiRO back up when it exits.
-  For a device name that never changes, write a udev rule for the radio's
-  serial number and point `CIV_SERIAL_PATH` at it.
-- If you already run an older install under another unit name (for example
-  `icom-rig-pwa`), keep using that name in the commands above, or disable it
-  and install this one. Do not run two services on the same port.
+#### Voice: SSB, AM and FM
 
-## Configuration reference
+Pick **SSB**, **AM** or **FM**, tap **Speaker**, and use **PUSH TO TALK**.
+The microphone needs HTTPS.
+
+PiRO sets the radio's USB audio levels to maximum when it starts, both in
+Linux and in the radio (`CIV_MAXIMIZE_USB_LEVELS=false` leaves the
+radio's alone). Check your transmit audio: on some radios full level may
+be too much.
+
+Two things help with a noisy band:
+
+- **HamNoise** cleans up the received audio with a neural network trained
+  on HF signals. It picks a CW or a voice model to suit the mode. See
+  [HamNoise](#hamnoise-hamnoise-button).
+- **Squelch** mutes the hiss between overs. See below.
+
+Neither changes what the decoders hear: they always read the radio's own
+audio.
+
+##### Voice squelch
+
+The **Squelch** button (beneath HamNoise) mutes the hiss between overs in
+SSB, AM and FM. It is one setting for everyone, like HamNoise.
+
+The radio's own squelch opens on level, so on HF it needs resetting as
+the noise changes, and it opens on carriers and static crashes. PiRO's
+listens for the pitch of a voice instead: the envelope of speech repeats
+80 to 300 times a second as the voice's pitch wanders. Noise, a steady
+carrier, CW and static don't do that, and two carriers beating together
+do it at a pitch that never moves.
+- It opens within about 0.2 s of a voice starting, and plays the audio
+  0.3 s behind so the start of the over isn't lost.
+- It stays open for 1.5 s after the voice stops, so it doesn't chop
+  between words.
+- In testing it opened on a synthetic voice 3 dB below the noise (in the
+  receiver's bandwidth) and stayed shut at 10 dB below. Very weak stations may
+  stay muted: switch it off for them.
+- A new pair of carriers can open it for about a second before it works
+  out they are a tone.
+- In CW, with DATA mode on, or in FT8, FreeDV and the other digital modes,
+  the button says **Paused** and all the audio passes.
+- With HamNoise on, it judges HamNoise's cleaned-up audio.
+- The decoders never see it: they read the radio's audio directly.
+- Between overs nothing is sent to the browsers, which saves data on a
+  phone.
+
+It was tuned on a real 285 s recording of an SSB contact (with a weak
+station, static crashes and AGC) and on synthetic audio. Not yet tried on
+the air with PiRO; the Pi's CPU use is estimated from a desktop (about 2%
+of a core there).
+
+##### Compressed audio for remote use
+
+Full audio is raw 16-bit PCM: about 770 kbit/s each way at 48 kHz. That
+is fine at home, but too much for most mobile data or a slow VPN. The
+**Audio** button beside Speaker switches this browser between:
+- **Audio: full**: raw PCM, as before.
+- **Audio: Opus**: Opus at about 24 kbit/s each way (`AUDIO_OPUS_BITRATE`),
+  16 kHz audio. The browser uses its built-in codec (WebCodecs): Chrome,
+  Edge, Samsung Internet, Firefox on a desktop, and Safari 26 or later.
+- **Audio: ADPCM**: 12 kHz ADPCM at 48 kbit/s, in plain JavaScript, for
+  browsers without WebCodecs Opus (Firefox on Android, older Safari). A
+  browser that can play Opus but not record it receives Opus and sends
+  ADPCM; the button's tooltip says which.
+
+Each browser chooses for itself, so a phone away from home can use Opus
+while a tablet at home stays on full audio. A page opened by a home
+address (192.168.x.x, 10.x.x.x, 172.16-31.x.x, `localhost`, a `.local` or
+`.lan` name, or a name with no dots, like `piro`) starts on full audio;
+any other address (a VPN such as Tailscale, or a domain name) starts
+compressed. A choice made with the button is remembered by that browser.
+
+Compressed audio plays 0.2 s behind, so short network delays don't break
+it up. On any audio, if more than half a second more than that builds up
+(after the network stalls), the backlog is skipped.
+
+The decoders (FT8, CW, RTTY and the rest) always work from the radio's
+full-quality audio on the Pi, whatever the browsers receive. Compression
+only affects what you hear and what your microphone sends. Not tested on
+air: speech sent compressed from a phone has not been checked on a real
+transmission.
+
+#### CW
+
+In **CW** the PTT button becomes a CW panel.
+
+**Paddle.** **DOT** and **DASH** work as an iambic paddle, at the speed in
+the **WPM** box (15 to start). Each element is sent as PTT on and off over
+the network, so the timing is looser than a real keyer, more so at higher
+speeds. For accurate sending, use CW text.
+
+**CW text.** Above the Dot/Dash buttons is a text box and **Send**. Type a message (or use the CQ it starts with) and press Send or
+Enter: PiRO hands the text to the radio's own CW keyer (CI-V command `17`),
+which sends it at the speed in the **WPM** box (6–48 WPM on the radio's
+keyer). Because the radio does the keying, the timing is exact at any
+speed, unlike the paddle. For each message PiRO:
+
+* checks that the radio is in CW or CW-R;
+* sets the keyer to the WPM box's speed;
+* turns semi break-in on if it was off (the radio only transmits CI-V CW
+  with break-in on);
+* gives the keyer the text 30 characters at a time, retrying while the
+  radio's buffer is full;
+* waits until the radio has finished transmitting, then puts the keyer
+  speed and break-in back as they were.
+
+Send turns into **Stop** while it goes out, which stops the radio's keyer
+at once. Every browser sees the progress. Letters, digits and
+`/ ? . , : ' ( ) = + " @ -` can be sent; `^` joins the next two letters
+into one prosign (`^AR`, `^SK`), as on the radio's own keyer memories.
+Anything else is left out, and the status line says what was dropped.
+Messages are limited to 300 characters and under 9 minutes. PTT isn't used,
+so the 10-minute PTT cut-off doesn't apply; the length limit stands in for
+it. Not yet tested on air.
+
+**CW decoder.** In CW, a ticker under the S-meter shows the CW PiRO
+decodes from the received audio. It uses DeepCW, a neural decoder, which
+works on 5 to 20 s of audio at a time, so text arrives in bursts every few
+seconds. Like any CW decoder it does well on clean signals and less well
+on weak or noisy ones. It needs `AUDIO_RX_DEVICE` and a 64-bit OS on a Pi
+(see [DeepCW](#deepcw-cw-3-decoder)). Two older decoders are still there
+but hidden; see [CW decoders](#cw-decoders) in Part 2.
+
+#### RTTY, JTTY, Olivia and Feld-Hell
+
+The **TTY** button steps through four text modes:
+
+1. The first click selects the radio's RTTY mode, and the button now reads **RTTY**.
+   Selecting RTTY also tunes to the middle of the band's digital-modes segment
+   in the WIA band plan (e.g. 14.091 MHz on 20 m; see the table below), and band
+   buttons then do the same.
+2. The next click switches to **JTTY**, and the button reads **JTTY**.
+   Entering JTTY also tunes to the standard JTTY dial frequency for the current
+   band (e.g. 14.090 MHz on 20 m; the list is the WSJT-X 3.3 beta's and is marked
+   preliminary), and band buttons then go to each band's JTTY frequency.
+3. The next click switches to **Olivia** (Olivia 8/250), and the button reads
+   **Olivia**. Entering Olivia tunes to the band's Olivia calling frequency
+   (e.g. 14.0715 MHz dial on 20 m), and band buttons then go to each band's.
+4. The next click switches to **Feld-Hell**, and the button reads
+   **Feld-Hell**. Entering Feld-Hell tunes so a signal on the band's Feld-Hell
+   frequency (e.g. 14.063 MHz on 20 m) comes out at the audio tone (dial
+   14.062 MHz with the default 1000 Hz tone), and band buttons then go to
+   each band's.
+5. The next click goes back to **RTTY**, and so on round.
+6. Picking any other mode (LSB, USB, AM, FM, CW, FT8, FreeDV) puts the button
+   back to **TTY**.
+
+While RTTY, JTTY, Olivia or Feld-Hell is selected, a text box and a **Send** button replace the
+PTT button. Enter in the text box also sends. While a message is going out,
+Send turns into **Stop**, which cuts the transmission short and releases PTT.
+The Space bar does not key the microphone in these modes. The text box starts
+with a CQ built from `STATION_CALLSIGN` (if set), and keeps whatever you
+type when you switch between the modes.
+
+**RTTY band frequencies.** RTTY has no calling frequencies, so PiRO starts
+you in the middle of each band's narrowband digital segment from the WIA's
+band plan (the WIA Technical Advisory Committee's
+[HF digimodes paper](https://www.wia.org.au/members/bandplans/data/documents/TAC%20Band%20Plans%20-%20HF%20Digimodes%20170103.pdf)),
+to tune around from. The radio's RTTY mode displays the mark frequency.
+
+| Band | WIA digital segment (MHz) | PiRO tunes to (MHz) |
+|---|---|---|
+| 160 m | 1.800–1.810 | 1.805 |
+| 80 m | 3.620–3.640 | 3.630 |
+| 40 m | 7.040–7.060 | 7.050 |
+| 30 m | 10.130–10.140 | 10.135 |
+| 20 m | 14.070–14.112 | 14.091 |
+| 17 m | 18.100–18.110 | 18.105 |
+| 15 m | 21.070–21.125 | 21.0975 |
+| 12 m | 24.920–24.930 | 24.925 |
+| 10 m | 28.050–28.150 | 28.100 |
+
+6 m has no segment in the paper, so its band button works as usual. The same
+paper proposes moving 80 m to 3.570–3.600 MHz (where most of the world's
+80 m RTTY is) and widening the 30, 17, 15, 12 and 10 m segments; the table is
+`RTTY_FREQUENCIES` in `src/client/app.js` if the plan changes. Busy RTTY is
+often elsewhere in the segment (on 20 m, 14.080–14.099), and keep clear of
+the beacons at 14.100, 18.110, 21.150 and 24.930 MHz.
+
+**RTTY** sends your text as audio-frequency-shift keying (AFSK): 45.45 baud,
+170 Hz shift, with mark always the **higher** of the two RF frequencies, as
+RTTY convention requires. The radio's own RTTY mode does not transmit audio
+from USB (it keys FSK from its RTTY keying line, so on its own it would just
+send a steady carrier). So when you press Send in RTTY, PiRO:
+
+1. reads the frequency the radio shows in RTTY mode, which is the mark frequency;
+2. switches to **LSB** with DATA MODE on below 10 MHz, or **USB** with DATA
+   MODE on from 10 MHz up, and moves the dial so the mark lands exactly on
+   that frequency;
+3. keys PTT and plays the tones (on LSB, mark 2125 Hz and space 2295 Hz audio,
+   dial 2125 Hz above the mark; on USB, mark 2295 Hz and space 2125 Hz audio,
+   dial 2295 Hz below the mark; either way space ends up 170 Hz below mark);
+4. puts the radio back in RTTY mode, with its filter, on the mark frequency.
+   This also happens if you press Stop or something goes wrong.
+
+The page keeps showing RTTY and the mark frequency throughout, and the status
+line says which sideband was used. The "Reverse" tick-box swaps mark and space
+for transmit as well as receive, and the radio's RTTY-R mode is kept reversed.
+As with FT8, the IC-7300's DATA MOD setting must be USB for the audio to reach
+the transmitter. Tested against PiRO's own decoder and a stub radio, not on air.
+
+**RTTY receive.** In RTTY, a ticker under the S-meter shows the RTTY
+decoded from the received audio. The scope marks the space tone with a
+blue dashed line 170 Hz below your frequency. If a signal decodes as
+nonsense, tick **Reverse**: RTTY stations don't all use the same polarity.
+
+**JTTY** is a mode from WSJT-X 3.3 (beta): 4-tone Gaussian FSK at 31.25 baud,
+no time slots, one to sixteen 1.9-second frames per message, with strong
+error correction (a K=10 convolutional code and a CRC). Text is packed into
+the fewest frames, so "CQ VK3TR CQ" takes one frame while free text takes
+one frame per five characters. A message can be up to 80 characters. Selecting
+JTTY puts the radio on USB with DATA MODE on, as FT8 does. Transmission starts
+the moment you press Send, with the lowest tone at `JTTY_TX_FREQ_HZ` (1450 Hz
+by default, so the signal sits around 1500 Hz). The **TX freq** box above the
+text field sets the frequency for the next message.
+
+**JTTY receive.** While JTTY is selected, a table under the composer lists
+messages as they are decoded: UTC time, audio frequency, SNR and text. A line
+shows in amber and grows frame by frame while the message is still arriving;
+a lost frame shows as " ... ". The spectrum scope switches to the same 0-3 kHz
+audio spectrum FT8 uses, with an amber marker at your transmit frequency;
+click the spectrum, or tap a decoded line, to move that frequency onto a
+station. Decoding happens on the Pi in a worker thread and
+only runs while JTTY is selected and you are not transmitting. It searches
+`JTTY_RX_LOW_HZ`..`JTTY_RX_HIGH_HZ` (by default the whole 200-2900 Hz
+passband) plus two fixed channels around 1350 and 1650 Hz. The default `economy` effort keeps the load low on a Raspberry Pi 4;
+see `JTTY_RX_QUALITY`.
+
+The encoder and decoder are JavaScript ports of WSJT-X's; see
+[`third_party/jtty/README.md`](third_party/jtty/README.md) for what was ported
+and how both were checked against WSJT-X's own programs. The receiver is not
+tested over the air, and, as with WSJT-X itself, noise can occasionally
+produce a false decode.
+
+**Olivia** is the 8-tone, 250 Hz-wide variant of
+[Olivia MFSK](https://en.wikipedia.org/wiki/Olivia_MFSK), the most common
+starting point on HF: 31.25 baud, each block of 64 symbols carrying three
+characters with strong error correction, so text goes at about 1.5
+characters a second and copies at around −14 dB S/N. It is compatible with
+fldigi's Olivia 8/250. Selecting Olivia puts the radio on USB with DATA MODE on,
+as JTTY does. The **Centre** box sets the audio centre frequency (1500 Hz by
+default, `OLIVIA_FREQ_HZ`) used both for sending and for receiving; click the
+spectrum to move it. Like fldigi, PiRO starts every transmission with the
+short start tones at the band edges and ends it with stop tones. A message
+can be up to 300 characters (about 3.5 minutes on air). Characters 128-255 are
+sent with fldigi's 8-bit escape, and characters beyond that as ".".
+
+**Olivia receive.** While Olivia is selected, the panel under the S-meter
+shows received text as a running transcript, with your own transmissions
+inline in amber, and a line giving the time, the S/N figure and how far the
+signal is from the centre. The receiver searches 125 Hz either side of the
+centre, so a station a little off frequency is still copied; **Tune to
+signal** moves the centre onto it, so your reply goes out where that station
+is. As with fldigi, text appears about four blocks (8 s) after it is sent,
+because the receiver averages over several blocks before deciding.
+Decoding runs on the Pi in a worker thread, only while Olivia is selected
+and you are not transmitting.
+
+PiRO filters out the junk characters fldigi prints with its squelch off, in
+two ways. A block is only shown if its own S/N is strong enough, as well as
+the averaged one, and blocks containing control codes that text never uses
+are dropped. In testing that removed every false character from 1,000 s of
+plain noise (fldigi printed 59 a minute) without losing any copy down to
+−14 dB. A strong neighbouring Olivia signal just outside the search window
+can still leave a stray character or two. Set `OLIVIA_SQUELCH=off` to get
+fldigi's exact behaviour.
+
+The Olivia modem is a JavaScript port of Pawel Jalocha's code in fldigi; see
+[`third_party/olivia/README.md`](third_party/olivia/README.md) for what was
+ported and how it was checked against a reference program built from
+fldigi's own source. It has not yet been tested over the air.
+
+**Feld-Hell** is the classic Hellschreiber mode: each character is drawn,
+column by column, from a 7-dot-high font and sent by keying a single tone on
+and off (17.5 columns a second, 122.5 baud, about 2.5 characters a second, a
+signal some 350 Hz wide). There is no code to decode at the other end; the
+receiver paints the tone as a picture and you read it, which is why
+Feld-Hell copies through noise and fading that would garble a coded mode.
+PiRO also reads the picture as text for you (see below).
+Selecting Feld-Hell puts the radio on USB with DATA MODE on, as JTTY and
+Olivia do. The **Tone** box sets the audio frequency (1000 Hz by default,
+`HELL_TONE_HZ`), used both for sending and for receiving; click the spectrum
+on a signal to move it there (to the nearest 10 Hz). Transmissions are sent
+exactly as fldigi sends them, with its default font and 2 ms keying shape,
+and begin and end with "...". A message can be up to 400 characters (under
+three minutes); characters the font does not have are sent as a blank gap.
+
+**Feld-Hell receive.** While Feld-Hell is selected, the scope's upper part
+still shows the 0-3 kHz audio spectrum (with an amber marker at the tone),
+but its waterfall becomes the received picture, scrolling in from the right
+as it arrives. As in fldigi, each column is shown twice, one copy above the
+other (the previous column under the current one): Feld-Hell has no synchronisation, so text drifts up or down the
+picture, and this way a whole line of it is always in view. Text that slopes
+means the other station's timing is slightly off; it is still readable.
+The receiver listens about 150 Hz either side of the tone. It is cheap enough
+to run on the Pi's main thread, and only runs while Feld-Hell is selected and
+you are not transmitting.
+
+**Feld-Hell text.** Below the picture, a **Feld-Hell text** panel shows what
+PiRO reads from it. It matches the picture against the font fldigi (and
+PiRO) send with, letter by letter, allowing for where each letter sits up or
+down the picture and for slant, and prints what it reads about two seconds
+behind the picture. Your own transmissions appear in amber, as in Olivia's
+panel, and a browser opened later is sent the recent text. In tests through
+PiRO's own transmitter and receiver, with random callsign-like text:
+
+| Signal (S/N in 3 kHz) | 10 dB | 3 dB | 0 dB | −3 dB | −6 dB | −9 dB |
+|---|---|---|---|---|---|---|
+| Characters wrong | 0.6% | 0.3% | 1.3% | 5.5% | 33% | 95% |
+
+Timing errors of ±0.1% (text sloping in the picture) make no difference.
+To keep noise from being printed as letters, it waits for a run of good
+matches before printing anything: no false characters were printed in five
+minutes of noise alone. So on a weak signal it may print nothing, or only
+part of it, while you can still read the picture. Trust the picture.
+
+Limits:
+* It only reads fldigi's default Feld-Hell font ("hell 12"). Another font,
+  "wide" Hell (each column sent twice) or hand-sent Hell won't read.
+* Several lower-case letters are drawn exactly like capitals in this font,
+  so they read as capitals; the ones drawn differently (such as e and k)
+  read as lower case.
+* fldigi's opening "..." isn't printed: dots are too small to start the
+  text, because noise fits them too easily. The closing "..." is.
+* Deep fading loses the faded part, as it does for your eye.
+* It costs a few percent of a Pi's CPU while Feld-Hell is selected. It has
+  not yet been tested on real off-air signals.
+
+The Feld-Hell modem is a JavaScript port of fldigi's; see
+[`third_party/feldhell/README.md`](third_party/feldhell/README.md) for what was
+ported and how the transmitter was checked against fldigi's own code. It has
+not yet been tested over the air.
+
+Transmit is refused if the radio is already transmitting. The usual PTT
+watchdog (ten minutes) still applies.
+
+#### FT8 and FT4
+
+**DIGI** selects FT8. Press it again for FT4, and again for WSPR. PiRO
+puts the radio on USB with DATA MODE on, and tunes to the band's FT8 (or
+FT4) frequency. Band buttons then go to that mode's frequency on each
+band.
+
+- The band-activity table lists what is decoded each 15-second slot (7.5 s
+  in FT4): UTC, time offset (dt), audio frequency, SNR and the message. The scope shows the
+  0 to 3 kHz audio, as in WSJT-X.
+- The composer below it holds the next message. It starts with a CQ made
+  from `STATION_CALLSIGN` and `STATION_GRID`. **Send** transmits it at the
+  start of the next slot.
+- **Guided QSOs.** Tap a CQ in the table, or call CQ and wait for an
+  answer. PiRO then fills in each reply the exchange needs (grid, report,
+  acknowledgement, RR73 or 73) as the other station's messages are
+  decoded. The QSO's lines are highlighted. Replies go out on the other
+  station's frequency. PiRO only suggests: you press Send for every
+  message. It never transmits by itself.
+- **Transmit frequency.** Tap the spectrum to choose it (to the nearest
+  50 Hz). It starts at 1500 Hz and stays where you put it until you
+  reload the page.
+- **Someone calling you.** When a message to your callsign is decoded
+  (`VK3TR K1ABC FN42`, also `VK3TR/P` or `<VK3TR>`), every browser in FT8
+  plays three rising notes and shows it in amber. Each caller chimes once,
+  until they have been quiet for 2 minutes. CQs and other QSOs never
+  chime. A browser only plays sound once the page has been tapped.
+- Tick **PSK Spot** to send what you decode to
+  [PSK Reporter](https://pskreporter.info).
+
+Two things must be right for FT8 to work:
+
+- The Pi's clock. Check `timedatectl` shows "System clock synchronized:
+  yes".
+- On an IC-7300, Menu > Set > Connectors > MOD Input > **DATA MOD** must be
+  **USB**. PiRO can't change this over CI-V. Without it the radio keys up
+  but sends nothing.
+
+#### WSPR
+
+WSPR is the third choice of the **DIGI** button: FT8, then FT4, then WSPR,
+then FT8 again. It puts the radio on USB with DATA MODE on and tunes to the
+band's WSPR frequency (for example 7.0386 MHz on 40 m and 14.0956 MHz on
+20 m). Band buttons then go to that band's WSPR frequency. The WSPR signals
+are 1400-1600 Hz up; the spectrum marks that window.
+
+WSPR runs in 2-minute slots that start on even UTC minutes. PiRO decodes
+every slot it isn't transmitting in. The decoder is WSJT-X's `wsprd`,
+ported to JavaScript (`src/audio/wspr-rx.js`); see
+`third_party/wsjtx-wsprd/README.md`. It runs in a worker thread and takes a
+few seconds per slot. The spots are listed newest first (time, SNR, time
+offset, frequency, callsign, grid, power in dBm; tap-and-hold a row for the
+drift). Every browser sees the same list, and a page that opens later gets
+the recent spots.
+
+Spots go to wsprnet.org after each slot, the way WSJT-X sends them (a
+"wsprstat" report when nothing was heard). This needs `STATION_CALLSIGN`
+and `WSPR_GRID` (or `STATION_GRID`); `WSPR_UPLOAD=off` turns it off. The
+panel shows whether the last upload worked.
+
+While WSPR is on, the **Power** menu offers 1-5 W, and the radio is held at
+5 W or less (checked again before each transmission). The power from before
+is put back when you leave WSPR.
+
+Tick **Transmit** to transmit too. About one slot in five is then picked at
+random, never two in a row, as WSJT-X does with "Tx Pct 20"; the panel says
+when the next one is. A transmission starts 1 s into its slot and lasts
+110.6 s. It sends `STATION_CALLSIGN`, the first 4 characters of the grid and
+the radio's power in dBm (1 W is 30, 2 W is 33, 3-5 W are 37). The transmit
+audio frequency is 1500 Hz unless you change it (1410-1590 Hz, in the box
+or by tapping the spectrum). WSPR transmits only a plain callsign of up to 6
+characters, so not one with a `/`. Transmit stops when the last browser
+leaves. Unticking Transmit, or leaving WSPR, stops a transmission straight
+away. Not tested on air.
+
+**Unattended receive** (`WSPR_UNATTENDED=on`, off by default): 10 minutes
+after the last browser disconnects, PiRO tunes the radio to the WSPR
+frequency of the band it is on (20 m if it isn't near one), on USB with
+DATA on, and receives and uploads spots by itself. It never transmits then.
+Every 6 minutes (three slots; `WSPR_BAND_MINUTES` changes this) it moves
+on to the next band: 160, 80, 40, 30, 20, 17, 15, 12, 10 and 6 m, then
+round again. `WSPR_SKIP_BANDS` leaves bands out (for example
+`160m,6m` for an antenna that doesn't suit them), and `WSPR_BAND_CYCLE=off`
+keeps it on the one band. Each slot is decoded and reported on the band it
+was heard on.
+
+Straight after each band change it starts the radio's antenna tuner (the
+same as the Tune button). This is the only time unattended WSPR transmits:
+a tuning carrier for a few seconds, before receiving starts on the new
+band. Tuning has its own limit: if the radio still reports tuning or
+transmitting after 15 s, PiRO switches the tuner off, which ends the tune,
+sends PTT off, and switches the tuner back on. A browser that connects
+during a tune waits for it to finish before the radio is put back. Not
+tested on air. When a browser connects, it stops
+and puts the frequency, mode and DATA mode back.
+
+#### Current conditions
+
+The **Current conditions** link to the right of "Band" opens a window with
+a table: **Band**, **My QTH** and **Local area**, one row per WSPR band
+(160 m to 6 m). Each cell is tagged by range, how far the stations heard
+were: the farthest spot of each station, and of those the 80th percentile,
+so one freak spot doesn't decide it.
+
+| Tag | Range |
+|---|---|
+| Great | 10,000 km or more |
+| Good | 5,000 km or more |
+| Average | 2,500 km or more |
+| Bad | 1,000 km or more |
+| Dismal | less than 1,000 km, or nothing heard |
+
+- **My QTH** comes from the WSPR spots PiRO decoded itself in the last 90
+  minutes: while you run WSPR, or from unattended receive and its band
+  cycle (which visits every band about once an hour). A band PiRO listened
+  to and heard nothing on is Dismal. A band it hasn't listened to is N/A.
+- **Local area** comes from the spots of every WSPR reporter in your
+  4-character grid square and the 8 squares around it (a 3 x 3 block
+  centred on your square), in the last 60 minutes. These are wsprnet.org's
+  spots. wsprnet.org has no open query interface, so PiRO reads them from
+  [wspr.live](https://wspr.live), a free public copy of the wsprnet.org
+  database. It asks at most every 10 minutes, and only when the window is
+  opened. A band with no spots is N/A. This column works without WSPR
+  running, but needs the Pi to have internet access.
+
+Under each tag is the range, the number of stations heard and, for the
+local area, the number of reporters. Both columns use `WSPR_GRID` (or
+`STATION_GRID`); without one, everything is N/A. The window's note gives
+the squares, the time windows and when the local area was last fetched.
+
+#### FreeDV
+
+**FreeDV** selects RADE digital voice (it reads **RADE V1** while on). It
+needs the `rade_c` programs installed: see [FreeDV RADE](#freedv-rade).
+PiRO puts the radio on the usual sideband for the frequency, with DATA MODE
+on. There are no FreeDV calling frequencies, so it stays where you are.
+
+Talk with **PUSH TO TALK** as usual: PiRO turns your voice into the RADE
+signal, and decodes received RADE back into speech for your speaker.
+
+**FDV Spot** reports your station to the [FreeDV Reporter](https://qso.freedv.org)
+map, with the status message you **Set**. It needs `STATION_CALLSIGN` and
+`STATION_GRID`. `FREEDV_REPORTER_ENABLED=0` turns reporting off altogether.
+`RADE_TX_GAIN` sets the transmit drive: adjust it with the radio's power
+meter and ALC.
+
+#### Pictures: SSTV, EasyPal and Radiofax
+
+The **Image** button selects SSTV on the first press, EasyPal on the
+second and Radiofax on the third (then SSTV again).
+
+##### SSTV
+
+The **Image** button's first press turns on SSTV (slow-scan television). It puts the radio
+on the band's usual sideband (LSB below 10 MHz, USB above; DATA MODE only
+while sending) and tunes to the band's SSTV frequency. Band buttons then do
+the same:
+
+| Band | Frequency (MHz) | Sideband |
+|---|---|---|
+| 40 m | 7.171 | LSB |
+| 20 m | 14.230 | USB |
+| 15 m | 21.340 | USB |
+| 10 m | 28.680 | USB |
+| 6 m | 50.950 | USB |
+
+The usual 160 m (1.890 MHz) and 80 m (3.730 and 3.845 MHz) frequencies are
+outside the Australian allocations, so on those bands, and on 30, 17 and
+12 m, which have no usual SSTV frequency, the band buttons tune as normal.
+The table is `SSTV_FREQUENCIES` in `src/client/app.js`.
+
+The PTT button stays the ordinary voice PTT (for talking about the
+pictures); pictures are sent with the panel's Send button (below). The
+scope shows the 0-3 kHz audio spectrum with faint lines at 1200 Hz (sync),
+1500 Hz (black) and 2300 Hz (white) to tune by.
+
+The receiver waits for the VIS header that starts every SSTV picture, which
+names its mode, and handles 25 modes: Martin M1-M4, Scottie S1, S2 and DX,
+Robot 36, 72, 24 and the black-and-white 8, 12 and 24, PD 50, 90, 120,
+160, 180, 240 and 290, Wraase SC-2 120 and 180, and Pasokon P3, P5 and P7.
+It measures how far the signal is from the standard tones from the header
+(so it copies a station up to about 150 Hz off), and its frequency
+measurement gets more averaging as the signal gets noisier. The picture
+panel under the S-meter fills in line by line as the picture arrives, with
+the mode, line count and offset above it. When the picture ends, the
+receiver finds the sync pulses' slope, which is how far the other station's
+sound card clock is off, and redraws the picture straight. It then joins
+the strip of recent pictures (the last 12, kept by the server, so another
+browser or a reload sees them too).
+
+* **Stop** ends the picture now and keeps what has arrived. A picture also
+  ends by itself if the sync pulses stop for 12 lines (the signal has gone),
+  and when you transmit.
+* **Save** downloads the picture shown as a PNG, at its own resolution.
+* Tap the picture to open it full size (pinch to zoom; tap again to close).
+  Thumbnails show older pictures.
+* Set `SSTV_SAVE_DIR` to have the server save every picture there as well.
+
+Picture sizes are 320 × 256 for Martin, Scottie, Wraase and PD 50/90,
+320 × 240 for Robot, 512 × 400 for PD 160 and 640 × 496 for PD 120/180/240
+and Pasokon (800 × 616 for PD 290). On a phone the panel is about 360-430
+points wide, which on a 2-3× screen is at least as many pixels as the
+picture has.
+
+The receiver is a JavaScript port of slowrx by Oona Räisänen OH2EIQ (ISC
+licence); see [`third_party/sstv/README.md`](third_party/sstv/README.md)
+for what was ported, the differences, and how it was checked (including
+against audio from PySSTV, an independent encoder). It runs in a worker
+thread, only while SSTV is selected and you are not transmitting. Not yet
+tested over the air. The picture drawn while it arrives is not yet
+slant-corrected, so from a station whose sound card is well off it leans
+until it is redrawn at the end.
+
+**Sending a picture.** Under the received pictures, **Camera** opens the
+phone's camera (on a computer it opens a file chooser) and **Choose image**
+picks an existing picture. The picture appears at the size and shape that
+will be sent (320 × 256 for the default Scottie 1), filling the frame:
+
+* **drag** it to choose what is shown, and **pinch**, scroll or use **Zoom**
+  to get closer;
+* the **callsign** (from `STATION_CALLSIGN`, editable) and an optional
+  **second line** (for example a report, "UR 595", or a locator) are drawn
+  in white with a dark outline on a translucent box, in the **corner** you
+  choose. The tag is made as large as fits within half the picture's
+  width and half its height, box included (160 × 128 pixels
+  at most in Scottie 1);
+* **Send** shows the mode and how long it takes (about 1 minute 56 seconds
+  for Scottie 1 with the IDs). What is in the preview is exactly what is
+  sent.
+
+Sending works as for RTTY: the Pi encodes the picture (in a worker thread),
+turns DATA MODE on so the radio takes USB audio, keys PTT, plays it, and
+puts everything back afterwards, including if you press **Stop**. After the
+picture come the **FSK ID** (the callsign as the short 1900/2100 Hz burst
+that MMSSTV, slowrx and similar programs show as the sender's call) and a
+**CW ID** ("DE" and the callsign at 20 WPM, 800 Hz). The sent picture joins
+the strip, marked as sent.
+
+While a picture is being prepared and sent, a progress box under **Send a
+picture** shows the time sent and the total (for example `0:42 / 1:57`), a
+bar marked where the picture ends and the IDs begin, what is going out now
+(`VIS header`, `Picture · line 112 of 256`, `FSK ID`, `CW ID`) and the time
+left, with a **Stop** button. The picture also fills in on the SSTV screen
+above as it goes out, the part not yet sent dimmed, with a green line where
+it has got to. Every browser connected to PiRO shows this, including one
+opened part-way through, so a transmission started on one phone can be
+watched or stopped from another.
+
+The mode is set on the Pi with `SSTV_TX_MODE` (Scottie 1, `S1`, by
+default; any of the receiver's mode ids, e.g. `M1`, `R36`, `PD120`).
+SSTV is a full-power tone for one to four minutes, much harder on the
+radio than voice: set `SSTV_TX_POWER_W` to send at lower power (it is put
+back afterwards), or turn the power down yourself. `SSTV_FSK_ID=off` and
+`SSTV_CW_ID=off` leave out the IDs; with no `STATION_CALLSIGN` there are
+none. The usual 10-minute PTT cut-off still applies.
+
+The encoder follows N7CXI's mode specifications: for Martin 1, Robot 36
+and PD-120, its tones match PySSTV's, an independent encoder, to within a
+few hertz throughout; Scottie modes include the starting sync pulse the
+specification calls for. Sending has been tested with PiRO's own receiver
+and a stub radio, not on air.
+
+##### EasyPal
+
+The **Image** button's second press turns on **EasyPal** receive: digital
+SSTV as EasyPal and QSSTV send it (HamDRM, a form of Digital Radio
+Mondiale). The picture is sent as a file (usually JPEG or JPEG 2000) over
+an OFDM signal about 2.4 kHz wide. PiRO receives and sends it.
+
+- The radio goes to **USB**, on the band's EasyPal (digital SSTV) calling
+  frequency if it has one: 7.173 MHz (40 m), 10.144 MHz (30 m), 14.233 MHz
+  (20 m) or 21.337 MHz (15 m), as commonly listed. On other bands it stays
+  where it is. The band buttons do the same while EasyPal is on. EasyPal is
+  always USB: a USB signal heard on LSB is a mirror image and won't decode.
+  The audio spectrum
+  replaces the RF scope; a signal tuned right fills the space between the
+  two guide lines (400 and 2750 Hz). The receiver copes with a mistuning of
+  a few hundred hertz and shows it.
+- Like Radiofax, EasyPal turns the radio's **NR** and **auto notch** off and
+  selects **FIL1**, and puts them back when you leave
+  (`EASYPAL_RADIO_SETUP=off` stops this). NR upsets the phase of the
+  carriers, and the auto notch attacks the pilot tones.
+- The panel shows what the receiver hears: the mode (A, B or E), the
+  bandwidth, the QAM, the S/N, the sender's callsign and how many segments
+  of the file have come. While a plain JPEG comes in, its top part is shown
+  as it grows. When the file is complete it is shown, described, and added
+  to the strip of recent ones (the last 8, for pages that open later). Tap
+  the picture for full size; **Save** saves the file (a JPEG 2000 picture
+  as the JPEG it was shown as, at most 1600 pixels across; `EASYPAL_SAVE_DIR`
+  keeps the original).
+- Files sent with Reed-Solomon protection (EasyPal's and QSSTV's `.rs1` to
+  `.rs4`) are put back together when some segments are lost, once enough
+  have arrived. A plain file needs every segment.
+- `EASYPAL_SAVE_DIR` also saves every file, as it was sent.
+
+The receiver is a JavaScript port of QSSTV's, run in a worker thread on
+the server: 1 to 2% of a desktop CPU core (measured), so a few percent of a Pi's. It was checked against QSSTV's own
+receiver on signals made by QSSTV's own transmitter, in all 72 mode
+combinations and with noise, mistuning, clock errors, echoes and fading;
+see [`third_party/qsstv-drm/README.md`](third_party/qsstv-drm/README.md).
+A recording of a real EasyPal transmission found online (mode A, 64-QAM, a
+10-megapixel JPEG 2000 photo sent with Reed-Solomon) decoded completely.
+Not tested yet on a signal PiRO receives off air.
+
+###### Sending
+
+Under the EasyPal picture, **Send a picture** offers **Camera** (the
+phone's camera) and **Choose image**.
+
+- The whole picture is sent, keeping its shape, fitted within 800 x 600.
+  You can put your callsign (and a second line) in a corner, as for SSTV.
+- **Send** shows the settings and the longest it will take. The server
+  then makes the picture fit that time: it picks the best JPEG quality
+  that fits (30 to 90), and makes the picture smaller if even quality 30
+  is too big. It is sent as a JPEG, with Reed-Solomon protection
+  (`.rs2` by default), named `CALL-YYYYMMDD-HHMMSS` (UTC).
+- PiRO puts the radio in **DATA MODE** (and confirms it), sets the
+  power if `EASYPAL_TX_POWER_W` is set, keys PTT and sends. Afterwards it
+  puts the power and DATA MODE back. The radio must be on USB.
+- Every browser shows the progress, the picture going out and a **Stop**
+  button. A sent picture is added to the strip, marked "Sent".
+- Sending stops if the last browser disconnects. The 10-minute PTT limit
+  applies, and `EASYPAL_TX_SECONDS` can't be more than 540.
+
+The settings are fixed on the Pi, as SSTV's mode is: `EASYPAL_TX_MODE`
+(B), `EASYPAL_TX_BANDWIDTH` (2.5 kHz), `EASYPAL_TX_QAM` (16),
+`EASYPAL_TX_PROTECTION` (high), `EASYPAL_TX_INTERLEAVE` (short),
+`EASYPAL_TX_RS` (rs2) and `EASYPAL_TX_SECONDS` (90). The callsign sent in
+every frame is `STATION_CALLSIGN`. Mode B, 16-QAM, high protection sends
+about 290 bytes a second; the start and end of each transmission add
+about 16 s. Guide, for mode B, 16-QAM and RS2:
+
+| Time allowed | JPEG size | A photo is sent at about |
+|---|---|---|
+| 90 s | 15 kB | 430-550 pixels across |
+| 120 s | 22 kB | 520-640 pixels across |
+| 180 s | 34 kB | 640-800 pixels across |
+
+The transmitter is a JavaScript port of QSSTV's. Its audio was checked
+against QSSTV's own transmitter with the same file: the same frames, and
+the same samples to within 2 parts in 32768, in modes A, B and E, both
+interleaves and all three QAMs; QSSTV's receiver decodes it. Fitting the
+picture and making 90 s of audio takes about 1.5 s on a desktop; expect
+several seconds on a Pi (not measured).
+
+**Tested on air** once, on 25 October 2026: a picture sent with the
+defaults from an IC-7300 on 28.690 MHz was recorded on a KiwiSDR
+(vk3jst.ddns.net) and decoded completely, at about 9 dB S/N. 42 of its
+176 segments were lost and put back by Reed-Solomon. The first 22 s of
+the recording is a test fixture. EasyPal itself has not been tried, but it uses the same
+format.
+
+##### Radiofax
+
+The **Image** button selects SSTV on the first press, EasyPal on the
+second and **Radiofax** on the third (then SSTV again). Its label reads
+"SSTV", "EasyPal" or "Fax" while one is on. Radiofax receives HF weather charts: frequency-modulated audio around
+1900 Hz (black 1500 Hz, white 2300 Hz), 120 lines a minute, IOC 576, 1810
+pixels a line. That is what the Bureau of Meteorology sends. It receives
+only, on USB with DATA MODE off.
+
+While Radiofax is on, the chart coming in is drawn where the spectrum
+usually is, newest line at the bottom; tap it to open it full size. Below
+the spectrum, the Radiofax panel shows what the receiver is doing, and has
+**Start now**, **Stop** and **Save** buttons and the last few charts.
+
+Below the S-meter are buttons for the VMC (Charleville, Qld) and VMW
+(Wiluna, WA) frequencies, in order of their broadcast hours (UTC, from the
+Bureau's technical guides). The ones not on the air now are dimmed, and
+the one the radio is on is lit. A button tunes the radio 1.9 kHz below the
+listed frequency, on USB, so the signal's centre is at 1900 Hz. Entering
+Radiofax tunes the first button on the air now, unless the radio is
+already on one of them.
+
+Entering Radiofax also sets the radio up for fax: **NR off**, **auto notch
+off** and **FIL1** (its widest filter). NR smears every quick black/white
+change, so thin vertical lines vanish and text strokes come out hollow;
+the auto notch attacks steady tones, which is what a white or black area
+is. Leaving Radiofax (or the last browser closing) puts back whatever was
+changed, unless you changed it yourself in the meantime; the filter is
+only put back if the mode is still the same. `FAX_RADIO_SETUP=off` turns
+this off.
+
+| Station | Frequency (kHz) | Hours (UTC) |
+|---|---|---|
+| VMC, VMW | 5100, 7535, 10555, 11030, 13920, 15615 | all day |
+| VMC | 2628 | 09-19 |
+| VMW | 5755 | 11-21 |
+| VMC | 20469 | 19-09 |
+| VMW | 18060 | 21-11 |
+
+How a chart is received:
+- The start signal (black and white alternating at 300 Hz for 5 s) starts
+  a chart.
+- About 30 s of phasing lines follows: black, with one white pulse at the
+  start of each line. PiRO lines the chart up on the pulse. It also
+  measures how far the pulse drifts from line to line, which is the
+  difference between the sender's clock and the Pi's sound card. Each line
+  is then made that much longer or shorter, so the chart isn't slanted. The
+  measurement is shown as "clock ±N ppm".
+- PiRO looks for phasing lines all the time, so a chart still lines up if
+  its start signal was missed, or if **Start now** was pressed during the
+  phasing.
+- A few phasing lines spoilt by noise (a static crash, a fade) don't end
+  the phasing: it takes three bad lines in a row. So the whole 30 s is
+  measured, and none of it is drawn as part of the chart.
+- The clock is only measured from the phasing when the measurement is
+  good to 25 ppm. Otherwise the phasing still lines the chart up, and the
+  line length stays as it was.
+- The clock error is kept (the median of the last 5, in
+  `FAX_STATE_FILE`), so a chart without phasing, or the first one after a
+  restart, starts with the right line length.
+- Any chart whose clock wasn't measured from its own phasing is
+  straightened when it ends: PiRO tries slants of up to 1.5 pixels a line
+  and keeps the one that lines up its vertical edges best (frames, grids,
+  coasts, the left edge of text), then shifts each line back. The chart
+  then says "slant corrected". The slant found also counts as a clock
+  measurement for later charts. Its left edge stays wherever the line
+  happened to start, unless phasing lined it up.
+- When a chart ends, noise damage is mended: a line spoilt across its
+  width by a static crash (up to 3 in a row) is replaced by a blend of the
+  lines either side, and patches of speckle much worse than the lines
+  around them are smoothed. Clean drawing, text and grids are left alone.
+  A deep fade that wipes out more lines can't be recovered. The chart
+  then says how many lines were mended. `FAX_CLEANUP=off` turns this off.
+- The stop signal (450 Hz) ends the chart. So do a new start signal,
+  **Stop**, leaving Radiofax, transmitting, or 25 minutes.
+- **Start now** begins a chart straight away, for a broadcast that is
+  already under way. Its left edge is then wherever the line happens to
+  start, and the clock correction is the last one measured.
+
+Each chart is kept as a PNG (the last 6, for pages that open later; a page
+that opens part-way through a chart is sent it so far). `FAX_SAVE_DIR`
+also saves them to a folder. The receiver is PiRO's own JavaScript, run on
+the server: 0.6% of a desktop CPU core (measured), so a few percent of a
+Pi's. Not tested on an off-air signal yet.
+
+### Configuration reference
 
 All settings are environment variables. For the systemd service they go in
 `/etc/piro/piro.env`. A line that is missing means the default shown.
@@ -456,7 +1319,7 @@ defaults (`HAMNOISE_QUALITY`, `RADE_TX_GAIN`, `RADE_VERSION`,
 `CIV_MAXIMIZE_USB_LEVELS`) is in `docs/ui-notes.md` and
 `docs/civ-notes.md`.
 
-## Updating
+### Updating
 
 ```bash
 cd ~/PiRO
@@ -471,7 +1334,7 @@ files change, so a normal refresh picks up an update. If you edit the client
 files yourself, bump that version number too. If a page still looks old, do
 one hard refresh (Ctrl+Shift+R, or Cmd+Shift+R on a Mac).
 
-## Troubleshooting
+### Troubleshooting
 
 - **Permission denied on the serial port.** Running by hand: add yourself to
   `dialout`, then log out and in. Under systemd the unit adds the group, so
@@ -549,7 +1412,7 @@ one hard refresh (Ctrl+Shift+R, or Cmd+Shift+R on a Mac).
 - **EasyPal won't send: "Put the radio on USB first".** EasyPal is sent on
   USB with DATA MODE. Pressing the EasyPal button sets USB.
 
-## Hardware diagnostics
+### Hardware diagnostics
 
 The `test/manual-*.js` scripts talk to a real radio. Stop the service first,
 because they need the serial port. None of them transmits.
@@ -568,57 +1431,636 @@ If you open an issue about one of these, include the script's full output and
 what the radio's front panel showed. `docs/civ-notes.md` explains the common
 causes.
 
-## Project layout
+---
 
-[`docs/architecture.drawio`](docs/architecture.drawio) is a UML diagram of the
-main classes and how they connect: browser client, server, feature bridges,
-CI-V and audio. Its second page lists which events each server part listens to
-and sends. Open it in [draw.io](https://app.diagrams.net/) or the draw.io
-desktop app. [`docs/architecture.png`](docs/architecture.png) is a preview of the
-first page.
+## Part 2: For developers
+
+1. [Architecture](#architecture)
+2. [Design rules](#design-rules)
+3. [Project layout](#project-layout)
+4. [Components in detail](#components-in-detail)
+5. [WebSocket protocol](#websocket-protocol)
+6. [Testing](#testing)
+7. [Making a change](#making-a-change)
+8. [Ported code](#ported-code)
+
+### Architecture
+
+PiRO is one Node.js process on the Pi, and a web app (a PWA) in the
+browser. There is no build step: the browser loads plain ES modules.
+
+```
+  Browsers (phones, PCs)                   Raspberry Pi
+ +------------------------+  WebSocket  +-----------------------------------+
+ | app.js (the whole UI)  |<----------->| ControlServer (ws-server.js)      |
+ | RigLink (rpc.js)       | JSON control|   requests -> events -> bridges   |
+ | AudioPipeline, scope   | and tagged  |   state snapshot, broadcasts      |
+ +------------------------+ binary      |   PTT watchdog (10 min)           |
+                            frames      |                                   |
+                                        | CivDriver ----- CI-V serial --+   |
+                                        | AudioBridge --- ALSA ---------+   |
+                                        | feature bridges -> workers    |   |
+                                        +-------------------------------|---+
+                                                         one USB cable  v
+                                                              Icom transceiver
+```
+
+- **CivDriver** (`src/civ/driver.js`) owns the serial port. It sends one
+  CI-V request at a time, matches replies, and emits the radio's own
+  changes (frequency, mode, scope lines).
+- **ControlServer** (`src/server/ws-server.js`) serves the web app and the
+  WebSocket. It answers requests, keeps the shared state that a new
+  browser gets on connect, broadcasts changes, and runs the PTT watchdog.
+  Requests for a feature become internal events that its bridge handles.
+- **AudioBridge** (`src/server/audio-bridge.js`) runs `arecord` and
+  `aplay` on the radio's USB codec. It sends received audio to the
+  browsers (raw PCM, Opus or ADPCM, per browser) and plays microphone
+  audio to the radio.
+- **Feature bridges** (`src/server/*-bridge.js`, plus
+  `src/audio/ft8-bridge.js` and `src/audio/tty-bridge.js`): one per
+  feature. Each listens to ControlServer's events, reads received audio
+  or writes transmit audio, drives the radio through CivDriver, and
+  broadcasts results.
+- **Workers.** Heavy decoding and encoding (FT8, JTTY, Olivia, SSTV, WSPR,
+  EasyPal) runs in worker threads, so the main thread stays free for CI-V,
+  audio and the WebSocket.
+- **The client** (`src/client/`): `app.js` is the whole UI. `rpc.js`
+  (RigLink) wraps the WebSocket and re-dispatches every server event as a
+  DOM event. `audio.js` plays and records with Web Audio. `scope.js` draws
+  the spectrum and waterfall. `sw.js` caches the app for offline start.
+
+[`docs/architecture.drawio`](docs/architecture.drawio) is a UML diagram of
+the main classes and how they connect: browser client, server, feature
+bridges, CI-V and audio. Its second page lists which events each server
+part listens to and sends. Open it in [draw.io](https://app.diagrams.net/)
+or the draw.io desktop app. [`docs/architecture.png`](docs/architecture.png)
+is a preview of the first page.
 
 [![PiRO class diagram](docs/architecture.png)](docs/architecture.png)
 
+### Design rules
+
+- **The radio is the source of truth** for its settings: frequency, mode,
+  filter, DATA mode, power, preamp, NR and the rest, including changes made
+  on its front panel. **The server is the source of truth** for its own
+  settings: the app-level modes (FT8/FT4, FreeDV, JTTY, Olivia, Feld-Hell,
+  SSTV, EasyPal, Radiofax, WSPR) and their frequencies, the decoder
+  options, the notes. Every browser shows what the radio or the server
+  reports, by event or by polling. A browser never treats its own copy as
+  the truth.
+- Server settings live in `ControlServer.state` (the connect snapshot) and
+  are broadcast when they change. The browser that made a change does not
+  send radio commands again when it hears the broadcast.
+- Phones disconnect and reconnect often. Transmissions and receivers stop
+  when the last browser leaves.
+- A feature that changes a radio setting (mode, DATA mode, power, key
+  speed, break-in, NR, filter) puts it back afterwards, also on Stop and on
+  errors.
+- Before keying audio, DATA mode is confirmed with `ensureDataMode()`
+  (`src/civ/data-mode-guard.js`): read back, retried, then a settle time.
+  PTT straight after the command could transmit from the microphone.
+- Anything that transmits without PTT has its own time limit, because the
+  PTT watchdog doesn't see it.
+- CAT control is on the server (Node `serialport`), not the browser's Web
+  Serial API. So any browser works, including Safari and iOS, and the
+  browser needn't be near the radio.
+- Audio uses the radio's own USB codec through ALSA: no extra sound card
+  or virtual audio cable.
+- There is no login. Remote use is expected over a VPN. PiRO compresses
+  audio for such links.
+
+`docs/civ-notes.md` has the CI-V command history and corrections, and is
+worth reading before changing anything in `src/civ/`.
+
+### Project layout
+
 ```
 src/
-  civ/            CI-V driver: framing, BCD encoding, rig control,
-                   spectrum scope decoding (all phases 1 & 6 — done)
-  audio/          ALSA capture/playback, PCM framing, Opus codec (phase 3 — done)
-                   (compressed audio for browsers: server/audio-codecs.js and
-                   client/audio-codec.js, shared by both ends);
-                   also FT8 support: slot-clock (UTC 15s boundaries),
-                   resampler (48k<->12k with anti-aliasing), the RX/TX
-                   bridge, and its decode worker-thread — see docs/ui-notes.md;
-                   RTTY (rtty-decoder.js, rtty-encoder.js), Olivia
-                   (olivia-dsp.js, olivia-tx.js, olivia-rx.js,
-                   olivia-decode-worker.js), Feld-Hell (hell-font.js,
-                   hell-tx.js, hell-rx.js, fed by
-                   server/hell-decoder-bridge.js), SSTV (sstv-modes.js,
-                   sstv-rx.js, sstv-tx.js, sstv-decode-worker.js,
-                   sstv-encode-worker.js, with server/sstv-decoder-bridge.js,
-                   server/sstv-tx-bridge.js and server/png.js) and JTTY
-                   (jtty-codec.js, jtty-tx.js, jtty-rx.js, jtty-tbcc-decode.js,
-                   decimator.js, jtty-decode-worker.js); transmit is played
-                   out by tty-bridge.js and receive is fed by
-                   server/jtty-decoder-bridge.js;
-                   WSPR (wspr-codec.js, wspr-rx.js, wspr-decode-worker.js,
-                   with server/wspr-bridge.js and server/wsprnet.js);
-                   EasyPal (drm/: the HamDRM receiver and transmitter
-                   ported from QSSTV; easypal-decode-worker.js and
-                   easypal-encode-worker.js, with
-                   server/easypal-decoder-bridge.js,
-                   server/easypal-tx-bridge.js and server/radio-setup.js)
-  server/         WebSocket control layer (phase 2 — done), audio bridge
-                   (phase 3 — done), scope bridge (phase 6 — done), static
-                   file server (phase 4 — done), CW decoder bridge, FT8 protocol wiring
-  client/         PWA app shell + rig control UI + spectrum scope display
-                   (phases 4-6 — done): manifest, service worker, icons,
-                   VFO/mode/band/PTT/S-meter controls, Web Audio RX/TX
-                   pipeline, canvas spectrum trace + waterfall; also the
-                   FT8 panel (band-activity table + manual composer),
-                   FT8 mode's auto-tune-per-band logic, and the guided
-                   FT8 QSO sequencer (ft8-qso.js)
-test/
+  civ/        CI-V: framing and BCD (frame.js), commands (commands.js),
+              the driver (driver.js), scope line reassembly (scope.js),
+              the DATA mode guard (data-mode-guard.js)
+  server/     index.js (env vars, wiring), ws-server.js (ControlServer),
+              protocol.js (every request and event, documented inline),
+              static-server.js, audio-bridge.js and audio-codecs.js,
+              scope-bridge.js, one *-bridge.js per feature,
+              radio-setup.js (NR, notch and filter for fax and EasyPal),
+              band-conditions.js, wsprnet.js, freedv-reporter.js, png.js
+  audio/      ALSA (alsa.js, mixer.js), Opus (opus-codec.js), PCM framing,
+              resampling (resample.js, decimator.js), FFT (fft.js),
+              noise reduction (rnnoise-filter.js, hamnoise-filter.js),
+              voice-squelch.js, and the modems:
+                CW       cw-decoder.js, hamfist-cw-decoder.js, deepcw-decoder.js
+                RTTY     rtty-decoder.js, rtty-encoder.js
+                FT8/FT4  ft8-bridge.js, ft8-decode-worker.js, slot-clock.js,
+                         psk-reporter.js (codec: @e04/ft8ts)
+                JTTY     jtty-codec.js, jtty-tx.js, jtty-rx.js,
+                         jtty-tbcc-decode.js, jtty-decode-worker.js
+                Olivia   olivia-dsp.js, olivia-tx.js, olivia-rx.js,
+                         olivia-decode-worker.js
+                Hell     hell-font.js, hell-tx.js, hell-rx.js, hell-ocr.js
+                SSTV     sstv-modes.js, sstv-rx.js, sstv-tx.js,
+                         sstv-decode-worker.js, sstv-encode-worker.js
+                WSPR     wspr-codec.js, wspr-rx.js, wspr-decode-worker.js
+                Fax      fax-rx.js (fax-tx.js makes test signals)
+                EasyPal  drm/ (HamDRM receiver and transmitter),
+                         easypal-decode-worker.js, easypal-encode-worker.js
+                FreeDV   rade-pipeline.js (runs the rade_c programs)
+              tty-bridge.js sends RTTY, JTTY, Olivia and Feld-Hell.
+  client/     the PWA: index.html, styles.css, app.js (the whole UI),
+              rpc.js (RigLink), audio.js, mic-capture-processor.js,
+              audio-codec.js (shared with the server), scope.js, smeter.js,
+              vswr.js, ft8-qso.js, sw.js, manifest and icons
+test/         *.test.js and *.test.mjs (npm test), manual-*.js (see Testing)
+  fixtures/   recordings and pictures the tests use
+docs/
+  civ-notes.md        CI-V command history and corrections, scope byte
+                      layout, DATA mode, the PTT watchdog
+  ui-notes.md         one section per build: what changed, bugs and causes
+  audio-notes.md      the audio pipeline (PCM and Opus, levels)
+  pwa-notes.md        HTTPS, certificates, installing to a home screen
+  install-debian.md   the install steps with more explanation
+  architecture.drawio UML class diagram and event-wiring table (draw.io)
+  architecture.png    preview of the class diagram
+deploy/       piro.service (systemd unit) and piro.env.example
+models/       bundled DeepCW and HamNoise models, with their licences
+third_party/  notes, licences and test harnesses for the ported code
+```
+
+### Components in detail
+
+#### Scope
+
+The waterfall uses Google's "Turbo" colour map (see `docs/ui-notes.md`).
+
+**The scope stays centered on the current frequency, with 50kHz division
+markers below it and a "Scope Span" slider (2.5/5/10/25/50/100/250/500
+kHz, default 100kHz) to control the width to each side of center** (a
+"100kHz" span tuned to 7100kHz displays 7.000-7.200MHz — confirmed on
+real hardware; see `docs/ui-notes.md`/`docs/civ-notes.md`). Mode is set
+to Center once
+when scope output is enabled (`ScopeBridge#start()`) — Center mode's
+displayed center automatically tracks the VFO on the radio itself, so
+this one-time setup keeps it centered through band clicks, direct entry,
+scope click-to-tune, and even the front panel, with no per-change command
+needed. Span is **not** set at server startup at all — the client
+requests the default itself once connected, and the same slider changes
+it on demand via the `setScopeSpan` WebSocket request; the slider's own
+value is an index into the eight span options (equal positions along its
+range), and every one of their values maps exactly onto one of the
+radio's 8 fixed presets, no clamping needed. The 50kHz gridlines/tick
+labels are computed by
+`scopeDivisions()` and drawn/rendered fresh on every scope line — see
+`docs/ui-notes.md`.
+
+Getting the span command right took real back-and-forth, worth tracking
+honestly since it took a genuine upgrade in source quality to finally
+resolve. Several wire-format guesses were tried and confirmed wrong by
+real hardware testing — including one that had checked out byte-for-byte
+against a concrete worked example from an informal online source, which
+still turned out wrong: it claimed the value was a single-byte *index*
+(0-7) and that presets were labeled by their **half**-width, both
+incorrect. The breakthrough was Icom's own official IC-7300 CI-V
+reference manual (Section 19), whose own reference table explicitly
+confirms the value is the span **directly in Hz** — settling a question
+no prior source had actually answered unambiguously. The manual also
+revealed a second, separate bug: scope mode-setting needed a 2-byte
+payload, not the 1-byte one this project had been sending (which hadn't
+been causing visible failures, just not matching spec). The exact byte
+*position* of the span value within its 6-byte payload still isn't
+independently hardware-confirmed the way frequency encoding is — PDF
+extraction of the manual's own diagram is inherently lossy — so
+`test/manual-scope-span-diagnostics.js` has been updated with the
+manual-derived encoding as its primary candidate for final verification
+against real hardware. See `docs/civ-notes.md` for the full history and
+`docs/ui-notes.md` for the span slider.
+
+**S-meter**: bucketed into 16 segments (S0 through S9 individually,
++10dB through +60dB over S9) using real calibration data — refined
+twice now as better data became available: first an even-spacing
+placeholder (no manufacturer table existed at the time; Icom's S-meter
+is well-documented as non-linear/inconsistent across models/firmware),
+then a supplied raw-value-range table that could only distinguish
+"S1-S3" as one combined bucket, and now a power-curve-derived table
+giving individual S1-S9 buckets, superseding that combined range
+entirely. Just the bucketed label is shown (e.g. "S7") — an earlier
+version also showed the raw value alongside it, dropped per explicit
+request (see `docs/ui-notes.md`).
+
+**VSWR while transmitting**: the same S-meter bar switches to showing
+VSWR (green ≤1.5, orange >1.5–3, red >3, capped at 5) whenever PTT is
+active, reverting back once released. `CivDriver#getSWR()` reuses the
+S-meter's now-hardware-confirmed byte decode, since it lives under the
+same CI-V command group and Icom's manual documents it in the identical
+table style — a reasoned extension backed by clean matches against all
+of the manual's own documented examples, but **not independently
+confirmed against a real transmit into a known load** the way S-meter
+itself now is. See `docs/civ-notes.md` for the full reasoning and
+`src/client/vswr.js`/`test/vswr.test.mjs` for the raw-to-VSWR conversion.
+
+**Receive filter (Filter 1/2/3)**: no standalone CI-V command exists for
+this — it's the second byte of the existing mode-set command, so
+`CivDriver#setFilter()` reads the current mode first and resends it
+unchanged alongside the new filter byte, rather than risking an
+accidental mode change.
+
+**Transmit power (100/75/50/25/5W dropdown)**: `CivDriver#setTxPower()`
+converts watts to the CI-V level's raw 0-255 range via a **simple linear
+assumption** (100W rated max) — that part remains unverified. The byte
+*encoding* itself, however, was tested on real hardware and found
+wrong: the first attempt (standard BCD) got every write rejected
+outright (NG), root-caused to an invalid byte value for higher
+wattages, and fixed by reusing the packing already confirmed for the
+S-meter. See `docs/civ-notes.md` for the full story, and
+`test/manual-txpower-diagnostics.js` if it's still rejected on your
+hardware (safe to run — it never engages PTT or transmits anything).
+
+**RX gain (vertical slider, right of the scope)**: raw 0-255, no unit
+conversion, defaulting to 255 (max). Applies the TX power lesson
+immediately rather than repeating it — RF gain lives in the same CI-V
+command group as TX power, so `CivDriver#setRxGain()` uses the same
+byte packing from the start. Worth being precise about what that rests
+on: it's an inference on top of an inference (TX power's fix for its own
+NG rejection hasn't itself been hardware-confirmed yet), not something
+independently verified for RX gain specifically. See `docs/civ-notes.md`.
+
+**CW iambic paddle**: replaces the PTT button with Dot/Dash buttons
+whenever the mode is CW. Real limitation worth stating plainly: there's
+no CI-V primitive for timed keying, so every element goes through the
+same PTT toggle used for voice, over the full WebSocket + serial round
+trip — expect visibly less precise timing than a hardware keyer,
+especially at higher WPM. Defaults to a conservative 15 WPM given that
+latency. See `docs/ui-notes.md` for the full design, including a
+defense-in-depth session timer that closes a real gap in the PTT
+watchdog below (a stuck paddle producing continuous keying wouldn't
+otherwise trip it, since each element's brief gap resets the server-side
+timer).
+
+**PTT fail-safe (10-minute automatic cutoff)**: enforced server-side,
+required for this style of remote operation under the Australian
+amateur class licence (`Radiocommunications (Amateur Stations) Class
+Licence 2023`, s.13(4)(b)). Deliberately not client-side — the server is
+the persistent process, so a crashed browser tab or dropped network
+connection while transmitting still gets caught, which is exactly the
+scenario the rule exists to guard against. Normal CW keying never trips
+it, since every PTT-off (including the natural gaps between keyed
+elements) resets the timer — only a truly continuous, unbroken
+transmission accumulates toward the limit. See `docs/civ-notes.md` for
+the full design and the one known gap (not persisted across a server
+restart) that's accepted rather than solved.
+
+#### CW decoders
+
+**CW decoder**: activates automatically whenever mode is CW, decoding
+from the radio's own RX audio server-side (a hard dependency on
+`AUDIO_RX_DEVICE` being configured — see below) and streaming text to a
+scrolling ticker under the S-meter. Built and tuned against synthetic
+generated audio, not assumed correct — four real bugs (a cold-start
+silent-drop bug, a wrong-direction speed-adaptation bug, a genuine
+noise-vs-speed-range tuning tradeoff, and a bug where any message
+starting with a dash — including "CQ", the most common CW call there is
+— had its very first character misread) were found and fixed this way;
+see `docs/civ-notes.md` for the full account. Clicking to tune the scope
+while in CW mode also sets the exact clicked frequency rather than
+snapping to the nearest kHz, the same as RTTY mode, since a CW signal's
+own bandwidth is too narrow for kHz-precision tuning to reliably land on
+it. Worth being direct about realistic expectations: like any CW
+decoder, weak or noisy signals degrade it, sometimes significantly —
+this is a genuinely useful aid for clean-to-moderate signals, not a
+guarantee of accurate copy in poor conditions, the same caveat that
+applies to dedicated hardware/software CW decoders generally. The app
+uses "CW3", the DeepCW decoder, and the mode chip just reads "CW". Two
+other decoders are kept but hidden for now (since v84): to offer them
+again, set `CW_DECODERS_IN_UI` in `src/client/app.js` to
+`['CW1', 'CW2', 'CW3']`; the chip then reads "CW 1"/"CW 2"/"CW 3" and a
+click while already in CW cycles CW1 -> CW2 -> CW3 -> CW1. "CW1" is the original decoder
+described above, "CW2" is a from-scratch port of Jonathan Dawson's
+"Hamfist" decoder (https://github.com/dawsonjon/HamFist): an FFT-based
+design that decodes across several frequency channels at once (no pitch
+calibration needed — whichever channel has the tone lights up on its
+own), with histogram-based (rather than fixed-ratio) dot/dash/gap
+classification and a Bayesian beam-search decode backed by a ~9800-word
+autocorrect dictionary; and "CW3" is a neural-network decoder ported from
+`e04/deepcw-engine` (https://github.com/e04/web-deep-cw-decoder): a small
+CNN+CTC model run via `onnxruntime-node`, with no timing/classification
+model at all. Unlike CW1/CW2, CW3 doesn't decode live character-by-
+character — it batches 5-20 second audio windows through the model, so
+its output arrives in bursts every several seconds rather than as each
+element is keyed. It also depends on a native `onnxruntime-node` binary
+for the host platform: prebuilt binaries cover 64-bit Raspberry Pi OS
+(Pi 4/5, `linux-arm64`), but *not* 32-bit `armv7` (`linux-arm`); if no
+matching binary is available, CW3's model fails to load and that failure
+is surfaced as an error banner while CW3 is selected, rather than
+silently decoding nothing. Bundling this model is also why the project as
+a whole is now AGPL-3.0-only — see "Licence" below. See
+`docs/ui-notes.md`'s "CW decoder" section, `src/audio/hamfist-cw-decoder.js`'s
+and `src/audio/deepcw-decoder.js`'s own doc comments for the full
+comparison.
+
+**RTTY decoder**: activates automatically whenever mode is RTTY, decoding
+Baudot/ITA2 from the radio's own RX audio server-side (same
+`AUDIO_RX_DEVICE` dependency as the CW decoder) and streaming text to a
+scrolling ticker under the S-meter, the same presentation as CW's own. The
+RF scope also draws a second dashed marker while RTTY is active: a blue
+dashed line 170Hz below the tuned-frequency marker (which stays its usual
+green), marking the mark/space shift — trace-only, like the tuning marker
+itself, not drawn into the waterfall. Clicking to tune the scope while in
+RTTY mode also sets the exact clicked frequency rather than snapping to
+the nearest kHz, since RTTY's tones are packed too closely together for a
+1kHz snap to reliably land where intended. A "Reverse" checkbox next to
+the ticker swaps which tone (mark/space) the decoder treats as which —
+RTTY polarity genuinely isn't predictable from the radio's mode alone (it
+depends on both stations' equipment), so a signal using the opposite
+polarity from the decoder's assumption previously decoded nothing at all;
+see `docs/ui-notes.md`'s "Real bug found" writeup for the full story.
+Unchecked by default.
+
+#### FT8 and FT4 internals
+
+**FT8 (RX + manual TX)**: since the IC-7300 has no native "FT8" CI-V
+mode — the radio only ever sees `USB` — FT8 is an app-level concept
+layered on top: opening the FT8 panel puts the radio on USB and starts
+decoding 15-second, UTC-slot-aligned band activity from the same RX
+audio the CW decoder and voice RX use, showing decoded callsigns/grids/
+reports in a band-activity table. Selecting FT8 (and any subsequent band
+change while it's active) auto-tunes the dial to that band's standard
+FT8 calling frequency. Every transmission is started by the operator:
+you compose or pick a message and send it, and the app keys PTT itself
+and plays the encoded tone out at the next slot boundary. The guided QSO
+sequence (below) suggests each reply, but it never sends one by itself.
+Full WSJT-X-style auto-sequencing, where the software decides *and*
+transmits each step of a QSO, is deliberately not built: the operator
+supervises every transmission. See `docs/ui-notes.md` for the reasoning.
+Decoding is
+CPU-heavy (real seconds per slot on a busy band), so it runs in a
+background worker thread, not the main server process, to avoid
+stalling CI-V/audio/WebSocket handling. While the FT8 panel is open, the
+RF scope display is replaced by a live spectrum/waterfall computed with
+a real FFT of the RX audio itself (0-3000Hz above the dial, matching
+WSJT-X's own FT8 display exactly, updated a few times a second) rather
+than a crop of the radio's coarser CI-V sweep — see `docs/ui-notes.md`
+for the full pipeline. Uses
+[`@e04/ft8ts`](https://www.npmjs.com/package/@e04/ft8ts) — see
+**Licence** below for what that means for this project. Entering FT8 mode
+also turns on the IC-7300's separate **DATA MODE** setting (not just the
+`USB` operating mode) — required for the radio to actually source TX
+audio from the USB connection rather than the front-panel mic. **If FT8
+transmissions still aren't being heard by other stations, check on the
+radio itself: Menu > Set > Connectors > MOD Input, and confirm the "DATA
+ON" entry (not just "DATA OFF") is set to USB** — this is a menu setting
+CI-V cannot change remotely; see `docs/civ-notes.md`'s "DATA MODE"
+section for the full story. PTT is held for
+the encoded waveform's nominal playback duration *plus* a
+`PTT_RELEASE_MARGIN_MS` (300ms default, `src/audio/ft8-bridge.js`) safety
+margin before releasing, since handing PCM to the ALSA playback pipe
+doesn't mean it's already reached the speaker — releasing PTT too early
+truncates the tail of the transmission; see `docs/ui-notes.md`'s "Real bug
+found" writeup for the full story.
+
+The FT8 and FT4 transmit audio fades in and out, which avoids key clicks:
+the encoder applies WSJT-X's raised-cosine ramp (about 16 ms for FT8 and
+40 ms for FT4), and a test checks it survives the resampling to 48 kHz.
+
+**Guided FT8 QSOs**: with `STATION_CALLSIGN`/`STATION_GRID` configured
+(see above), the FT8 composer starts each session with a default
+`CQ {CALLSIGN} {MAIDENHEAD}` message, and `src/client/ft8-qso.js` drives
+the standard FT8 exchange as a guided sequence: clicking a decoded CQ (or
+sending your own CQ and having someone answer it) prefills the next
+message the standard exchange calls for at each step — grid, then signal
+report, then acknowledgement, then RRR73/73 — as each reply is actually
+decoded, tracking one QSO at a time. The rows belonging to the
+in-progress QSO are highlighted in the band-activity table, and its
+frequency is marked on the FT8 spectrum and used to target that QSO's own
+replies (standard operating practice: reply on the frequency the other
+station is actually listening on, not always your own calling
+frequency), all via the optional `freqHz` on `sendFt8` (see the protocol
+section below). The same targeting is available manually: hovering the
+FT8 spectrum shows a 50Hz-snapped frequency tag, and clicking it sets that
+as the next transmission's frequency (marked with the same amber marker
+used for an in-progress guided QSO). Absent a guided QSO or a manual
+click, a fresh CQ goes out at a default TX frequency of **1500Hz**,
+tracked per-session: clicking a new frequency on the spectrum updates
+that default too, so it sticks for the rest of the session (until the
+page is reloaded) rather than reverting after the next send — see
+`docs/ui-notes.md`'s "Default FT8 TX frequency" note. This is still guidance, not automation: every suggested
+message still has to be reviewed and sent by the operator, same as any
+other composer text — see `docs/ui-notes.md`'s "What's still Phase 3
+(explicitly not built)" note on why full auto-sequencing (deciding *and
+transmitting* without a human per message) is a deliberate scope
+boundary, not a missing feature.
+
+#### Audio levels, HTTPS, several browsers and the screen
+
+- **Microphone access (PTT/TX audio) requires HTTPS** when accessing from
+  any device other than the Pi itself — over plain HTTP on a LAN address,
+  `navigator.mediaDevices` is unavailable entirely in the browser, not
+  just degraded. RX (speaker) audio and everything else works fine over
+  plain HTTP. The server supports TLS directly via `TLS_CERT_PATH`/
+  `TLS_KEY_PATH` env vars — see `docs/pwa-notes.md` for cert generation
+  options and trade-offs.
+- Service worker/installability also wants HTTPS, but degrades gracefully
+  (`docs/pwa-notes.md`).
+- No arbitration between multiple clients transmitting simultaneously
+  (`docs/ui-notes.md`) — everyone has equal control.
+- **USB audio levels are maxed on every server start**, on both sides of
+  the link: the Linux/ALSA side (best-effort, via `amixer`) so the USB
+  codec doesn't get left at some unpredictable gain — see
+  `docs/audio-notes.md` for how to disable this — *and* the radio's own
+  internal levels for the same signal path (CI-V `1A 05 00 60`/`00 65`,
+  "AF output level to ACC/USB"/"MOD input level from USB" — see
+  `docs/civ-notes.md`, and `CIV_MAXIMIZE_USB_LEVELS` above to disable
+  just that half). A real caveat either way: 100% capture/level risks
+  clipping on transmit depending on your radio's own input sensitivity,
+  worth checking your actual TX audio quality.
+
+The page also requests a **Screen Wake Lock** as soon as it loads, so a
+phone's own screen timeout doesn't interrupt an operator mid-QSO while
+they're just listening/watching rather than actively touching the
+screen — re-requested automatically whenever the page becomes visible
+again after being backgrounded (the browser force-releases the lock
+while hidden). Requires a secure context (`https://`, same as the
+service worker — see `docs/pwa-notes.md`) and a browser that implements
+the API; degrades to the phone's normal screen-timeout behavior
+otherwise, with no other effect on the app. See `docs/ui-notes.md`.
+
+#### Compressed audio
+
+The server encodes each compressed format once for all the browsers that
+use it, and only while one does. On a Raspberry Pi 4 the Opus encoder
+should take a few per cent of one core (it took 1% on a desktop). The
+codec code that both ends share is `src/client/audio-codec.js`.
+
+### WebSocket protocol
+
+Plain JSON text frames carry the control protocol; binary frames carry
+audio and scope data (tagged, see `docs/ui-notes.md`), multiplexed on the
+same connection. See `src/server/protocol.js` for the full JSON message
+shapes.
+
+- **Control (JSON, text frames)**: requests (`getFrequency`,
+  `setFrequency`, `getMode`, `setMode`, `setDataMode`, `getDataMode`,
+  `setPtt`, `getSMeter`, `getSWR`,
+  `setScopeBand`, `setScopeSpan`, `setPreamp`, `getPreamp`,
+  `setNoiseReduction`, `getNoiseReduction`, `setNoiseBlanker`,
+  `getNoiseBlanker`, `setNotch`, `getNotch`, `setFilter`, `getFilter`,
+  `setTuner`, `getTuner`, `setTxPower`, `getTxPower`, `setRxGain`,
+  `getRxGain`, `setFt8Active`, `sendFt8`, `sendTty`, `abortTty`, `setJttyActive`,
+  `setOliviaActive`, `setHellActive`, `setSstvActive`, `endSstvPicture`, `getSstvPictures`,
+  `sendSstv`, `abortSstv`, `setWsprActive`, `setWsprTx`, `getBandConditions`)
+  correlated by `id`; events (`connected`, `frequency`, `mode`, `data-mode`, `ptt`,
+  `ptt-timeout`, `cw-text`, `ft8-decodes`, `ft8-tx-status`, `tty-tx-status`,
+  `jtty-text`, `olivia-text`, `rig-error`, `audio-error`, `scope-error`)
+  broadcast without an `id`. `setFt8Active` arms/disarms RX decoding
+  (sent when the client opens/closes the FT8 panel); `sendFt8`
+  (`{message, freqHz?}`) queues a message for transmission at the next
+  15-second slot boundary and returns immediately — the actual outcome
+  (including the actual `freqHz` transmitted at) arrives later as an
+  `ft8-tx-status` broadcast (`scheduled` → `sending` → `sent`/`error`).
+  The optional `freqHz` targets a specific audio frequency instead of the
+  server's own default — used by the guided QSO sequencer (see above) so
+  a reply goes out at the frequency the other station is actually
+  listening on, rather than always this app's one fixed calling
+  frequency. See `src/server/protocol.js` for the exact
+  `ft8-decodes`/`ft8-tx-status` payload shapes. `sendTty`
+  (`{mode: 'RTTY'|'JTTY'|'OLIVIA'|'HELL', text, freqHz?}`) encodes and transmits straight
+  away (none of these modes is slotted); progress arrives as `tty-tx-status`
+  broadcasts (`sending` → `sent`/`aborted`/`error`), and `abortTty` cuts a
+  running transmission short. `setJttyActive` (`{active, txHz?}`) starts and stops
+  JTTY decoding and sets the transmit audio frequency (lowest tone) every
+  browser shows; decoded messages arrive as `jtty-text` broadcasts
+  (`{id, freqHz, snr, text, status: 'growing'|'complete'|'expired', time,
+  startTime}`, times in epoch ms), re-sent with the same `id` as a message grows.
+  `setOliviaActive` (`{active, centreHz?}`) starts and stops Olivia decoding
+  and sets the centre frequency (sending it again retunes); decoded text
+  arrives as `olivia-text` broadcasts (`{text, snr, freqOffsetHz, centreHz,
+  time}`, a block of up to three characters at a time).
+  `setHellActive` (`{active, toneHz?}`) starts and stops the Feld-Hell
+  receiver and sets its tone; the picture arrives as binary
+  `BINARY_TYPE.HELL_COLUMNS` frames (below), and the text read from it as
+  `hell-text` broadcasts (`{text, time}`: the new characters; with
+  `replace: true`, sent to a page that has just connected, the recent text).
+  `setSstvActive` (`{active}`) starts and stops the SSTV receiver. A
+  picture is announced by an `sstv-start` broadcast (`{id, mode, name,
+  width, lines, lineHeight, shiftHz, time}`), its lines follow as binary
+  `BINARY_TYPE.SSTV_LINE` frames, and it ends with `sstv-picture` (the same
+  fields plus `endTime, complete, linesReceived, slantDeg, png`, the
+  slant-corrected picture as base64 PNG). `endSstvPicture` ends the picture
+  in progress; `getSstvPictures` returns the recent ones. An `sstv-fsk-id`
+  broadcast (`{id, time, text}`) adds the sender's FSK ID to a received
+  picture. `sendSstv` (`{rgb, width, height}`: base64 RGB at the size in the
+  connect snapshot's `sstvTx`) transmits a picture in `SSTV_TX_MODE` with
+  the IDs; progress arrives as `sstv-tx-status` broadcasts (`encoding` →
+  `sending` → `sent`/`aborted`/`error`), and `abortSstv` stops it. `sending`
+  also carries `elapsedSec`, a `timeline` of the parts (`headerSec,
+  pictureSec, fskSec, gapSec, cwSec, totalSec`), the picture's `lines` and
+  the picture itself (`png`); a page that connects during a transmission is
+  sent the current status, with `elapsedSec` how far in it is.
+  `sendEasypal` (`{jpeg}`, base64, at most 4 MB) sends a picture with the
+  `EASYPAL_TX_*` settings (the connect snapshot's `easypalTx`: `{mode,
+  bandwidth, qam, protection, interleave, rs, seconds, bytesPerSecond,
+  maxWidth, maxHeight, callsign}`); `abortEasypal` stops it. Progress goes
+  out as `easypal-tx-status` (`{status:
+  'preparing'|'sending'|'sent'|'aborted'|'error', durationSec, startTime,
+  elapsedSec, fileName, bytes, width, height, quality, jpeg, error}`); a
+  page that connects while it is sending gets the current status. The sent
+  picture is then broadcast as an `easypal-picture` with `own: true`.
+  `setEasypalActive` (`{active}`) starts and stops the EasyPal receiver.
+  Its state goes out as `easypal-status` (`{state:
+  'idle'|'listening'|'sync'|'receiving', snr, mode, callsign, offsetHz,
+  file}`, also the connect snapshot's `easypal`), the top of a JPEG coming
+  in as `easypal-preview` (`{transportId, fileName, mime, data}`), and each
+  file received as `easypal-picture` (`{id, transportId, time, fileName,
+  callsign, mode, snr, segments, recovered, size, mime, data, width,
+  height, text}`; JPEG 2000 is sent as a JPEG at most 1600 pixels across). `getEasypalPictures` returns
+  the kept files and the current preview.
+  `setFaxActive` (`{active}`) starts and stops the radiofax receiver;
+  `faxStartNow` starts a chart without a start signal and `faxStop` ends
+  one. Receiver state goes out as `fax-status` (`{state:
+  'idle'|'listening'|'phasing'|'receiving', lines, clockPpm}`, also the
+  connect snapshot's `fax`). A chart is announced by `fax-start` (`{id,
+  width, lpm, ioc, phased, clockPpm, time}`), its lines follow as binary
+  `BINARY_TYPE.FAX_LINE` frames (chart id, line, width, one grey byte per
+  pixel), and it ends with `fax-picture` (`{id, width, lines, time,
+  endTime, complete, reason, phased, clockPpm, png}`, a greyscale PNG).
+  `getFaxPictures` returns the kept charts and the one coming in so far.
+  `setWsprActive` (`{active}`) turns WSPR on and off; `setWsprTx`
+  (`{enabled?, txHz?}`) turns WSPR transmit on and off and sets its audio
+  frequency (1410-1590 Hz). WSPR's state is the connect snapshot's `wspr`
+  and the `wspr-status` broadcast (`{phase: 'idle'|'rx'|'tx', slotStartMs,
+  slotEndMs, txEnabled, txHz, txPct, canTransmit, txMessage, txReason?,
+  nextTx, upload, uploadStatus, unattended, unattendedBand, bandCycle,
+  cycleBands, bandMinutes, tuning, decoding, lastSlotStartMs,
+  lastDecodeCount}`). Each decoded slot arrives as a `wspr-decodes`
+  broadcast (`{slotStartMs, dialHz, decodes: [{snr, dt, audioHz, drift,
+  message, callsign, grid, dbm, type}]}`; with `replace: true`, sent to a
+  page that has just connected, the recent spots of every slot).
+  `getBandConditions` returns the Current conditions table: `{grid,
+  squares, myWindowMin, localWindowMin, localUpdatedMs, localError,
+  myError, tags, bands: [{band, myQth: {tag, rangeKm?, stations?, slots?,
+  lastMs?}, local: {tag, rangeKm?, stations?, reporters?}}]}`.
+  An `app-modes` broadcast (`{ft8Active, freeDvActive, jttyActive, jttyTxHz,
+  oliviaActive, oliviaCentreHz, hellActive, hellToneHz, sstvActive,
+  wsprActive, faxActive}`) goes to the other browsers after any
+  `setFt8Active`, `setFreeDvActive`, `setJttyActive`, `setOliviaActive`,
+  `setHellActive`, `setSstvActive`, `setWsprActive` or `setFaxActive`, so they show the same mode; the
+  connect snapshot has the same fields.
+  `sendCw` (`{text, wpm?}`) sends text with the radio's CW keyer;
+  progress arrives as `cw-tx-status` broadcasts (`sending` →
+  `sent`/`aborted`/`error`, with the text as sent, `wpm`, `durationSec`
+  and any `dropped` characters), and `abortCw` stops it.
+  `postNote` (`{text}`, up to 200 characters) adds an operator note; the
+  connect snapshot's `notes` and the `notes` broadcast (`{notes, posted?,
+  cleared?}`) carry the three most recent (`{id, text, time}`, newest
+  last). `posted` is set only for a newly added note, which the browsers
+  chime for.
+- **Audio (binary frames, tagged `BINARY_TYPE.AUDIO`)**: raw 16-bit PCM
+  at the server's rate in both directions — no framing/codec requirement,
+  chunk sizes are whatever arrives. The default for every browser.
+- **Compressed audio (binary frames, tagged `BINARY_TYPE.AUDIO_OPUS` or
+  `BINARY_TYPE.AUDIO_ADPCM`)**: a browser asks for one format for its RX
+  audio with `setAudioCodec` (`{codec: 'pcm'|'opus'|'adpcm'}`, replies
+  `{codec}`); it applies to that browser only and is forgotten when it
+  disconnects. Each frame is 20 ms: one Opus packet (16 kHz audio) or one
+  12 kHz IMA ADPCM frame (a 4-byte header with the first sample and step
+  index, then 4 bits a sample). Mic audio may be sent in any of the three.
+  The connect snapshot's `audio.codecs` lists what the server can send,
+  and `audio.opusBitrate` the Opus rate. The format code is shared by both
+  ends: `src/client/audio-codec.js`.
+- **Voice squelch**: `setVoiceSquelch` (`{enabled}`) switches it for
+  everyone; the reply and the `voice-squelch` broadcast carry
+  `{enabled, active}` (`active`: on and in a voice mode), and the connect
+  snapshot has `voiceSquelch`.
+- **Scope (binary frames, tagged `BINARY_TYPE.SCOPE_LINE`,
+  server→client only)**: one reassembled spectrum line per frame — see
+  `src/server/scope-bridge.js` for the exact header format.
+- **SSTV lines (binary frames, tagged `BINARY_TYPE.SSTV_LINE`,
+  server→client only)**: one received line as it arrives — picture id,
+  line number, width, then RGB; see `src/server/protocol.js`.
+- **Radiofax lines (binary frames, tagged `BINARY_TYPE.FAX_LINE`,
+  server→client only)**: one received chart line — chart id, line number,
+  width, then one grey byte per pixel; see `src/server/protocol.js`.
+- **Feld-Hell picture (binary frames, tagged `BINARY_TYPE.HELL_COLUMNS`,
+  server→client only)**: received columns, about ten frames a second —
+  rows per column, column count, tone, then the columns' ink values; see
+  `src/server/protocol.js`.
+
+### Testing
+
+- `npm test` runs every test that needs no hardware. It must pass before
+  a commit.
+- `test/manual-tty-ui.js` drives the real web app in headless Chromium
+  against a real ControlServer with a stub radio, with several browsers at
+  once. It is not part of `npm test`; run it for any UI change. It needs
+  Playwright (set `NODE_PATH` to a Playwright install) and `CHROMIUM_PATH`.
+  `test/manual-audio-ui.js` does the same for compressed audio and the
+  squelch.
+- The other `test/manual-*.js` scripts talk to a real radio (see
+  [Hardware diagnostics](#hardware-diagnostics)).
+- Nothing counts as tested on air until it has been used on the air. The
+  docs say "not tested on air" for anything that transmits until then.
+
+The test files:
+
+```
   frame.test.js           unit tests for CI-V framing/BCD, no hardware needed
   scope.test.js           unit tests for scope waveform decoding/reassembly,
                            synthetic frames, no hardware needed
@@ -895,1260 +2337,66 @@ test/
                            setTxPower() is rejected (NG) on your radio.
                            Safe to run: setting the power level never
                            engages PTT or transmits anything by itself
-docs/
-  civ-notes.md    CI-V protocol implementation notes, incl. spectrum scope
-                  byte layout and a real-world reliability caveat
-  audio-notes.md  audio pipeline implementation notes (incl. PCM vs Opus)
-  pwa-notes.md    PWA installability / HTTPS constraint notes
-  ui-notes.md     client UI architecture, binary frame tagging, gesture/mic
-                  lifecycle notes, testing boundary
-  architecture.drawio  UML class diagram and event-wiring table (draw.io)
-  architecture.png     preview of the class diagram
 ```
 
+### Making a change
 
-## Rig control UI
+- Bump the build with every change to the web app: `CACHE_NAME` in
+  `src/client/sw.js` and the "**Current build**" line at the top of this
+  README, together (`test/readme-version.test.js` checks they match). The
+  new cache name makes browsers load the new files.
+- Add a "### <title> (vN)" section at the end of `docs/ui-notes.md`: what
+  changed, any real bug and its cause, and the tests.
+- Update this README where it applies: the operator text in Part 1, the
+  protocol, the test list, the environment variables, troubleshooting.
+- Write docs and UI text in plain, short sentences.
+- If you publish a fork, set `SOURCE_CODE_URL` to it, so the footer link
+  points to the source of the version that is actually running.
 
-Opening `http://<pi>:8080` in a browser now gives you the real thing:
-click-to-edit frequency (displayed grouped by thousands — "14.195.000",
-not "14.195000" — for readability at a glance; the editable field itself
-still takes/shows a plain decimal, e.g. "14.195000", so it stays a valid
-number while you're typing) with -10kHz/-1kHz/+1kHz/+10kHz step buttons
-alongside it, band quick-select (10 bands, 160m through 6m, the current
-band highlighted the same way the current mode is) and mode buttons laid
-out in fixed 2-row grids (see "Mode buttons" below), RX function
-toggle buttons (Preamp, NR, NB, Notch, Filter — each cycles through its
-states on click, e.g. "P.Amp Off" -> "P.Amp 1" -> "P.Amp 2", "Filter 1"
--> "Filter 2" -> "Filter 3") alongside them, a segmented S-meter (S0-S9
-individually, +10dB through +60dB over S9 — see below) that switches to
-showing VSWR with green/orange/red coloring while transmitting, antenna
-tuner on/off and a separate one-shot Tune button plus a transmit power
-dropdown (100/75/50/25/5W) below the S-meter, a fail-safe 10-minute
-transmission cutoff enforced server-side (required for this style of
-remote operation under the Australian amateur class licence — see
-`docs/civ-notes.md`), push-to-talk (button or hold Space) that switches
-to a two-button iambic CW paddle (Dot/Dash, adjustable WPM) whenever the
-mode is CW, a scrolling CW decode ticker under the S-meter that
-activates automatically alongside it (server-side Morse decoding from
-the radio's own RX audio — see below), speaker/mic audio once you tap
-"Speaker: off" to enable it
-(browsers require a user gesture before audio can play), and — if
-`CIV_SCOPE_ENABLED=true` and your radio cooperates (see `docs/civ-notes.md`) — a live spectrum trace and scrolling waterfall, colored with
-Google's "Turbo" colormap (see `docs/ui-notes.md`), with a dashed tuning marker and
-click-to-tune (click anywhere on either the trace or the waterfall to
-retune to that frequency), plus a vertical RX gain slider (0-255,
-default max) to its right. The Preamp/NR/NB/Notch/Filter
-toggle buttons, the tuner on/off button, the transmit power dropdown,
-and the RX gain slider are all actively polled to stay in
-sync with the radio's actual state — including changes made from the
-front panel, not just this UI — rather than just reflecting their own
-last click; see `docs/ui-notes.md` for why and how. Multiple browser
-tabs/devices can be connected at once and stay in sync — see
-`docs/ui-notes.md` for the architecture and, importantly, the **testing
-boundary**: server-side logic and pure client-side logic (waterfall
-color mapping, tuning-marker and click-to-tune math, S-meter bucketing)
-are covered by automated tests, but the actual Web Audio/microphone/PTT
-flow and canvas rendering need manual verification in a real browser
-against real hardware, since
-this environment has no headless browser available to automate that.
+### Ported code
 
-The page also requests a **Screen Wake Lock** as soon as it loads, so a
-phone's own screen timeout doesn't interrupt an operator mid-QSO while
-they're just listening/watching rather than actively touching the
-screen — re-requested automatically whenever the page becomes visible
-again after being backgrounded (the browser force-releases the lock
-while hidden). Requires a secure context (`https://`, same as the
-service worker — see `docs/pwa-notes.md`) and a browser that implements
-the API; degrades to the phone's normal screen-timeout behavior
-otherwise, with no other effect on the app. See `docs/ui-notes.md`.
+Several modems are JavaScript ports of other programs. Each port has a
+folder in `third_party/` with what was ported, what differs, how it was
+checked against the original, and the original's licence notice:
 
-**Mode buttons.** Two rows of four: **SSB**, **AM**, **FM**, **CW** on top
-(the radio's own voice and CW modes), and **TTY**, **DIGI**, **FreeDV**,
-**SSTV** below (modes PiRO decodes or encodes itself). **SSB** is one button
-for both sidebands: the first press picks the usual sideband for the band
-(LSB below 10 MHz, USB from 10 MHz up), and pressing it again while in SSB
-switches to the other. It reads **LSB** or **USB** while selected, and **SSB**
-otherwise (including while a digital mode that runs on a sideband is
-selected). **DIGI** is the FT8/FT4 button described next; it reads **FT8**
-or **FT4** while selected.
-
-An **FT8** chip (labelled **DIGI**) sits in the mode row itself (where the old RTTY chip used to sit,
-styled identically to the real mode chips — see below for why it isn't
-actually a hardware mode despite living there); selecting it puts the
-radio on USB, auto-tunes to the current band's standard FT8 calling
-frequency (re-tuning automatically on any subsequent band change too),
-and swaps the PTT button/bandwidth control/scope-span row out for an
-FT8 band-activity table and a manual message composer. Clicking a real
-mode chip leaves FT8 mode again. See the **FT8** section below and
-`docs/ui-notes.md` for the full design.
-
-**The scope stays centered on the current frequency, with 50kHz division
-markers below it and a "Scope Span" slider (2.5/5/10/25/50/100/250/500
-kHz, default 100kHz) to control the width to each side of center** (a
-"100kHz" span tuned to 7100kHz displays 7.000-7.200MHz — confirmed on
-real hardware; see `docs/ui-notes.md`/`docs/civ-notes.md`). Mode is set
-to Center once
-when scope output is enabled (`ScopeBridge#start()`) — Center mode's
-displayed center automatically tracks the VFO on the radio itself, so
-this one-time setup keeps it centered through band clicks, direct entry,
-scope click-to-tune, and even the front panel, with no per-change command
-needed. Span is **not** set at server startup at all — the client
-requests the default itself once connected, and the same slider changes
-it on demand via the `setScopeSpan` WebSocket request; the slider's own
-value is an index into the eight span options (equal positions along its
-range), and every one of their values maps exactly onto one of the
-radio's 8 fixed presets, no clamping needed. The 50kHz gridlines/tick
-labels are computed by
-`scopeDivisions()` and drawn/rendered fresh on every scope line — see
-`docs/ui-notes.md`.
-
-Getting the span command right took real back-and-forth, worth tracking
-honestly since it took a genuine upgrade in source quality to finally
-resolve. Several wire-format guesses were tried and confirmed wrong by
-real hardware testing — including one that had checked out byte-for-byte
-against a concrete worked example from an informal online source, which
-still turned out wrong: it claimed the value was a single-byte *index*
-(0-7) and that presets were labeled by their **half**-width, both
-incorrect. The breakthrough was Icom's own official IC-7300 CI-V
-reference manual (Section 19), whose own reference table explicitly
-confirms the value is the span **directly in Hz** — settling a question
-no prior source had actually answered unambiguously. The manual also
-revealed a second, separate bug: scope mode-setting needed a 2-byte
-payload, not the 1-byte one this project had been sending (which hadn't
-been causing visible failures, just not matching spec). The exact byte
-*position* of the span value within its 6-byte payload still isn't
-independently hardware-confirmed the way frequency encoding is — PDF
-extraction of the manual's own diagram is inherently lossy — so
-`test/manual-scope-span-diagnostics.js` has been updated with the
-manual-derived encoding as its primary candidate for final verification
-against real hardware. See `docs/civ-notes.md` for the full history and
-`docs/ui-notes.md` for the span slider.
-
-**S-meter**: bucketed into 16 segments (S0 through S9 individually,
-+10dB through +60dB over S9) using real calibration data — refined
-twice now as better data became available: first an even-spacing
-placeholder (no manufacturer table existed at the time; Icom's S-meter
-is well-documented as non-linear/inconsistent across models/firmware),
-then a supplied raw-value-range table that could only distinguish
-"S1-S3" as one combined bucket, and now a power-curve-derived table
-giving individual S1-S9 buckets, superseding that combined range
-entirely. Just the bucketed label is shown (e.g. "S7") — an earlier
-version also showed the raw value alongside it, dropped per explicit
-request (see `docs/ui-notes.md`).
-
-**VSWR while transmitting**: the same S-meter bar switches to showing
-VSWR (green ≤1.5, orange >1.5–3, red >3, capped at 5) whenever PTT is
-active, reverting back once released. `CivDriver#getSWR()` reuses the
-S-meter's now-hardware-confirmed byte decode, since it lives under the
-same CI-V command group and Icom's manual documents it in the identical
-table style — a reasoned extension backed by clean matches against all
-of the manual's own documented examples, but **not independently
-confirmed against a real transmit into a known load** the way S-meter
-itself now is. See `docs/civ-notes.md` for the full reasoning and
-`src/client/vswr.js`/`test/vswr.test.mjs` for the raw-to-VSWR conversion.
-
-**Receive filter (Filter 1/2/3)**: no standalone CI-V command exists for
-this — it's the second byte of the existing mode-set command, so
-`CivDriver#setFilter()` reads the current mode first and resends it
-unchanged alongside the new filter byte, rather than risking an
-accidental mode change.
-
-**Transmit power (100/75/50/25/5W dropdown)**: `CivDriver#setTxPower()`
-converts watts to the CI-V level's raw 0-255 range via a **simple linear
-assumption** (100W rated max) — that part remains unverified. The byte
-*encoding* itself, however, was tested on real hardware and found
-wrong: the first attempt (standard BCD) got every write rejected
-outright (NG), root-caused to an invalid byte value for higher
-wattages, and fixed by reusing the packing already confirmed for the
-S-meter. See `docs/civ-notes.md` for the full story, and
-`test/manual-txpower-diagnostics.js` if it's still rejected on your
-hardware (safe to run — it never engages PTT or transmits anything).
-
-**RX gain (vertical slider, right of the scope)**: raw 0-255, no unit
-conversion, defaulting to 255 (max). Applies the TX power lesson
-immediately rather than repeating it — RF gain lives in the same CI-V
-command group as TX power, so `CivDriver#setRxGain()` uses the same
-byte packing from the start. Worth being precise about what that rests
-on: it's an inference on top of an inference (TX power's fix for its own
-NG rejection hasn't itself been hardware-confirmed yet), not something
-independently verified for RX gain specifically. See `docs/civ-notes.md`.
-
-**CW iambic paddle**: replaces the PTT button with Dot/Dash buttons
-whenever the mode is CW. Real limitation worth stating plainly: there's
-no CI-V primitive for timed keying, so every element goes through the
-same PTT toggle used for voice, over the full WebSocket + serial round
-trip — expect visibly less precise timing than a hardware keyer,
-especially at higher WPM. Defaults to a conservative 15 WPM given that
-latency. See `docs/ui-notes.md` for the full design, including a
-defense-in-depth session timer that closes a real gap in the PTT
-watchdog below (a stuck paddle producing continuous keying wouldn't
-otherwise trip it, since each element's brief gap resets the server-side
-timer).
-
-**CW text**: above the Dot/Dash buttons in CW mode is a text box and
-**Send**. Type a message (or use the CQ it starts with) and press Send or
-Enter: PiRO hands the text to the radio's own CW keyer (CI-V command `17`),
-which sends it at the speed in the **WPM** box (6–48 WPM on the radio's
-keyer). Because the radio does the keying, the timing is exact at any
-speed, unlike the paddle. For each message PiRO:
-
-* checks that the radio is in CW or CW-R;
-* sets the keyer to the WPM box's speed;
-* turns semi break-in on if it was off (the radio only transmits CI-V CW
-  with break-in on);
-* gives the keyer the text 30 characters at a time, retrying while the
-  radio's buffer is full;
-* waits until the radio has finished transmitting, then puts the keyer
-  speed and break-in back as they were.
-
-Send turns into **Stop** while it goes out, which stops the radio's keyer
-at once. Every browser sees the progress. Letters, digits and
-`/ ? . , : ' ( ) = + " @ -` can be sent; `^` joins the next two letters
-into one prosign (`^AR`, `^SK`), as on the radio's own keyer memories.
-Anything else is left out, and the status line says what was dropped.
-Messages are limited to 300 characters and under 9 minutes. PTT isn't used,
-so the 10-minute PTT cut-off doesn't apply; the length limit stands in for
-it. Not yet tested on air.
-
-**PTT fail-safe (10-minute automatic cutoff)**: enforced server-side,
-required for this style of remote operation under the Australian
-amateur class licence (`Radiocommunications (Amateur Stations) Class
-Licence 2023`, s.13(4)(b)). Deliberately not client-side — the server is
-the persistent process, so a crashed browser tab or dropped network
-connection while transmitting still gets caught, which is exactly the
-scenario the rule exists to guard against. Normal CW keying never trips
-it, since every PTT-off (including the natural gaps between keyed
-elements) resets the timer — only a truly continuous, unbroken
-transmission accumulates toward the limit. See `docs/civ-notes.md` for
-the full design and the one known gap (not persisted across a server
-restart) that's accepted rather than solved.
-
-**CW decoder**: activates automatically whenever mode is CW, decoding
-from the radio's own RX audio server-side (a hard dependency on
-`AUDIO_RX_DEVICE` being configured — see below) and streaming text to a
-scrolling ticker under the S-meter. Built and tuned against synthetic
-generated audio, not assumed correct — four real bugs (a cold-start
-silent-drop bug, a wrong-direction speed-adaptation bug, a genuine
-noise-vs-speed-range tuning tradeoff, and a bug where any message
-starting with a dash — including "CQ", the most common CW call there is
-— had its very first character misread) were found and fixed this way;
-see `docs/civ-notes.md` for the full account. Clicking to tune the scope
-while in CW mode also sets the exact clicked frequency rather than
-snapping to the nearest kHz, the same as RTTY mode, since a CW signal's
-own bandwidth is too narrow for kHz-precision tuning to reliably land on
-it. Worth being direct about realistic expectations: like any CW
-decoder, weak or noisy signals degrade it, sometimes significantly —
-this is a genuinely useful aid for clean-to-moderate signals, not a
-guarantee of accurate copy in poor conditions, the same caveat that
-applies to dedicated hardware/software CW decoders generally. The app
-uses "CW3", the DeepCW decoder, and the mode chip just reads "CW". Two
-other decoders are kept but hidden for now (since v84): to offer them
-again, set `CW_DECODERS_IN_UI` in `src/client/app.js` to
-`['CW1', 'CW2', 'CW3']`; the chip then reads "CW 1"/"CW 2"/"CW 3" and a
-click while already in CW cycles CW1 -> CW2 -> CW3 -> CW1. "CW1" is the original decoder
-described above, "CW2" is a from-scratch port of Jonathan Dawson's
-"Hamfist" decoder (https://github.com/dawsonjon/HamFist): an FFT-based
-design that decodes across several frequency channels at once (no pitch
-calibration needed — whichever channel has the tone lights up on its
-own), with histogram-based (rather than fixed-ratio) dot/dash/gap
-classification and a Bayesian beam-search decode backed by a ~9800-word
-autocorrect dictionary; and "CW3" is a neural-network decoder ported from
-`e04/deepcw-engine` (https://github.com/e04/web-deep-cw-decoder): a small
-CNN+CTC model run via `onnxruntime-node`, with no timing/classification
-model at all. Unlike CW1/CW2, CW3 doesn't decode live character-by-
-character — it batches 5-20 second audio windows through the model, so
-its output arrives in bursts every several seconds rather than as each
-element is keyed. It also depends on a native `onnxruntime-node` binary
-for the host platform: prebuilt binaries cover 64-bit Raspberry Pi OS
-(Pi 4/5, `linux-arm64`), but *not* 32-bit `armv7` (`linux-arm`); if no
-matching binary is available, CW3's model fails to load and that failure
-is surfaced as an error banner while CW3 is selected, rather than
-silently decoding nothing. Bundling this model is also why the project as
-a whole is now AGPL-3.0-only — see "Licence" below. See
-`docs/ui-notes.md`'s "CW decoder" section, `src/audio/hamfist-cw-decoder.js`'s
-and `src/audio/deepcw-decoder.js`'s own doc comments for the full
-comparison.
-
-**RTTY decoder**: activates automatically whenever mode is RTTY, decoding
-Baudot/ITA2 from the radio's own RX audio server-side (same
-`AUDIO_RX_DEVICE` dependency as the CW decoder) and streaming text to a
-scrolling ticker under the S-meter, the same presentation as CW's own. The
-RF scope also draws a second dashed marker while RTTY is active: a blue
-dashed line 170Hz below the tuned-frequency marker (which stays its usual
-green), marking the mark/space shift — trace-only, like the tuning marker
-itself, not drawn into the waterfall. Clicking to tune the scope while in
-RTTY mode also sets the exact clicked frequency rather than snapping to
-the nearest kHz, since RTTY's tones are packed too closely together for a
-1kHz snap to reliably land where intended. A "Reverse" checkbox next to
-the ticker swaps which tone (mark/space) the decoder treats as which —
-RTTY polarity genuinely isn't predictable from the radio's mode alone (it
-depends on both stations' equipment), so a signal using the opposite
-polarity from the decoder's assumption previously decoded nothing at all;
-see `docs/ui-notes.md`'s "Real bug found" writeup for the full story.
-Unchecked by default.
-
-### Voice squelch
-
-The **Squelch** button (beneath HamNoise) mutes the hiss between overs in
-SSB, AM and FM. It is one setting for everyone, like HamNoise.
-
-The radio's own squelch opens on level, so on HF it needs resetting as
-the noise changes, and it opens on carriers and static crashes. PiRO's
-listens for the pitch of a voice instead: the envelope of speech repeats
-80 to 300 times a second as the voice's pitch wanders. Noise, a steady
-carrier, CW and static don't do that, and two carriers beating together
-do it at a pitch that never moves.
-- It opens within about 0.2 s of a voice starting, and plays the audio
-  0.3 s behind so the start of the over isn't lost.
-- It stays open for 1.5 s after the voice stops, so it doesn't chop
-  between words.
-- In testing it opened on a synthetic voice 3 dB below the noise (in the
-  receiver's bandwidth) and stayed shut at 10 dB below. Very weak stations may
-  stay muted: switch it off for them.
-- A new pair of carriers can open it for about a second before it works
-  out they are a tone.
-- In CW, with DATA mode on, or in FT8, FreeDV and the other digital modes,
-  the button says **Paused** and all the audio passes.
-- With HamNoise on, it judges HamNoise's cleaned-up audio.
-- The decoders never see it: they read the radio's audio directly.
-- Between overs nothing is sent to the browsers, which saves data on a
-  phone.
-
-It was tuned on a real 285 s recording of an SSB contact (with a weak
-station, static crashes and AGC) and on synthetic audio. Not yet tried on
-the air with PiRO; the Pi's CPU use is estimated from a desktop (about 2%
-of a core there).
-
-### Compressed audio for remote use
-
-Full audio is raw 16-bit PCM: about 770 kbit/s each way at 48 kHz. That
-is fine at home, but too much for most mobile data or a slow VPN. The
-**Audio** button beside Speaker switches this browser between:
-- **Audio: full**: raw PCM, as before.
-- **Audio: Opus**: Opus at about 24 kbit/s each way (`AUDIO_OPUS_BITRATE`),
-  16 kHz audio. The browser uses its built-in codec (WebCodecs): Chrome,
-  Edge, Samsung Internet, Firefox on a desktop, and Safari 26 or later.
-- **Audio: ADPCM**: 12 kHz ADPCM at 48 kbit/s, in plain JavaScript, for
-  browsers without WebCodecs Opus (Firefox on Android, older Safari). A
-  browser that can play Opus but not record it receives Opus and sends
-  ADPCM; the button's tooltip says which.
-
-Each browser chooses for itself, so a phone away from home can use Opus
-while a tablet at home stays on full audio. A page opened by a home
-address (192.168.x.x, 10.x.x.x, 172.16-31.x.x, `localhost`, a `.local` or
-`.lan` name, or a name with no dots, like `piro`) starts on full audio;
-any other address (a VPN such as Tailscale, or a domain name) starts
-compressed. A choice made with the button is remembered by that browser.
-
-Compressed audio plays 0.2 s behind, so short network delays don't break
-it up. On any audio, if more than half a second more than that builds up
-(after the network stalls), the backlog is skipped.
-
-The server encodes each compressed format once for all the browsers that
-use it, and only while one does. On a Raspberry Pi 4 the Opus encoder
-should take a few per cent of one core (it took 1% on a desktop).
-
-The decoders (FT8, CW, RTTY and the rest) always work from the radio's
-full-quality audio on the Pi, whatever the browsers receive. Compression
-only affects what you hear and what your microphone sends. Not tested on
-air: speech sent compressed from a phone has not been checked on a real
-transmission.
-
-### RTTY, JTTY, Olivia and Feld-Hell
-
-The mode row has one **TTY** button where the RTTY button used to be:
-
-1. The first click selects the radio's RTTY mode, and the button now reads **RTTY**.
-   Selecting RTTY also tunes to the middle of the band's digital-modes segment
-   in the WIA band plan (e.g. 14.091 MHz on 20 m; see the table below), and band
-   buttons then do the same.
-2. The next click switches to **JTTY**, and the button reads **JTTY**.
-   Entering JTTY also tunes to the standard JTTY dial frequency for the current
-   band (e.g. 14.090 MHz on 20 m; the list is the WSJT-X 3.3 beta's and is marked
-   preliminary), and band buttons then go to each band's JTTY frequency.
-3. The next click switches to **Olivia** (Olivia 8/250), and the button reads
-   **Olivia**. Entering Olivia tunes to the band's Olivia calling frequency
-   (e.g. 14.0715 MHz dial on 20 m), and band buttons then go to each band's.
-4. The next click switches to **Feld-Hell**, and the button reads
-   **Feld-Hell**. Entering Feld-Hell tunes so a signal on the band's Feld-Hell
-   frequency (e.g. 14.063 MHz on 20 m) comes out at the audio tone (dial
-   14.062 MHz with the default 1000 Hz tone), and band buttons then go to
-   each band's.
-5. The next click goes back to **RTTY**, and so on round.
-6. Picking any other mode (LSB, USB, AM, FM, CW, FT8, FreeDV) puts the button
-   back to **TTY**.
-
-While RTTY, JTTY, Olivia or Feld-Hell is selected, a text box and a **Send** button replace the
-PTT button. Enter in the text box also sends. While a message is going out,
-Send turns into **Stop**, which cuts the transmission short and releases PTT.
-The Space bar does not key the microphone in these modes. The text box starts
-with a CQ built from `STATION_CALLSIGN` (if set), and keeps whatever you
-type when you switch between the modes.
-
-**RTTY band frequencies.** RTTY has no calling frequencies, so PiRO starts
-you in the middle of each band's narrowband digital segment from the WIA's
-band plan (the WIA Technical Advisory Committee's
-[HF digimodes paper](https://www.wia.org.au/members/bandplans/data/documents/TAC%20Band%20Plans%20-%20HF%20Digimodes%20170103.pdf)),
-to tune around from. The radio's RTTY mode displays the mark frequency.
-
-| Band | WIA digital segment (MHz) | PiRO tunes to (MHz) |
+| Mode | Ported from | Notes |
 |---|---|---|
-| 160 m | 1.800–1.810 | 1.805 |
-| 80 m | 3.620–3.640 | 3.630 |
-| 40 m | 7.040–7.060 | 7.050 |
-| 30 m | 10.130–10.140 | 10.135 |
-| 20 m | 14.070–14.112 | 14.091 |
-| 17 m | 18.100–18.110 | 18.105 |
-| 15 m | 21.070–21.125 | 21.0975 |
-| 12 m | 24.920–24.930 | 24.925 |
-| 10 m | 28.050–28.150 | 28.100 |
-
-6 m has no segment in the paper, so its band button works as usual. The same
-paper proposes moving 80 m to 3.570–3.600 MHz (where most of the world's
-80 m RTTY is) and widening the 30, 17, 15, 12 and 10 m segments; the table is
-`RTTY_FREQUENCIES` in `src/client/app.js` if the plan changes. Busy RTTY is
-often elsewhere in the segment (on 20 m, 14.080–14.099), and keep clear of
-the beacons at 14.100, 18.110, 21.150 and 24.930 MHz.
-
-**RTTY** sends your text as audio-frequency-shift keying (AFSK): 45.45 baud,
-170 Hz shift, with mark always the **higher** of the two RF frequencies, as
-RTTY convention requires. The radio's own RTTY mode does not transmit audio
-from USB (it keys FSK from its RTTY keying line, so on its own it would just
-send a steady carrier). So when you press Send in RTTY, PiRO:
-
-1. reads the frequency the radio shows in RTTY mode, which is the mark frequency;
-2. switches to **LSB** with DATA MODE on below 10 MHz, or **USB** with DATA
-   MODE on from 10 MHz up, and moves the dial so the mark lands exactly on
-   that frequency;
-3. keys PTT and plays the tones (on LSB, mark 2125 Hz and space 2295 Hz audio,
-   dial 2125 Hz above the mark; on USB, mark 2295 Hz and space 2125 Hz audio,
-   dial 2295 Hz below the mark; either way space ends up 170 Hz below mark);
-4. puts the radio back in RTTY mode, with its filter, on the mark frequency.
-   This also happens if you press Stop or something goes wrong.
-
-The page keeps showing RTTY and the mark frequency throughout, and the status
-line says which sideband was used. The "Reverse" tick-box swaps mark and space
-for transmit as well as receive, and the radio's RTTY-R mode is kept reversed.
-As with FT8, the IC-7300's DATA MOD setting must be USB for the audio to reach
-the transmitter. Tested against PiRO's own decoder and a stub radio, not on air.
-
-**JTTY** is a mode from WSJT-X 3.3 (beta): 4-tone Gaussian FSK at 31.25 baud,
-no time slots, one to sixteen 1.9-second frames per message, with strong
-error correction (a K=10 convolutional code and a CRC). Text is packed into
-the fewest frames, so "CQ VK3TR CQ" takes one frame while free text takes
-one frame per five characters. A message can be up to 80 characters. Selecting
-JTTY puts the radio on USB with DATA MODE on, as FT8 does. Transmission starts
-the moment you press Send, with the lowest tone at `JTTY_TX_FREQ_HZ` (1450 Hz
-by default, so the signal sits around 1500 Hz). The **TX freq** box above the
-text field sets the frequency for the next message.
-
-**JTTY receive.** While JTTY is selected, a table under the composer lists
-messages as they are decoded: UTC time, audio frequency, SNR and text. A line
-shows in amber and grows frame by frame while the message is still arriving;
-a lost frame shows as " ... ". The spectrum scope switches to the same 0-3 kHz
-audio spectrum FT8 uses, with an amber marker at your transmit frequency;
-click the spectrum, or tap a decoded line, to move that frequency onto a
-station. Decoding happens on the Pi in a worker thread and
-only runs while JTTY is selected and you are not transmitting. It searches
-`JTTY_RX_LOW_HZ`..`JTTY_RX_HIGH_HZ` (by default the whole 200-2900 Hz
-passband) plus two fixed channels around 1350 and 1650 Hz. The default `economy` effort keeps the load low on a Raspberry Pi 4;
-see `JTTY_RX_QUALITY`.
-
-The encoder and decoder are JavaScript ports of WSJT-X's; see
-[`third_party/jtty/README.md`](third_party/jtty/README.md) for what was ported
-and how both were checked against WSJT-X's own programs. The receiver is not
-tested over the air, and, as with WSJT-X itself, noise can occasionally
-produce a false decode.
-
-**Olivia** is the 8-tone, 250 Hz-wide variant of
-[Olivia MFSK](https://en.wikipedia.org/wiki/Olivia_MFSK), the most common
-starting point on HF: 31.25 baud, each block of 64 symbols carrying three
-characters with strong error correction, so text goes at about 1.5
-characters a second and copies at around −14 dB S/N. It is compatible with
-fldigi's Olivia 8/250. Selecting Olivia puts the radio on USB with DATA MODE on,
-as JTTY does. The **Centre** box sets the audio centre frequency (1500 Hz by
-default, `OLIVIA_FREQ_HZ`) used both for sending and for receiving; click the
-spectrum to move it. Like fldigi, PiRO starts every transmission with the
-short start tones at the band edges and ends it with stop tones. A message
-can be up to 300 characters (about 3.5 minutes on air). Characters 128-255 are
-sent with fldigi's 8-bit escape, and characters beyond that as ".".
-
-**Olivia receive.** While Olivia is selected, the panel under the S-meter
-shows received text as a running transcript, with your own transmissions
-inline in amber, and a line giving the time, the S/N figure and how far the
-signal is from the centre. The receiver searches 125 Hz either side of the
-centre, so a station a little off frequency is still copied; **Tune to
-signal** moves the centre onto it, so your reply goes out where that station
-is. As with fldigi, text appears about four blocks (8 s) after it is sent,
-because the receiver averages over several blocks before deciding.
-Decoding runs on the Pi in a worker thread, only while Olivia is selected
-and you are not transmitting.
-
-PiRO filters out the junk characters fldigi prints with its squelch off, in
-two ways. A block is only shown if its own S/N is strong enough, as well as
-the averaged one, and blocks containing control codes that text never uses
-are dropped. In testing that removed every false character from 1,000 s of
-plain noise (fldigi printed 59 a minute) without losing any copy down to
-−14 dB. A strong neighbouring Olivia signal just outside the search window
-can still leave a stray character or two. Set `OLIVIA_SQUELCH=off` to get
-fldigi's exact behaviour.
-
-The Olivia modem is a JavaScript port of Pawel Jalocha's code in fldigi; see
-[`third_party/olivia/README.md`](third_party/olivia/README.md) for what was
-ported and how it was checked against a reference program built from
-fldigi's own source. It has not yet been tested over the air.
-
-**Feld-Hell** is the classic Hellschreiber mode: each character is drawn,
-column by column, from a 7-dot-high font and sent by keying a single tone on
-and off (17.5 columns a second, 122.5 baud, about 2.5 characters a second, a
-signal some 350 Hz wide). There is no code to decode at the other end; the
-receiver paints the tone as a picture and you read it, which is why
-Feld-Hell copies through noise and fading that would garble a coded mode.
-PiRO also reads the picture as text for you (see below).
-Selecting Feld-Hell puts the radio on USB with DATA MODE on, as JTTY and
-Olivia do. The **Tone** box sets the audio frequency (1000 Hz by default,
-`HELL_TONE_HZ`), used both for sending and for receiving; click the spectrum
-on a signal to move it there (to the nearest 10 Hz). Transmissions are sent
-exactly as fldigi sends them, with its default font and 2 ms keying shape,
-and begin and end with "...". A message can be up to 400 characters (under
-three minutes); characters the font does not have are sent as a blank gap.
-
-**Feld-Hell receive.** While Feld-Hell is selected, the scope's upper part
-still shows the 0-3 kHz audio spectrum (with an amber marker at the tone),
-but its waterfall becomes the received picture, scrolling in from the right
-as it arrives. As in fldigi, each column is shown twice, one copy above the
-other (the previous column under the current one): Feld-Hell has no synchronisation, so text drifts up or down the
-picture, and this way a whole line of it is always in view. Text that slopes
-means the other station's timing is slightly off; it is still readable.
-The receiver listens about 150 Hz either side of the tone. It is cheap enough
-to run on the Pi's main thread, and only runs while Feld-Hell is selected and
-you are not transmitting.
-
-**Feld-Hell text.** Below the picture, a **Feld-Hell text** panel shows what
-PiRO reads from it. It matches the picture against the font fldigi (and
-PiRO) send with, letter by letter, allowing for where each letter sits up or
-down the picture and for slant, and prints what it reads about two seconds
-behind the picture. Your own transmissions appear in amber, as in Olivia's
-panel, and a browser opened later is sent the recent text. In tests through
-PiRO's own transmitter and receiver, with random callsign-like text:
-
-| Signal (S/N in 3 kHz) | 10 dB | 3 dB | 0 dB | −3 dB | −6 dB | −9 dB |
-|---|---|---|---|---|---|---|
-| Characters wrong | 0.6% | 0.3% | 1.3% | 5.5% | 33% | 95% |
-
-Timing errors of ±0.1% (text sloping in the picture) make no difference.
-To keep noise from being printed as letters, it waits for a run of good
-matches before printing anything: no false characters were printed in five
-minutes of noise alone. So on a weak signal it may print nothing, or only
-part of it, while you can still read the picture. Trust the picture.
-
-Limits:
-* It only reads fldigi's default Feld-Hell font ("hell 12"). Another font,
-  "wide" Hell (each column sent twice) or hand-sent Hell won't read.
-* Several lower-case letters are drawn exactly like capitals in this font,
-  so they read as capitals; the ones drawn differently (such as e and k)
-  read as lower case.
-* fldigi's opening "..." isn't printed: dots are too small to start the
-  text, because noise fits them too easily. The closing "..." is.
-* Deep fading loses the faded part, as it does for your eye.
-* It costs a few percent of a Pi's CPU while Feld-Hell is selected. It has
-  not yet been tested on real off-air signals.
-
-The Feld-Hell modem is a JavaScript port of fldigi's; see
-[`third_party/feldhell/README.md`](third_party/feldhell/README.md) for what was
-ported and how the transmitter was checked against fldigi's own code. It has
-not yet been tested over the air.
-
-Transmit is refused if the radio is already transmitting. The usual PTT
-watchdog (ten minutes) still applies.
-
-### WSPR
-
-WSPR is the third choice of the **DIGI** button: FT8, then FT4, then WSPR,
-then FT8 again. It puts the radio on USB with DATA MODE on and tunes to the
-band's WSPR frequency (for example 7.0386 MHz on 40 m and 14.0956 MHz on
-20 m). Band buttons then go to that band's WSPR frequency. The WSPR signals
-are 1400-1600 Hz up; the spectrum marks that window.
-
-WSPR runs in 2-minute slots that start on even UTC minutes. PiRO decodes
-every slot it isn't transmitting in. The decoder is WSJT-X's `wsprd`,
-ported to JavaScript (`src/audio/wspr-rx.js`); see
-`third_party/wsjtx-wsprd/README.md`. It runs in a worker thread and takes a
-few seconds per slot. The spots are listed newest first (time, SNR, time
-offset, frequency, callsign, grid, power in dBm; tap-and-hold a row for the
-drift). Every browser sees the same list, and a page that opens later gets
-the recent spots.
-
-Spots go to wsprnet.org after each slot, the way WSJT-X sends them (a
-"wsprstat" report when nothing was heard). This needs `STATION_CALLSIGN`
-and `WSPR_GRID` (or `STATION_GRID`); `WSPR_UPLOAD=off` turns it off. The
-panel shows whether the last upload worked.
-
-While WSPR is on, the **Power** menu offers 1-5 W, and the radio is held at
-5 W or less (checked again before each transmission). The power from before
-is put back when you leave WSPR.
-
-Tick **Transmit** to transmit too. About one slot in five is then picked at
-random, never two in a row, as WSJT-X does with "Tx Pct 20"; the panel says
-when the next one is. A transmission starts 1 s into its slot and lasts
-110.6 s. It sends `STATION_CALLSIGN`, the first 4 characters of the grid and
-the radio's power in dBm (1 W is 30, 2 W is 33, 3-5 W are 37). The transmit
-audio frequency is 1500 Hz unless you change it (1410-1590 Hz, in the box
-or by tapping the spectrum). WSPR transmits only a plain callsign of up to 6
-characters, so not one with a `/`. Transmit stops when the last browser
-leaves. Unticking Transmit, or leaving WSPR, stops a transmission straight
-away. Not tested on air.
-
-**Unattended receive** (`WSPR_UNATTENDED=on`, off by default): 10 minutes
-after the last browser disconnects, PiRO tunes the radio to the WSPR
-frequency of the band it is on (20 m if it isn't near one), on USB with
-DATA on, and receives and uploads spots by itself. It never transmits then.
-Every 6 minutes (three slots; `WSPR_BAND_MINUTES` changes this) it moves
-on to the next band: 160, 80, 40, 30, 20, 17, 15, 12, 10 and 6 m, then
-round again. `WSPR_SKIP_BANDS` leaves bands out (for example
-`160m,6m` for an antenna that doesn't suit them), and `WSPR_BAND_CYCLE=off`
-keeps it on the one band. Each slot is decoded and reported on the band it
-was heard on.
-
-Straight after each band change it starts the radio's antenna tuner (the
-same as the Tune button). This is the only time unattended WSPR transmits:
-a tuning carrier for a few seconds, before receiving starts on the new
-band. Tuning has its own limit: if the radio still reports tuning or
-transmitting after 15 s, PiRO switches the tuner off, which ends the tune,
-sends PTT off, and switches the tuner back on. A browser that connects
-during a tune waits for it to finish before the radio is put back. Not
-tested on air. When a browser connects, it stops
-and puts the frequency, mode and DATA mode back.
-
-### Current conditions
-
-The **Current conditions** link to the right of "Band" opens a window with
-a table: **Band**, **My QTH** and **Local area**, one row per WSPR band
-(160 m to 6 m). Each cell is tagged by range, how far the stations heard
-were: the farthest spot of each station, and of those the 80th percentile,
-so one freak spot doesn't decide it.
-
-| Tag | Range |
-|---|---|
-| Great | 10,000 km or more |
-| Good | 5,000 km or more |
-| Average | 2,500 km or more |
-| Bad | 1,000 km or more |
-| Dismal | less than 1,000 km, or nothing heard |
-
-- **My QTH** comes from the WSPR spots PiRO decoded itself in the last 90
-  minutes: while you run WSPR, or from unattended receive and its band
-  cycle (which visits every band about once an hour). A band PiRO listened
-  to and heard nothing on is Dismal. A band it hasn't listened to is N/A.
-- **Local area** comes from the spots of every WSPR reporter in your
-  4-character grid square and the 8 squares around it (a 3 x 3 block
-  centred on your square), in the last 60 minutes. These are wsprnet.org's
-  spots. wsprnet.org has no open query interface, so PiRO reads them from
-  [wspr.live](https://wspr.live), a free public copy of the wsprnet.org
-  database. It asks at most every 10 minutes, and only when the window is
-  opened. A band with no spots is N/A. This column works without WSPR
-  running, but needs the Pi to have internet access.
-
-Under each tag is the range, the number of stations heard and, for the
-local area, the number of reporters. Both columns use `WSPR_GRID` (or
-`STATION_GRID`); without one, everything is N/A. The window's note gives
-the squares, the time windows and when the local area was last fetched.
-
-### Radiofax
-
-The **Image** button selects SSTV on the first press, EasyPal on the
-second and **Radiofax** on the third (then SSTV again). Its label reads
-"SSTV", "EasyPal" or "Fax" while one is on. Radiofax receives HF weather charts: frequency-modulated audio around
-1900 Hz (black 1500 Hz, white 2300 Hz), 120 lines a minute, IOC 576, 1810
-pixels a line. That is what the Bureau of Meteorology sends. It receives
-only, on USB with DATA MODE off.
-
-While Radiofax is on, the chart coming in is drawn where the spectrum
-usually is, newest line at the bottom; tap it to open it full size. Below
-the spectrum, the Radiofax panel shows what the receiver is doing, and has
-**Start now**, **Stop** and **Save** buttons and the last few charts.
-
-Below the S-meter are buttons for the VMC (Charleville, Qld) and VMW
-(Wiluna, WA) frequencies, in order of their broadcast hours (UTC, from the
-Bureau's technical guides). The ones not on the air now are dimmed, and
-the one the radio is on is lit. A button tunes the radio 1.9 kHz below the
-listed frequency, on USB, so the signal's centre is at 1900 Hz. Entering
-Radiofax tunes the first button on the air now, unless the radio is
-already on one of them.
-
-Entering Radiofax also sets the radio up for fax: **NR off**, **auto notch
-off** and **FIL1** (its widest filter). NR smears every quick black/white
-change, so thin vertical lines vanish and text strokes come out hollow;
-the auto notch attacks steady tones, which is what a white or black area
-is. Leaving Radiofax (or the last browser closing) puts back whatever was
-changed, unless you changed it yourself in the meantime; the filter is
-only put back if the mode is still the same. `FAX_RADIO_SETUP=off` turns
-this off.
-
-| Station | Frequency (kHz) | Hours (UTC) |
-|---|---|---|
-| VMC, VMW | 5100, 7535, 10555, 11030, 13920, 15615 | all day |
-| VMC | 2628 | 09-19 |
-| VMW | 5755 | 11-21 |
-| VMC | 20469 | 19-09 |
-| VMW | 18060 | 21-11 |
-
-How a chart is received:
-- The start signal (black and white alternating at 300 Hz for 5 s) starts
-  a chart.
-- About 30 s of phasing lines follows: black, with one white pulse at the
-  start of each line. PiRO lines the chart up on the pulse. It also
-  measures how far the pulse drifts from line to line, which is the
-  difference between the sender's clock and the Pi's sound card. Each line
-  is then made that much longer or shorter, so the chart isn't slanted. The
-  measurement is shown as "clock ±N ppm".
-- PiRO looks for phasing lines all the time, so a chart still lines up if
-  its start signal was missed, or if **Start now** was pressed during the
-  phasing.
-- A few phasing lines spoilt by noise (a static crash, a fade) don't end
-  the phasing: it takes three bad lines in a row. So the whole 30 s is
-  measured, and none of it is drawn as part of the chart.
-- The clock is only measured from the phasing when the measurement is
-  good to 25 ppm. Otherwise the phasing still lines the chart up, and the
-  line length stays as it was.
-- The clock error is kept (the median of the last 5, in
-  `FAX_STATE_FILE`), so a chart without phasing, or the first one after a
-  restart, starts with the right line length.
-- Any chart whose clock wasn't measured from its own phasing is
-  straightened when it ends: PiRO tries slants of up to 1.5 pixels a line
-  and keeps the one that lines up its vertical edges best (frames, grids,
-  coasts, the left edge of text), then shifts each line back. The chart
-  then says "slant corrected". The slant found also counts as a clock
-  measurement for later charts. Its left edge stays wherever the line
-  happened to start, unless phasing lined it up.
-- When a chart ends, noise damage is mended: a line spoilt across its
-  width by a static crash (up to 3 in a row) is replaced by a blend of the
-  lines either side, and patches of speckle much worse than the lines
-  around them are smoothed. Clean drawing, text and grids are left alone.
-  A deep fade that wipes out more lines can't be recovered. The chart
-  then says how many lines were mended. `FAX_CLEANUP=off` turns this off.
-- The stop signal (450 Hz) ends the chart. So do a new start signal,
-  **Stop**, leaving Radiofax, transmitting, or 25 minutes.
-- **Start now** begins a chart straight away, for a broadcast that is
-  already under way. Its left edge is then wherever the line happens to
-  start, and the clock correction is the last one measured.
-
-Each chart is kept as a PNG (the last 6, for pages that open later; a page
-that opens part-way through a chart is sent it so far). `FAX_SAVE_DIR`
-also saves them to a folder. The receiver is PiRO's own JavaScript, run on
-the server: 0.6% of a desktop CPU core (measured), so a few percent of a
-Pi's. Not tested on an off-air signal yet.
-
-### EasyPal
-
-The **Image** button's second press turns on **EasyPal** receive: digital
-SSTV as EasyPal and QSSTV send it (HamDRM, a form of Digital Radio
-Mondiale). The picture is sent as a file (usually JPEG or JPEG 2000) over
-an OFDM signal about 2.4 kHz wide. PiRO receives and sends it.
-
-- The radio goes to **USB**, on the band's EasyPal (digital SSTV) calling
-  frequency if it has one: 7.173 MHz (40 m), 10.144 MHz (30 m), 14.233 MHz
-  (20 m) or 21.337 MHz (15 m), as commonly listed. On other bands it stays
-  where it is. The band buttons do the same while EasyPal is on. EasyPal is
-  always USB: a USB signal heard on LSB is a mirror image and won't decode.
-  The audio spectrum
-  replaces the RF scope; a signal tuned right fills the space between the
-  two guide lines (400 and 2750 Hz). The receiver copes with a mistuning of
-  a few hundred hertz and shows it.
-- Like Radiofax, EasyPal turns the radio's **NR** and **auto notch** off and
-  selects **FIL1**, and puts them back when you leave
-  (`EASYPAL_RADIO_SETUP=off` stops this). NR upsets the phase of the
-  carriers, and the auto notch attacks the pilot tones.
-- The panel shows what the receiver hears: the mode (A, B or E), the
-  bandwidth, the QAM, the S/N, the sender's callsign and how many segments
-  of the file have come. While a plain JPEG comes in, its top part is shown
-  as it grows. When the file is complete it is shown, described, and added
-  to the strip of recent ones (the last 8, for pages that open later). Tap
-  the picture for full size; **Save** saves the file (a JPEG 2000 picture
-  as the JPEG it was shown as, at most 1600 pixels across; `EASYPAL_SAVE_DIR`
-  keeps the original).
-- Files sent with Reed-Solomon protection (EasyPal's and QSSTV's `.rs1` to
-  `.rs4`) are put back together when some segments are lost, once enough
-  have arrived. A plain file needs every segment.
-- `EASYPAL_SAVE_DIR` also saves every file, as it was sent.
-
-The receiver is a JavaScript port of QSSTV's, run in a worker thread on
-the server: 1 to 2% of a desktop CPU core (measured), so a few percent of a Pi's. It was checked against QSSTV's own
-receiver on signals made by QSSTV's own transmitter, in all 72 mode
-combinations and with noise, mistuning, clock errors, echoes and fading;
-see [`third_party/qsstv-drm/README.md`](third_party/qsstv-drm/README.md).
-A recording of a real EasyPal transmission found online (mode A, 64-QAM, a
-10-megapixel JPEG 2000 photo sent with Reed-Solomon) decoded completely.
-Not tested yet on a signal PiRO receives off air.
-
-#### Sending
-
-Under the EasyPal picture, **Send a picture** offers **Camera** (the
-phone's camera) and **Choose image**.
-
-- The whole picture is sent, keeping its shape, fitted within 800 x 600.
-  You can put your callsign (and a second line) in a corner, as for SSTV.
-- **Send** shows the settings and the longest it will take. The server
-  then makes the picture fit that time: it picks the best JPEG quality
-  that fits (30 to 90), and makes the picture smaller if even quality 30
-  is too big. It is sent as a JPEG, with Reed-Solomon protection
-  (`.rs2` by default), named `CALL-YYYYMMDD-HHMMSS` (UTC).
-- PiRO puts the radio in **DATA MODE** (and confirms it), sets the
-  power if `EASYPAL_TX_POWER_W` is set, keys PTT and sends. Afterwards it
-  puts the power and DATA MODE back. The radio must be on USB.
-- Every browser shows the progress, the picture going out and a **Stop**
-  button. A sent picture is added to the strip, marked "Sent".
-- Sending stops if the last browser disconnects. The 10-minute PTT limit
-  applies, and `EASYPAL_TX_SECONDS` can't be more than 540.
-
-The settings are fixed on the Pi, as SSTV's mode is: `EASYPAL_TX_MODE`
-(B), `EASYPAL_TX_BANDWIDTH` (2.5 kHz), `EASYPAL_TX_QAM` (16),
-`EASYPAL_TX_PROTECTION` (high), `EASYPAL_TX_INTERLEAVE` (short),
-`EASYPAL_TX_RS` (rs2) and `EASYPAL_TX_SECONDS` (90). The callsign sent in
-every frame is `STATION_CALLSIGN`. Mode B, 16-QAM, high protection sends
-about 290 bytes a second; the start and end of each transmission add
-about 16 s. Guide, for mode B, 16-QAM and RS2:
-
-| Time allowed | JPEG size | A photo is sent at about |
-|---|---|---|
-| 90 s | 15 kB | 430-550 pixels across |
-| 120 s | 22 kB | 520-640 pixels across |
-| 180 s | 34 kB | 640-800 pixels across |
-
-The transmitter is a JavaScript port of QSSTV's. Its audio was checked
-against QSSTV's own transmitter with the same file: the same frames, and
-the same samples to within 2 parts in 32768, in modes A, B and E, both
-interleaves and all three QAMs; QSSTV's receiver decodes it. Fitting the
-picture and making 90 s of audio takes about 1.5 s on a desktop; expect
-several seconds on a Pi (not measured).
-
-**Tested on air** once, on 25 October 2026: a picture sent with the
-defaults from an IC-7300 on 28.690 MHz was recorded on a KiwiSDR
-(vk3jst.ddns.net) and decoded completely, at about 9 dB S/N. 42 of its
-176 segments were lost and put back by Reed-Solomon. The first 22 s of
-the recording is a test fixture. EasyPal itself has not been tried, but it uses the same
-format.
-
-### SSTV
-
-The **Image** button's first press turns on SSTV (slow-scan television). It puts the radio
-on the band's usual sideband (LSB below 10 MHz, USB above; DATA MODE only
-while sending) and tunes to the band's SSTV frequency. Band buttons then do
-the same:
-
-| Band | Frequency (MHz) | Sideband |
-|---|---|---|
-| 40 m | 7.171 | LSB |
-| 20 m | 14.230 | USB |
-| 15 m | 21.340 | USB |
-| 10 m | 28.680 | USB |
-| 6 m | 50.950 | USB |
-
-The usual 160 m (1.890 MHz) and 80 m (3.730 and 3.845 MHz) frequencies are
-outside the Australian allocations, so on those bands, and on 30, 17 and
-12 m, which have no usual SSTV frequency, the band buttons tune as normal.
-The table is `SSTV_FREQUENCIES` in `src/client/app.js`.
-
-The PTT button stays the ordinary voice PTT (for talking about the
-pictures); pictures are sent with the panel's Send button (below). The
-scope shows the 0-3 kHz audio spectrum with faint lines at 1200 Hz (sync),
-1500 Hz (black) and 2300 Hz (white) to tune by.
-
-The receiver waits for the VIS header that starts every SSTV picture, which
-names its mode, and handles 25 modes: Martin M1-M4, Scottie S1, S2 and DX,
-Robot 36, 72, 24 and the black-and-white 8, 12 and 24, PD 50, 90, 120,
-160, 180, 240 and 290, Wraase SC-2 120 and 180, and Pasokon P3, P5 and P7.
-It measures how far the signal is from the standard tones from the header
-(so it copies a station up to about 150 Hz off), and its frequency
-measurement gets more averaging as the signal gets noisier. The picture
-panel under the S-meter fills in line by line as the picture arrives, with
-the mode, line count and offset above it. When the picture ends, the
-receiver finds the sync pulses' slope, which is how far the other station's
-sound card clock is off, and redraws the picture straight. It then joins
-the strip of recent pictures (the last 12, kept by the server, so another
-browser or a reload sees them too).
-
-* **Stop** ends the picture now and keeps what has arrived. A picture also
-  ends by itself if the sync pulses stop for 12 lines (the signal has gone),
-  and when you transmit.
-* **Save** downloads the picture shown as a PNG, at its own resolution.
-* Tap the picture to open it full size (pinch to zoom; tap again to close).
-  Thumbnails show older pictures.
-* Set `SSTV_SAVE_DIR` to have the server save every picture there as well.
-
-Picture sizes are 320 × 256 for Martin, Scottie, Wraase and PD 50/90,
-320 × 240 for Robot, 512 × 400 for PD 160 and 640 × 496 for PD 120/180/240
-and Pasokon (800 × 616 for PD 290). On a phone the panel is about 360-430
-points wide, which on a 2-3× screen is at least as many pixels as the
-picture has.
-
-The receiver is a JavaScript port of slowrx by Oona Räisänen OH2EIQ (ISC
-licence); see [`third_party/sstv/README.md`](third_party/sstv/README.md)
-for what was ported, the differences, and how it was checked (including
-against audio from PySSTV, an independent encoder). It runs in a worker
-thread, only while SSTV is selected and you are not transmitting. Not yet
-tested over the air. The picture drawn while it arrives is not yet
-slant-corrected, so from a station whose sound card is well off it leans
-until it is redrawn at the end.
-
-**Sending a picture.** Under the received pictures, **Camera** opens the
-phone's camera (on a computer it opens a file chooser) and **Choose image**
-picks an existing picture. The picture appears at the size and shape that
-will be sent (320 × 256 for the default Scottie 1), filling the frame:
-
-* **drag** it to choose what is shown, and **pinch**, scroll or use **Zoom**
-  to get closer;
-* the **callsign** (from `STATION_CALLSIGN`, editable) and an optional
-  **second line** (for example a report, "UR 595", or a locator) are drawn
-  in white with a dark outline on a translucent box, in the **corner** you
-  choose. The tag is made as large as fits within half the picture's
-  width and half its height, box included (160 × 128 pixels
-  at most in Scottie 1);
-* **Send** shows the mode and how long it takes (about 1 minute 56 seconds
-  for Scottie 1 with the IDs). What is in the preview is exactly what is
-  sent.
-
-Sending works as for RTTY: the Pi encodes the picture (in a worker thread),
-turns DATA MODE on so the radio takes USB audio, keys PTT, plays it, and
-puts everything back afterwards, including if you press **Stop**. After the
-picture come the **FSK ID** (the callsign as the short 1900/2100 Hz burst
-that MMSSTV, slowrx and similar programs show as the sender's call) and a
-**CW ID** ("DE" and the callsign at 20 WPM, 800 Hz). The sent picture joins
-the strip, marked as sent.
-
-While a picture is being prepared and sent, a progress box under **Send a
-picture** shows the time sent and the total (for example `0:42 / 1:57`), a
-bar marked where the picture ends and the IDs begin, what is going out now
-(`VIS header`, `Picture · line 112 of 256`, `FSK ID`, `CW ID`) and the time
-left, with a **Stop** button. The picture also fills in on the SSTV screen
-above as it goes out, the part not yet sent dimmed, with a green line where
-it has got to. Every browser connected to PiRO shows this, including one
-opened part-way through, so a transmission started on one phone can be
-watched or stopped from another.
-
-The mode is set on the Pi with `SSTV_TX_MODE` (Scottie 1, `S1`, by
-default; any of the receiver's mode ids, e.g. `M1`, `R36`, `PD120`).
-SSTV is a full-power tone for one to four minutes, much harder on the
-radio than voice: set `SSTV_TX_POWER_W` to send at lower power (it is put
-back afterwards), or turn the power down yourself. `SSTV_FSK_ID=off` and
-`SSTV_CW_ID=off` leave out the IDs; with no `STATION_CALLSIGN` there are
-none. The usual 10-minute PTT cut-off still applies.
-
-The encoder follows N7CXI's mode specifications: for Martin 1, Robot 36
-and PD-120, its tones match PySSTV's, an independent encoder, to within a
-few hertz throughout; Scottie modes include the starting sync pulse the
-specification calls for. Sending has been tested with PiRO's own receiver
-and a stub radio, not on air.
-
-**FT8 (RX + manual TX)**: since the IC-7300 has no native "FT8" CI-V
-mode — the radio only ever sees `USB` — FT8 is an app-level concept
-layered on top: opening the FT8 panel puts the radio on USB and starts
-decoding 15-second, UTC-slot-aligned band activity from the same RX
-audio the CW decoder and voice RX use, showing decoded callsigns/grids/
-reports in a band-activity table. Selecting FT8 (and any subsequent band
-change while it's active) auto-tunes the dial to that band's standard
-FT8 calling frequency. Every transmission is started by the operator:
-you compose or pick a message and send it, and the app keys PTT itself
-and plays the encoded tone out at the next slot boundary. The guided QSO
-sequence (below) suggests each reply, but it never sends one by itself.
-Full WSJT-X-style auto-sequencing, where the software decides *and*
-transmits each step of a QSO, is deliberately not built: the operator
-supervises every transmission. See `docs/ui-notes.md` for the reasoning.
-Decoding is
-CPU-heavy (real seconds per slot on a busy band), so it runs in a
-background worker thread, not the main server process, to avoid
-stalling CI-V/audio/WebSocket handling. While the FT8 panel is open, the
-RF scope display is replaced by a live spectrum/waterfall computed with
-a real FFT of the RX audio itself (0-3000Hz above the dial, matching
-WSJT-X's own FT8 display exactly, updated a few times a second) rather
-than a crop of the radio's coarser CI-V sweep — see `docs/ui-notes.md`
-for the full pipeline. Uses
-[`@e04/ft8ts`](https://www.npmjs.com/package/@e04/ft8ts) — see
-**Licence** below for what that means for this project. Entering FT8 mode
-also turns on the IC-7300's separate **DATA MODE** setting (not just the
-`USB` operating mode) — required for the radio to actually source TX
-audio from the USB connection rather than the front-panel mic. **If FT8
-transmissions still aren't being heard by other stations, check on the
-radio itself: Menu > Set > Connectors > MOD Input, and confirm the "DATA
-ON" entry (not just "DATA OFF") is set to USB** — this is a menu setting
-CI-V cannot change remotely; see `docs/civ-notes.md`'s "DATA MODE"
-section for the full story. PTT is held for
-the encoded waveform's nominal playback duration *plus* a
-`PTT_RELEASE_MARGIN_MS` (300ms default, `src/audio/ft8-bridge.js`) safety
-margin before releasing, since handing PCM to the ALSA playback pipe
-doesn't mean it's already reached the speaker — releasing PTT too early
-truncates the tail of the transmission; see `docs/ui-notes.md`'s "Real bug
-found" writeup for the full story.
-
-**Someone calling you**: when an FT8 or FT4 message addressed to
-`STATION_CALLSIGN` is decoded (for example `VK3TR K1ABC FN42`), every
-browser in FT8 plays three quick rising notes, and the message is shown in
-amber. A portable or hashed form of your call (`VK3TR/P`, `<VK3TR>`)
-counts too. Each caller chimes once: while they keep calling, it stays
-quiet, and only after 2 minutes without hearing them does a new call chime
-again. CQs and other people's QSOs never chime. As with the notes chime,
-a browser only plays sound after the page has been tapped once.
-
-The FT8 and FT4 transmit audio fades in and out, which avoids key clicks:
-the encoder applies WSJT-X's raised-cosine ramp (about 16 ms for FT8 and
-40 ms for FT4), and a test checks it survives the resampling to 48 kHz.
-
-**Guided FT8 QSOs**: with `STATION_CALLSIGN`/`STATION_GRID` configured
-(see above), the FT8 composer starts each session with a default
-`CQ {CALLSIGN} {MAIDENHEAD}` message, and `src/client/ft8-qso.js` drives
-the standard FT8 exchange as a guided sequence: clicking a decoded CQ (or
-sending your own CQ and having someone answer it) prefills the next
-message the standard exchange calls for at each step — grid, then signal
-report, then acknowledgement, then RRR73/73 — as each reply is actually
-decoded, tracking one QSO at a time. The rows belonging to the
-in-progress QSO are highlighted in the band-activity table, and its
-frequency is marked on the FT8 spectrum and used to target that QSO's own
-replies (standard operating practice: reply on the frequency the other
-station is actually listening on, not always your own calling
-frequency), all via the optional `freqHz` on `sendFt8` (see the protocol
-section below). The same targeting is available manually: hovering the
-FT8 spectrum shows a 50Hz-snapped frequency tag, and clicking it sets that
-as the next transmission's frequency (marked with the same amber marker
-used for an in-progress guided QSO). Absent a guided QSO or a manual
-click, a fresh CQ goes out at a default TX frequency of **1500Hz**,
-tracked per-session: clicking a new frequency on the spectrum updates
-that default too, so it sticks for the rest of the session (until the
-page is reloaded) rather than reverting after the next send — see
-`docs/ui-notes.md`'s "Default FT8 TX frequency" note. This is still guidance, not automation: every suggested
-message still has to be reviewed and sent by the operator, same as any
-other composer text — see `docs/ui-notes.md`'s "What's still Phase 3
-(explicitly not built)" note on why full auto-sequencing (deciding *and
-transmitting* without a human per message) is a deliberate scope
-boundary, not a missing feature.
-
-**Worth knowing:**
-
-- **Microphone access (PTT/TX audio) requires HTTPS** when accessing from
-  any device other than the Pi itself — over plain HTTP on a LAN address,
-  `navigator.mediaDevices` is unavailable entirely in the browser, not
-  just degraded. RX (speaker) audio and everything else works fine over
-  plain HTTP. The server supports TLS directly via `TLS_CERT_PATH`/
-  `TLS_KEY_PATH` env vars — see `docs/pwa-notes.md` for cert generation
-  options and trade-offs.
-- Service worker/installability also wants HTTPS, but degrades gracefully
-  (`docs/pwa-notes.md`).
-- No arbitration between multiple clients transmitting simultaneously
-  (`docs/ui-notes.md`) — everyone has equal control.
-- **USB audio levels are maxed on every server start**, on both sides of
-  the link: the Linux/ALSA side (best-effort, via `amixer`) so the USB
-  codec doesn't get left at some unpredictable gain — see
-  `docs/audio-notes.md` for how to disable this — *and* the radio's own
-  internal levels for the same signal path (CI-V `1A 05 00 60`/`00 65`,
-  "AF output level to ACC/USB"/"MOD input level from USB" — see
-  `docs/civ-notes.md`, and `CIV_MAXIMIZE_USB_LEVELS` above to disable
-  just that half). A real caveat either way: 100% capture/level risks
-  clipping on transmit depending on your radio's own input sensitivity,
-  worth checking your actual TX audio quality.
-
-## WebSocket protocol
-
-Plain JSON text frames carry the control protocol; binary frames carry
-audio and scope data (tagged, see `docs/ui-notes.md`), multiplexed on the
-same connection. See `src/server/protocol.js` for the full JSON message
-shapes.
-
-- **Control (JSON, text frames)**: requests (`getFrequency`,
-  `setFrequency`, `getMode`, `setMode`, `setDataMode`, `getDataMode`,
-  `setPtt`, `getSMeter`, `getSWR`,
-  `setScopeBand`, `setScopeSpan`, `setPreamp`, `getPreamp`,
-  `setNoiseReduction`, `getNoiseReduction`, `setNoiseBlanker`,
-  `getNoiseBlanker`, `setNotch`, `getNotch`, `setFilter`, `getFilter`,
-  `setTuner`, `getTuner`, `setTxPower`, `getTxPower`, `setRxGain`,
-  `getRxGain`, `setFt8Active`, `sendFt8`, `sendTty`, `abortTty`, `setJttyActive`,
-  `setOliviaActive`, `setHellActive`, `setSstvActive`, `endSstvPicture`, `getSstvPictures`,
-  `sendSstv`, `abortSstv`, `setWsprActive`, `setWsprTx`, `getBandConditions`)
-  correlated by `id`; events (`connected`, `frequency`, `mode`, `data-mode`, `ptt`,
-  `ptt-timeout`, `cw-text`, `ft8-decodes`, `ft8-tx-status`, `tty-tx-status`,
-  `jtty-text`, `olivia-text`, `rig-error`, `audio-error`, `scope-error`)
-  broadcast without an `id`. `setFt8Active` arms/disarms RX decoding
-  (sent when the client opens/closes the FT8 panel); `sendFt8`
-  (`{message, freqHz?}`) queues a message for transmission at the next
-  15-second slot boundary and returns immediately — the actual outcome
-  (including the actual `freqHz` transmitted at) arrives later as an
-  `ft8-tx-status` broadcast (`scheduled` → `sending` → `sent`/`error`).
-  The optional `freqHz` targets a specific audio frequency instead of the
-  server's own default — used by the guided QSO sequencer (see above) so
-  a reply goes out at the frequency the other station is actually
-  listening on, rather than always this app's one fixed calling
-  frequency. See `src/server/protocol.js` for the exact
-  `ft8-decodes`/`ft8-tx-status` payload shapes. `sendTty`
-  (`{mode: 'RTTY'|'JTTY'|'OLIVIA'|'HELL', text, freqHz?}`) encodes and transmits straight
-  away (none of these modes is slotted); progress arrives as `tty-tx-status`
-  broadcasts (`sending` → `sent`/`aborted`/`error`), and `abortTty` cuts a
-  running transmission short. `setJttyActive` (`{active, txHz?}`) starts and stops
-  JTTY decoding and sets the transmit audio frequency (lowest tone) every
-  browser shows; decoded messages arrive as `jtty-text` broadcasts
-  (`{id, freqHz, snr, text, status: 'growing'|'complete'|'expired', time,
-  startTime}`, times in epoch ms), re-sent with the same `id` as a message grows.
-  `setOliviaActive` (`{active, centreHz?}`) starts and stops Olivia decoding
-  and sets the centre frequency (sending it again retunes); decoded text
-  arrives as `olivia-text` broadcasts (`{text, snr, freqOffsetHz, centreHz,
-  time}`, a block of up to three characters at a time).
-  `setHellActive` (`{active, toneHz?}`) starts and stops the Feld-Hell
-  receiver and sets its tone; the picture arrives as binary
-  `BINARY_TYPE.HELL_COLUMNS` frames (below), and the text read from it as
-  `hell-text` broadcasts (`{text, time}`: the new characters; with
-  `replace: true`, sent to a page that has just connected, the recent text).
-  `setSstvActive` (`{active}`) starts and stops the SSTV receiver. A
-  picture is announced by an `sstv-start` broadcast (`{id, mode, name,
-  width, lines, lineHeight, shiftHz, time}`), its lines follow as binary
-  `BINARY_TYPE.SSTV_LINE` frames, and it ends with `sstv-picture` (the same
-  fields plus `endTime, complete, linesReceived, slantDeg, png`, the
-  slant-corrected picture as base64 PNG). `endSstvPicture` ends the picture
-  in progress; `getSstvPictures` returns the recent ones. An `sstv-fsk-id`
-  broadcast (`{id, time, text}`) adds the sender's FSK ID to a received
-  picture. `sendSstv` (`{rgb, width, height}`: base64 RGB at the size in the
-  connect snapshot's `sstvTx`) transmits a picture in `SSTV_TX_MODE` with
-  the IDs; progress arrives as `sstv-tx-status` broadcasts (`encoding` →
-  `sending` → `sent`/`aborted`/`error`), and `abortSstv` stops it. `sending`
-  also carries `elapsedSec`, a `timeline` of the parts (`headerSec,
-  pictureSec, fskSec, gapSec, cwSec, totalSec`), the picture's `lines` and
-  the picture itself (`png`); a page that connects during a transmission is
-  sent the current status, with `elapsedSec` how far in it is.
-  `sendEasypal` (`{jpeg}`, base64, at most 4 MB) sends a picture with the
-  `EASYPAL_TX_*` settings (the connect snapshot's `easypalTx`: `{mode,
-  bandwidth, qam, protection, interleave, rs, seconds, bytesPerSecond,
-  maxWidth, maxHeight, callsign}`); `abortEasypal` stops it. Progress goes
-  out as `easypal-tx-status` (`{status:
-  'preparing'|'sending'|'sent'|'aborted'|'error', durationSec, startTime,
-  elapsedSec, fileName, bytes, width, height, quality, jpeg, error}`); a
-  page that connects while it is sending gets the current status. The sent
-  picture is then broadcast as an `easypal-picture` with `own: true`.
-  `setEasypalActive` (`{active}`) starts and stops the EasyPal receiver.
-  Its state goes out as `easypal-status` (`{state:
-  'idle'|'listening'|'sync'|'receiving', snr, mode, callsign, offsetHz,
-  file}`, also the connect snapshot's `easypal`), the top of a JPEG coming
-  in as `easypal-preview` (`{transportId, fileName, mime, data}`), and each
-  file received as `easypal-picture` (`{id, transportId, time, fileName,
-  callsign, mode, snr, segments, recovered, size, mime, data, width,
-  height, text}`; JPEG 2000 is sent as a JPEG at most 1600 pixels across). `getEasypalPictures` returns
-  the kept files and the current preview.
-  `setFaxActive` (`{active}`) starts and stops the radiofax receiver;
-  `faxStartNow` starts a chart without a start signal and `faxStop` ends
-  one. Receiver state goes out as `fax-status` (`{state:
-  'idle'|'listening'|'phasing'|'receiving', lines, clockPpm}`, also the
-  connect snapshot's `fax`). A chart is announced by `fax-start` (`{id,
-  width, lpm, ioc, phased, clockPpm, time}`), its lines follow as binary
-  `BINARY_TYPE.FAX_LINE` frames (chart id, line, width, one grey byte per
-  pixel), and it ends with `fax-picture` (`{id, width, lines, time,
-  endTime, complete, reason, phased, clockPpm, png}`, a greyscale PNG).
-  `getFaxPictures` returns the kept charts and the one coming in so far.
-  `setWsprActive` (`{active}`) turns WSPR on and off; `setWsprTx`
-  (`{enabled?, txHz?}`) turns WSPR transmit on and off and sets its audio
-  frequency (1410-1590 Hz). WSPR's state is the connect snapshot's `wspr`
-  and the `wspr-status` broadcast (`{phase: 'idle'|'rx'|'tx', slotStartMs,
-  slotEndMs, txEnabled, txHz, txPct, canTransmit, txMessage, txReason?,
-  nextTx, upload, uploadStatus, unattended, unattendedBand, bandCycle,
-  cycleBands, bandMinutes, tuning, decoding, lastSlotStartMs,
-  lastDecodeCount}`). Each decoded slot arrives as a `wspr-decodes`
-  broadcast (`{slotStartMs, dialHz, decodes: [{snr, dt, audioHz, drift,
-  message, callsign, grid, dbm, type}]}`; with `replace: true`, sent to a
-  page that has just connected, the recent spots of every slot).
-  `getBandConditions` returns the Current conditions table: `{grid,
-  squares, myWindowMin, localWindowMin, localUpdatedMs, localError,
-  myError, tags, bands: [{band, myQth: {tag, rangeKm?, stations?, slots?,
-  lastMs?}, local: {tag, rangeKm?, stations?, reporters?}}]}`.
-  An `app-modes` broadcast (`{ft8Active, freeDvActive, jttyActive, jttyTxHz,
-  oliviaActive, oliviaCentreHz, hellActive, hellToneHz, sstvActive,
-  wsprActive, faxActive}`) goes to the other browsers after any
-  `setFt8Active`, `setFreeDvActive`, `setJttyActive`, `setOliviaActive`,
-  `setHellActive`, `setSstvActive`, `setWsprActive` or `setFaxActive`, so they show the same mode; the
-  connect snapshot has the same fields.
-  `sendCw` (`{text, wpm?}`) sends text with the radio's CW keyer;
-  progress arrives as `cw-tx-status` broadcasts (`sending` →
-  `sent`/`aborted`/`error`, with the text as sent, `wpm`, `durationSec`
-  and any `dropped` characters), and `abortCw` stops it.
-  `postNote` (`{text}`, up to 200 characters) adds an operator note; the
-  connect snapshot's `notes` and the `notes` broadcast (`{notes, posted?,
-  cleared?}`) carry the three most recent (`{id, text, time}`, newest
-  last). `posted` is set only for a newly added note, which the browsers
-  chime for.
-- **Audio (binary frames, tagged `BINARY_TYPE.AUDIO`)**: raw 16-bit PCM
-  at the server's rate in both directions — no framing/codec requirement,
-  chunk sizes are whatever arrives. The default for every browser.
-- **Compressed audio (binary frames, tagged `BINARY_TYPE.AUDIO_OPUS` or
-  `BINARY_TYPE.AUDIO_ADPCM`)**: a browser asks for one format for its RX
-  audio with `setAudioCodec` (`{codec: 'pcm'|'opus'|'adpcm'}`, replies
-  `{codec}`); it applies to that browser only and is forgotten when it
-  disconnects. Each frame is 20 ms: one Opus packet (16 kHz audio) or one
-  12 kHz IMA ADPCM frame (a 4-byte header with the first sample and step
-  index, then 4 bits a sample). Mic audio may be sent in any of the three.
-  The connect snapshot's `audio.codecs` lists what the server can send,
-  and `audio.opusBitrate` the Opus rate. The format code is shared by both
-  ends: `src/client/audio-codec.js`.
-- **Voice squelch**: `setVoiceSquelch` (`{enabled}`) switches it for
-  everyone; the reply and the `voice-squelch` broadcast carry
-  `{enabled, active}` (`active`: on and in a voice mode), and the connect
-  snapshot has `voiceSquelch`.
-- **Scope (binary frames, tagged `BINARY_TYPE.SCOPE_LINE`,
-  server→client only)**: one reassembled spectrum line per frame — see
-  `src/server/scope-bridge.js` for the exact header format.
-- **SSTV lines (binary frames, tagged `BINARY_TYPE.SSTV_LINE`,
-  server→client only)**: one received line as it arrives — picture id,
-  line number, width, then RGB; see `src/server/protocol.js`.
-- **Radiofax lines (binary frames, tagged `BINARY_TYPE.FAX_LINE`,
-  server→client only)**: one received chart line — chart id, line number,
-  width, then one grey byte per pixel; see `src/server/protocol.js`.
-- **Feld-Hell picture (binary frames, tagged `BINARY_TYPE.HELL_COLUMNS`,
-  server→client only)**: received columns, about ten frames a second —
-  rows per column, column count, tone, then the columns' ink values; see
-  `src/server/protocol.js`.
-
-All connected browsers show the same thing: the radio's frequency, mode,
-filter and other settings, and also the modes PiRO runs itself on top of
-LSB/USB, which the radio can't report (FT8/FT4, FreeDV, JTTY, Olivia,
-Feld-Hell and SSTV), with JTTY's transmit frequency, Olivia's centre and
-Feld-Hell's tone. Pick SSTV on one phone and the others switch to SSTV too;
-a browser opened later starts in the same mode. What stays with each
-browser is work in progress there: text typed but not sent, the FT8 QSO
-being worked and its transmit frequency, and a picture being cropped for
-SSTV.
-
-**Notes.** Under the PTT button is a box for short notes to the other
-people using the radio, for example "VK3ABC: on 40 m FT8 until 16:30" or
-"can I have it after the net?". Type one and press Enter or Send; it
-appears in every browser with the time, and the three most recent are
-shown, newest first. In the other browsers a new note plays a short chime
-and flashes the screen once (on a device set to reduce motion, only the
-notes light up). Opening or reconnecting PiRO makes no sound. Nobody signs
-in, so put your callsign in the note. The notes are kept on the Pi (a
-browser opened later sees them) and cleared after an hour with no new
-note, or two minutes after the last browser closes. Browsers only play
-sound once the page has been tapped, and a phone that is locked or has the
-browser in the background usually won't chime at all.
-
-Note: every connected client currently has equal, unrestricted control,
-including sending TX audio — there's no access arbitration (e.g. locking
-out other clients while one is transmitting, or preventing two people's
-mic audio from being decoded and played simultaneously, which will
-produce garbled TX audio). Worth keeping in mind if more than one
-operator will use this concurrently; not addressed by the current
-phases.
-
-On the Pi, the radio's USB CI-V serial device typically shows up as
-`/dev/ttyUSB0` or `/dev/ttyACM0` — check `dmesg` after plugging in, or
-use a udev rule to get a stable name if you have other USB-serial
-devices attached.
-
-## Design notes
-
-- CAT control happens **server-side** (Node `serialport`), not via the
-  browser's Web Serial API — this keeps client browser support universal
-  (Safari/Firefox/iOS included) and avoids needing the browser tab
-  physically at the radio.
-- Audio in/out uses the radio's USB audio codec (present on IC-7300,
-  IC-9700, IC-705, IC-7610, etc.) via ALSA on the Pi — no separate sound
-  card or virtual audio cable needed.
-- Remote-over-internet access is expected to be layered on separately
-  via VPN; PiRO has no login. It does compress audio for such links (see
-  [Compressed audio for remote use](#compressed-audio-for-remote-use)).
-
-See `docs/civ-notes.md` for CI-V protocol specifics.
-
-If you publish a fork, set `SOURCE_CODE_URL` to it, so the footer link points
-to the source of the version that is actually running.
+| JTTY | WSJT-X 3.3 | [`third_party/jtty/`](third_party/jtty/README.md) |
+| Olivia | fldigi (Pawel Jalocha) | [`third_party/olivia/`](third_party/olivia/README.md) |
+| Feld-Hell | fldigi | [`third_party/feldhell/`](third_party/feldhell/README.md) |
+| SSTV receive | slowrx (Oona Räisänen) | [`third_party/sstv/`](third_party/sstv/README.md) |
+| WSPR | wsprd and wsprsim (WSJT-X) | [`third_party/wsjtx-wsprd/`](third_party/wsjtx-wsprd/README.md) |
+| EasyPal | QSSTV (and Dream) | [`third_party/qsstv-drm/`](third_party/qsstv-drm/README.md) |
+| RNNoise (patched demo) | xiph/rnnoise | [`third_party/rnnoise/`](third_party/rnnoise/README.md) |
+
+The DeepCW and HamNoise models are in `models/`, each with its `LICENSE`
+and `NOTICE.md`. Keep these notices when you change the code.
+
+---
+
+## Credits
+Several of the cooler features in this app are built on the work of others:
+- FreeDV support = https://github.com/freedv/rade_c
+- FT8/FT4 support = https://github.com/e04/ft8ts
+- CW 2 decoder = https://github.com/dawsonjon/HamFist
+- CW 3 decoder = https://github.com/e04/web-deep-cw-decoder
+- HamNoise denoiser = https://github.com/e04/HamNoise
+- RNnoise denoiser = https://jmvalin.ca/demo/rnnoise/
+- JTTY support = Ported to JS from https://wsjtx.github.io/wsjtx/index.html
+- Olivia support = Ported to JS from Pawel Jalocha's (SP9VRC) MFSK code in fldigi, https://github.com/w1hkj/fldigi
+- Feld-Hell support = Ported to JS from fldigi's Feld-Hell modem and font, https://github.com/w1hkj/fldigi
+- SSTV receiver = Ported to JS from slowrx by Oona Räisänen (OH2EIQ), https://github.com/windytan/slowrx
+- EasyPal (HamDRM) receiver and transmitter = Ported to JS from QSSTV by Johan Maes (ON4QZ) and M. Bos (PA0MBO), https://github.com/ON4QZ/QSSTV, whose transmitter builds on Dream by Volker Fischer (TU Darmstadt)
+- WSPR support = Ported to JS from wsprd and wsprsim (K1JT, K9AN) in WSJT-X, https://wsjtx.github.io/wsjtx/index.html
+
+## Licence
+
+PiRO is licensed under the GNU Affero General Public License, version 3
+only (AGPL-3.0-only); see [`LICENSE`](LICENSE). Some of the code and
+models it includes come under other licences (AGPL, GPL, ISC, BSD,
+Apache and MIT), which allow this. Their notices are in `third_party/` and
+`models/`.
+
+The AGPL asks that people who use your PiRO over a network can get its
+source code. Set `SOURCE_CODE_URL` to where your version's source is, and
+the page footer links to it.
