@@ -116,7 +116,7 @@ async function play(capture, audio, until, timeoutMs = 20000) {
     const { audio, file } = fx.loadFixture('b16-rs2');
     await play(capture, Float32Array.from([...new Float32Array(36000), ...audio]), () => of(EVENT.EASYPAL_PICTURE).length >= 2);
     const p = of(EVENT.EASYPAL_PICTURE)[1];
-    check(p && p.fileName === 'tiny.jp2' && p.mime === 'image/png' && Buffer.from(p.data, 'base64').subarray(1, 4).toString() === 'PNG' && p.width === 160, 'a JPEG 2000 picture (sent as .rs2) is decoded and broadcast as a PNG');
+    check(p && p.fileName === 'tiny.jp2' && p.mime === 'image/jpeg' && Buffer.from(p.data, 'base64')[0] === 0xff && p.width === 160, 'a JPEG 2000 picture (sent as .rs2) is decoded and broadcast as a JPEG');
     await sleep(100);
     const saved = fs.readdirSync(saveDir).filter((n) => n.endsWith('.jp2'));
     check(saved.length === 1 && fs.readFileSync(path.join(saveDir, saved[0])).equals(file), 'and saved as the .jp2 it was');

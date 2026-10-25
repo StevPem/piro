@@ -117,7 +117,16 @@ const describe = (m) => (m ? `${m.mode} ${m.bandwidth} kHz ${m.qam}-QAM ${m.prot
   const jp2 = fs.readFileSync(path.join(__dirname, 'fixtures', 'easypal-tiny.jp2'));
   check(sniff(jp2) === 'image/jp2', 'a JPEG 2000 file is recognised');
   const shown = toDisplay(jp2, 'x.jp2');
-  check(shown.mime === 'image/png' && shown.width === 160 && shown.height === 120 && shown.data.subarray(1, 4).toString() === 'PNG', 'a JPEG 2000 picture is decoded and sent as a PNG');
+  check(shown.mime === 'image/jpeg' && shown.width === 160 && shown.height === 120 && shown.data[0] === 0xff && shown.data[1] === 0xd8, 'a JPEG 2000 picture is decoded and sent as a JPEG');
+  {
+    // a camera-sized picture is shrunk for showing: 3648 x 2736 (as in a real EasyPal recording) to 1216 x 912
+    const big = new Uint8Array(3648 * 2736 * 3);
+    for (let i = 0; i < big.length; i++) big[i] = (i * 7) & 0xff;
+    const { shrink } = require('../src/audio/drm/picture');
+    const s = shrink(big, 3648, 2736);
+    const avg = (s.rgb[0] + s.rgb[3]) / 2;
+    check(s.width === 1216 && s.height === 912 && avg > 50 && avg < 205, `a big picture is shrunk to fit 1600 pixels (${s.width} x ${s.height}), each pixel the average of a block`);
+  }
   check(toDisplay(Buffer.from('hello there, this is text'), 'note.txt').text.startsWith('hello'), 'a text file is shown as text');
   check(toDisplay(Buffer.alloc(40, 7), 'x.bin') === null && jpegSize(Buffer.from([0xff, 0xd8, 0xff, 0xd9])) === null, 'anything else is not shown');
 }

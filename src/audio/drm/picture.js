@@ -4,10 +4,46 @@
  * Turns a file received over HamDRM into something a browser can show.
  * EasyPal and QSSTV send JPEG or JPEG 2000 pictures (and sometimes other
  * files). Browsers show JPEG, PNG, GIF, WebP and BMP themselves; JPEG 2000
- * is decoded here (jpeg2000, after PDF.js; Apache-2.0) and sent as a PNG.
+ * is decoded here (jpeg2000, after PDF.js; Apache-2.0), shrunk to at most
+ * 1600 pixels across, and sent as a JPEG (jpeg-js; BSD-3-Clause): a PNG of
+ * a photo is several times bigger.
  */
 
-const { encodePng } = require('../../server/png');
+
+// EasyPal pictures can be camera-sized (a 10-megapixel JPEG 2000 file of
+// 100 kB is normal). What is shown in the browser is cut down to this.
+const MAX_SHOWN = 1600;
+const JPEG_QUALITY = 85;
+
+/** Shrinks RGB to fit MAX_SHOWN, averaging each block of pixels. */
+function shrink(rgb, width, height) {
+  const f = Math.ceil(Math.max(width, height) / MAX_SHOWN);
+  if (f <= 1) return { rgb, width, height };
+  const w = Math.floor(width / f);
+  const h = Math.floor(height / f);
+  const out = new Uint8Array(w * h * 3);
+  const n = f * f;
+  for (let y = 0; y < h; y++) {
+    for (let x = 0; x < w; x++) {
+      let r = 0;
+      let g = 0;
+      let b = 0;
+      for (let dy = 0; dy < f; dy++) {
+        let s = ((y * f + dy) * width + x * f) * 3;
+        for (let dx = 0; dx < f; dx++, s += 3) {
+          r += rgb[s];
+          g += rgb[s + 1];
+          b += rgb[s + 2];
+        }
+      }
+      const d = (y * w + x) * 3;
+      out[d] = Math.round(r / n);
+      out[d + 1] = Math.round(g / n);
+      out[d + 2] = Math.round(b / n);
+    }
+  }
+  return { rgb: out, width: w, height: h };
+}
 
 const TYPES = [
   { mime: 'image/jpeg', test: (b) => b[0] === 0xff && b[1] === 0xd8 },
@@ -76,8 +112,16 @@ function decodeJpeg2000(data) {
 function toDisplay(data, fileName = '') {
   const mime = sniff(data);
   if (mime === 'image/jp2' || mime === 'image/j2k') {
-    const { width, height, rgb } = decodeJpeg2000(data);
-    return { mime: 'image/png', data: encodePng(rgb, width, height), width, height, from: mime };
+    const full = decodeJpeg2000(data);
+    const { width, height, rgb } = shrink(full.rgb, full.width, full.height);
+    const rgba = Buffer.alloc(width * height * 4, 255);
+    for (let i = 0, j = 0; i < rgb.length; i += 3, j += 4) {
+      rgba[j] = rgb[i];
+      rgba[j + 1] = rgb[i + 1];
+      rgba[j + 2] = rgb[i + 2];
+    }
+    const jpeg = require('jpeg-js').encode({ data: rgba, width, height }, JPEG_QUALITY).data;
+    return { mime: 'image/jpeg', data: jpeg, width, height, from: mime, fullWidth: full.width, fullHeight: full.height };
   }
   if (mime) {
     const size = mime === 'image/jpeg' ? jpegSize(data) : null;
@@ -87,4 +131,4 @@ function toDisplay(data, fileName = '') {
   return null;
 }
 
-module.exports = { toDisplay, sniff, jpegSize, decodeJpeg2000 };
+module.exports = { toDisplay, sniff, jpegSize, decodeJpeg2000, shrink, MAX_SHOWN };

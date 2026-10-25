@@ -2921,8 +2921,9 @@ easypalSaveBtn.addEventListener('click', () => {
   if (!p) return;
   const a = document.createElement('a');
   a.href = p.data ? easypalDataUrl(p) : `data:text/plain;charset=utf-8,${encodeURIComponent(p.text || '')}`;
-  // a JPEG 2000 picture was converted to PNG for the browser: save the PNG under a matching name
-  a.download = p.mime === 'image/png' && !/\.png$/i.test(p.fileName) ? p.fileName.replace(/\.[^.]*$/, '') + '.png' : p.fileName;
+  // a JPEG 2000 picture was converted to JPEG for the browser: save that, under a matching name
+  const ext = { 'image/jpeg': 'jpg', 'image/png': 'png', 'image/gif': 'gif', 'image/webp': 'webp', 'image/bmp': 'bmp' }[p.mime];
+  a.download = ext && !new RegExp(`\\.(${ext}|jpeg)$`, 'i').test(p.fileName) ? `${p.fileName.replace(/\.[^.]*$/, '')}.${ext}` : p.fileName;
   document.body.appendChild(a);
   a.click();
   a.remove();
