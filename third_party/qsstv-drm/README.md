@@ -28,7 +28,7 @@ sends and receives it compatibly with EasyPal.
 | `src/audio/drm/source-decoder.js` | `drmrx/sourcedecoder.cpp`, `crc16_bytewise.cpp`, `bits2bytes.cpp` (packets, MOT header and body, segments) |
 | `src/audio/drm/rs.js` | `utils/rs.cpp` (Phil Karn's RS decoder) and `utils/reedsolomoncoder.cpp` (the `.rs1`-`.rs4` file format) |
 | `src/audio/drm/receiver.js` | `drmrx/drmrx.cpp` and QSSTV's DRM Hilbert filter (`dsp/filterparam.cpp`): 12 kHz complex input in 1024-sample blocks |
-| `src/audio/drm/picture.js`, `src/audio/easypal-decode-worker.js`, `src/server/easypal-decoder-bridge.js` | PiRO's own: JPEG 2000 to PNG (with the `jpeg2000` npm package, Apache-2.0, from PDF.js), the worker thread, the browser events |
+| `src/audio/drm/picture.js`, `src/audio/easypal-decode-worker.js`, `src/server/easypal-decoder-bridge.js` | PiRO's own: JPEG 2000 decoded (the `jpeg2000` npm package, Apache-2.0, from PDF.js), shrunk to at most 1600 pixels and sent as JPEG (`jpeg-js`, BSD-3-Clause), the worker thread, the browser events |
 
 Not ported: QSSTV's displays (spectrum, constellation), the hybrid (FTP)
 mode, bad segment reports (BSR, which need a transmitter), and the
@@ -78,7 +78,12 @@ transmitter made the test signals in `test/fixtures/easypal-*.ulaw`
   echo, fading and deep fades in modes A 64-QAM, B 16-QAM and E 4-QAM: PiRO
   gets as many packets as QSSTV or more in every case.
 
-Not tested yet on an off-air signal, or against EasyPal itself.
+A recording of a real EasyPal transmission found online (4 minutes, mode
+A, 64-QAM, long interleave, a 3648 x 2736 JPEG 2000 photo sent as `.rs2`,
+callsign N0CALL; the audio had been through YouTube's AAC) decoded: 588 of
+595 frames good, the picture complete after 431 of its 570 segments, the
+other 139 put back by Reed-Solomon. QSSTV's receiver got 565 good packets from the
+same recording. Not tested yet on a signal received off air by PiRO.
 
 ## Licence notice (QSSTV drmrx, by M. Bos)
 

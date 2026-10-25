@@ -12,7 +12,7 @@ Hamlib, no separate audio server and no extra apps.
 Written by VK3TR. Licensed AGPL-3.0-only (see
 [Licence](#licence)).
 
-**Current build: v100.** This is the version the app shows next to its title.
+**Current build: v101.** This is the version the app shows next to its title.
 It is the `CACHE_NAME` number in `src/client/sw.js`, which goes up with every
 change to the web app.
 
@@ -789,7 +789,7 @@ test/
                            files from noise; Reed-Solomon, CRCs,
                            interleavers; see third_party/qsstv-drm/README.md
   easypal-decoder-bridge.test.js  EasyPal bridge with the real worker:
-                           status, pictures (JPEG as sent, JPEG 2000 as PNG),
+                           status, pictures (JPEG as sent, JPEG 2000 as JPEG),
                            kept and saved, PTT, the radio set up and put back
   fax-decoder-bridge.test.js  radiofax bridge: line frames, the chart as a
                            greyscale PNG (decoded back), kept and saved, a
@@ -1620,7 +1620,12 @@ SSTV as EasyPal and QSSTV send it (HamDRM, a form of Digital Radio
 Mondiale). The picture is sent as a file (usually JPEG or JPEG 2000) over
 an OFDM signal about 2.4 kHz wide. Receive only.
 
-- The radio goes to **USB** on the frequency it is on. The audio spectrum
+- The radio goes to **USB**, on the band's EasyPal (digital SSTV) calling
+  frequency if it has one: 7.173 MHz (40 m), 10.144 MHz (30 m), 14.233 MHz
+  (20 m) or 21.337 MHz (15 m), as commonly listed. On other bands it stays
+  where it is. The band buttons do the same while EasyPal is on. EasyPal is
+  always USB: a USB signal heard on LSB is a mirror image and won't decode.
+  The audio spectrum
   replaces the RF scope; a signal tuned right fills the space between the
   two guide lines (400 and 2750 Hz). The receiver copes with a mistuning of
   a few hundred hertz and shows it.
@@ -1634,7 +1639,8 @@ an OFDM signal about 2.4 kHz wide. Receive only.
   as it grows. When the file is complete it is shown, described, and added
   to the strip of recent ones (the last 8, for pages that open later). Tap
   the picture for full size; **Save** saves the file (a JPEG 2000 picture
-  as the PNG it was shown as).
+  as the JPEG it was shown as, at most 1600 pixels across; `EASYPAL_SAVE_DIR`
+  keeps the original).
 - Files sent with Reed-Solomon protection (EasyPal's and QSSTV's `.rs1` to
   `.rs4`) are put back together when some segments are lost, once enough
   have arrived. A plain file needs every segment.
@@ -1645,7 +1651,9 @@ the server: 1 to 2% of a desktop CPU core (measured), so a few percent of a Pi's
 receiver on signals made by QSSTV's own transmitter, in all 72 mode
 combinations and with noise, mistuning, clock errors, echoes and fading;
 see [`third_party/qsstv-drm/README.md`](third_party/qsstv-drm/README.md).
-Not tested on an off-air signal, or with EasyPal itself, yet.
+A recording of a real EasyPal transmission found online (mode A, 64-QAM, a
+10-megapixel JPEG 2000 photo sent with Reed-Solomon) decoded completely.
+Not tested yet on a signal PiRO receives off air.
 
 ### SSTV
 
@@ -1935,7 +1943,7 @@ shapes.
   in as `easypal-preview` (`{transportId, fileName, mime, data}`), and each
   file received as `easypal-picture` (`{id, transportId, time, fileName,
   callsign, mode, snr, segments, recovered, size, mime, data, width,
-  height, text}`; JPEG 2000 is sent as PNG). `getEasypalPictures` returns
+  height, text}`; JPEG 2000 is sent as a JPEG at most 1600 pixels across). `getEasypalPictures` returns
   the kept files and the current preview.
   `setFaxActive` (`{active}`) starts and stops the radiofax receiver;
   `faxStartNow` starts a chart without a start signal and `faxStop` ends

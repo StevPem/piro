@@ -4195,3 +4195,25 @@ model for how to approach that.
   manual-tty-ui.js (Image button order, panel, a real transmission shown
   in two browsers and a late one). Not tested on air. Service-worker cache
   v100.
+
+### EasyPal: a real recording, big pictures, band frequencies (v101)
+
+- A real EasyPal recording (found online, 4 min, mode A 64-QAM long
+  interleave, `110612170202-Last_TX_Picture.rs2`, a 3648 x 2736 JPEG 2000
+  photo of 106 kB) decoded: 588 of 595 frames good, complete after 431 of
+  570 segments with 139 put back by Reed-Solomon (QSSTV's receiver: 565
+  good packets). It showed a real problem: as a PNG the picture was 3.4 MB,
+  sent to every browser and kept 8 times. Fix: a JPEG 2000 picture is now
+  shrunk to at most 1600 pixels across (block average) and sent as a JPEG
+  (jpeg-js): 161 kB for this one. `EASYPAL_SAVE_DIR` still keeps the
+  original file.
+- Entering EasyPal now tunes the band's EasyPal frequency on USB, like SSTV:
+  7.173 (40 m), 10.144 (30 m), 14.233 (20 m), 21.337 MHz (15 m), from the
+  common digital SSTV lists (W9FE, PA8S, PD2TX, VK6YSF). Other bands stay
+  where they are. The band buttons follow the same table while EasyPal is
+  on. Always USB: a mirror-image (LSB) copy of a test signal doesn't decode
+  (nor does it in QSSTV).
+- Tests: easypal.test.js (a big picture shrunk; JPEG 2000 sent as JPEG),
+  easypal-decoder-bridge.test.js (JPEG 2000 broadcast as JPEG),
+  manual-tty-ui.js (EasyPal tunes 14.233 MHz USB from 20 m; the 40m button
+  goes to 7.173 MHz). Not tested on air. Service-worker cache v101.
