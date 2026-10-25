@@ -4115,3 +4115,40 @@ model for how to approach that.
   charts as fixtures, every 4th line, 650 kB; pure noise left alone;
   slantPpm), fax-decoder-bridge.test.js (the slant's clock is kept, a
   phasing that measured nothing is not). Service-worker cache v98.
+
+### Radiofax: sharper charts (v99)
+
+- Reported: charts no longer slanted but fuzzy, text unreadable. Radio:
+  FIL1, NR on, notch off.
+- Analysis of the charts: thin vertical lines came out pale (200-230 of
+  255) while horizontal lines were fully black; thick vertical strokes were
+  hollow (two dark edges); the same everywhere on a chart. PiRO's
+  demodulator turns a 2-pixel black line into 15 on test signals (and
+  widening its filter changed little), so the smearing was before PiRO.
+  The radio's NR (adaptive) keeps steady tones and blurs quick changes. A
+  chart received with NR off was sharp: confirmed.
+- Fix: `FaxDecoderBridge` sets the radio up when Radiofax is selected (NR
+  off, auto notch off, FIL1) and puts back what it changed when Radiofax is
+  left, the last browser goes, or the server stops: only settings still as
+  it left them, and the filter only in the same mode. `FAX_RADIO_SETUP=off`
+  disables it.
+- Noise: the remaining streaks are crashes (single lines) and fades (5-15
+  lines with the signal below the noise). `cleanChart()` in `fax-rx.js`
+  runs when a chart ends: it measures speckle (second difference) in
+  32-pixel pieces against the same piece in the 3 lines either side; lines
+  speckled across half their width, up to 3 in a row, are replaced by a
+  blend of their neighbours; pieces twice as speckled as their neighbours
+  get a 3x3 median. On a synthetic chart with a fade and crashes at 12 dB:
+  specks in the white 1.6% -> 0.1%, strokes kept. Clean charts, text and
+  grids: unchanged. On the reported charts it mends 3-10 lines and cleans
+  the background; a deep fade through text can't be recovered.
+  `FAX_CLEANUP=off` disables it. The chart's caption says how many lines
+  were mended.
+- Tried and dropped: holding the last level through clicks (frequency far
+  outside 1500-2300 Hz). It made no measurable difference: the
+  demodulator's filter already tames clicks, and levels are clamped.
+- Tests: fax.test.js (crashes mended, specks cut, strokes kept, clean
+  charts untouched), fax-decoder-bridge.test.js (radio set up and put back;
+  operator's later change kept; a mode change keeps that mode's filter;
+  nothing touched if already set; put back on stop). Service-worker cache
+  v99.

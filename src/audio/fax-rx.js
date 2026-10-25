@@ -27,7 +27,8 @@
  *   {type: 'state', state: 'listening'|'phasing'|'receiving'}
  *   {type: 'start', width, lpm, ioc, phased}
  *   {type: 'line', y, grey: Uint8Array(width)}
- *   {type: 'end', width, lines, grey: Uint8Array(width * lines), complete, reason, clockPpm}
+ *   {type: 'end', width, lines, grey: Uint8Array(width * lines), complete, reason, clockPpm,
+ *    phased, clockMeasured, slantPxPerLine, slantPpm, repairedLines, smoothedPieces}
  */
 
 const { designLowpassFir } = require('./resample');
@@ -160,9 +161,98 @@ function deslant(grey, width, lines, { maxPxPerLine = 1.5 } = {}) {
   return { grey: out, pxPerLine: Math.round(best * 1000) / 1000 };
 }
 
+/**
+ * Mends the damage HF noise does to a chart, without touching clean parts.
+ * Noise shows as speckle: pixel-to-pixel jumps (a second difference) much
+ * bigger than the chart's drawing has. Each line is measured in 32-pixel
+ * pieces, each piece against the same piece in the 3 lines either side.
+ *  - A line that is speckled across at least half its width (a static
+ *    crash) is replaced by a blend of the good lines above and below, if
+ *    no more than 3 lines in a row are hit. Charts draw everything several
+ *    lines thick, so little is lost; longer runs (a deep fade) are left.
+ *  - Elsewhere, a piece twice as speckled as the same piece in the lines
+ *    around it (a fade, a shorter crash) gets a 3 x 3 median filter, which
+ *    removes specks but keeps lines and text strokes. Drawing that carries
+ *    on from line to line (text, grids) isn't touched, since its
+ *    neighbours are just as busy; horizontal lines have no speckle at all.
+ * Tuned on synthetic charts with crashes and fades, and on VMC/VMW charts
+ * (see docs/ui-notes.md, v99).
+ * @returns {{grey: Uint8Array, repairedLines: number, smoothedPieces: number}}
+ */
+function cleanChart(grey, width, lines) {
+  const SEG = 32;
+  const nseg = Math.floor(width / SEG);
+  const sp = new Float32Array(lines * nseg);
+  for (let y = 0; y < lines; y++) {
+    const o = y * width;
+    for (let s = 0; s < nseg; s++) {
+      let acc = 0;
+      for (let x = s * SEG + 1; x < (s + 1) * SEG - 1; x++) acc += Math.abs(2 * grey[o + x] - grey[o + x - 1] - grey[o + x + 1]);
+      sp[y * nseg + s] = acc / (SEG - 2);
+    }
+  }
+  // how a piece compares with the same piece in the 3 lines either side
+  const ratio = new Float32Array(lines * nseg);
+  const near = [];
+  for (let y = 0; y < lines; y++) {
+    for (let s = 0; s < nseg; s++) {
+      near.length = 0;
+      for (let k = -3; k <= 3; k++) if (k && y + k >= 0 && y + k < lines) near.push(sp[(y + k) * nseg + s]);
+      near.sort((a, b) => a - b);
+      ratio[y * nseg + s] = sp[y * nseg + s] / Math.max(4, near[near.length >> 1] ?? 0);
+    }
+  }
+  const bad = new Uint8Array(lines);
+  for (let y = 0; y < lines; y++) {
+    let noisy = 0;
+    for (let s = 0; s < nseg; s++) if (sp[y * nseg + s] > 12 && ratio[y * nseg + s] > 3) noisy++;
+    if (noisy >= nseg / 2) bad[y] = 1;
+  }
+  const out = Uint8Array.from(grey);
+  let repairedLines = 0;
+  for (let y = 0; y < lines; ) {
+    if (!bad[y]) {
+      y++;
+      continue;
+    }
+    let e = y;
+    while (e < lines && bad[e]) e++;
+    const a = y - 1;
+    if (e - y <= 3 && a >= 0 && e < lines) {
+      for (let r = y; r < e; r++) {
+        const t = (r - a) / (e - a);
+        for (let x = 0; x < width; x++) out[r * width + x] = Math.round(grey[a * width + x] * (1 - t) + grey[e * width + x] * t);
+        repairedLines++;
+      }
+    }
+    y = e;
+  }
+  const src = Uint8Array.from(out);
+  const w9 = new Uint8Array(9);
+  let smoothedPieces = 0;
+  for (let y = 1; y < lines - 1; y++) {
+    for (let s = 0; s < nseg; s++) {
+      if (bad[y] || !(sp[y * nseg + s] > 20 && ratio[y * nseg + s] > 2)) continue;
+      smoothedPieces++;
+      for (let x = Math.max(1, s * SEG); x < Math.min(width - 1, (s + 1) * SEG); x++) {
+        let k = 0;
+        for (let dy = -1; dy <= 1; dy++) for (let dx = -1; dx <= 1; dx++) w9[k++] = src[(y + dy) * width + x + dx];
+        w9.sort();
+        out[y * width + x] = w9[4];
+      }
+    }
+  }
+  return { grey: out, repairedLines, smoothedPieces };
+}
+
 class FaxReceiver {
-  constructor({ lpm = FAX_LPM, width = FAX_WIDTH } = {}) {
+  /**
+   * @param {object} [opts]
+   * @param {boolean} [opts.cleanUp=true] - mend noise damage when a chart ends (see cleanChart())
+   */
+  constructor({ lpm = FAX_LPM, width = FAX_WIDTH, cleanUp = true } = {}) {
     this.lpm = lpm;
+    this.cleanUp = cleanUp;
     this.width = width;
     this.nominalSpl = (RATE * 60) / lpm;
     this.spl = this.nominalSpl; // corrected by phasing
@@ -479,6 +569,14 @@ class FaxReceiver {
     // later charts can start with the right line length.
     let slantPxPerLine = 0;
     let slantPpm = null;
+    let repairedLines = 0;
+    let smoothedPieces = 0;
+    if (this.cleanUp && lines.length >= 10) {
+      const c = cleanChart(grey, this.width, lines.length);
+      grey = c.grey;
+      repairedLines = c.repairedLines;
+      smoothedPieces = c.smoothedPieces;
+    }
     if (!(this._phased && this._clockMeasured) && lines.length >= 60) {
       const d = deslant(grey, this.width, lines.length);
       grey = d.grey;
@@ -497,6 +595,8 @@ class FaxReceiver {
       clockMeasured: this._phased && this._clockMeasured,
       slantPxPerLine,
       slantPpm,
+      repairedLines,
+      smoothedPieces,
     });
     this._lines = [];
     this._phased = false;
@@ -527,4 +627,4 @@ class FaxReceiver {
   }
 }
 
-module.exports = { FaxReceiver, toneStrength, deslant, FAX_SAMPLE_RATE, FAX_WIDTH };
+module.exports = { FaxReceiver, toneStrength, deslant, cleanChart, FAX_SAMPLE_RATE, FAX_WIDTH };

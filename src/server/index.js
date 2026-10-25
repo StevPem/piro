@@ -571,6 +571,10 @@ async function main() {
       audioBridge,
       saveDir: process.env.FAX_SAVE_DIR || undefined,
       stateFile: process.env.FAX_STATE_FILE || undefined, // the measured clock error, kept across restarts
+      // Radiofax turns the radio's NR and auto notch off and selects FIL1, and puts them back after
+      setUpRadio: !/^(0|false|off)$/i.test(process.env.FAX_RADIO_SETUP || ''),
+      // mend noise damage (crash-hit lines, speckle) when a chart ends
+      cleanUp: !/^(0|false|off)$/i.test(process.env.FAX_CLEANUP || ''),
     });
     faxDecoderBridge.start();
     console.log(`Radiofax receive ready${process.env.FAX_SAVE_DIR ? ` (saving charts to ${process.env.FAX_SAVE_DIR})` : ''}.`);
