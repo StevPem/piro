@@ -4294,3 +4294,24 @@ model for how to approach that.
 - Tests: easypal.test.js decodes the 22 s of off-air recording (the MOT
   header, good segments, callsign, mode, S/N). Service-worker cache v103.
 
+### Architecture diagram brought up to date (v104)
+
+- `docs/architecture.drawio` was last updated at SSTV transmit (v77). It
+  now has the parts added since:
+  - bridges: CwTxBridge, WsprBridge, BandConditions, FaxDecoderBridge,
+    EasypalDecoderBridge, EasypalTxBridge, and the ReceiveRadioSetup
+    helper that Radiofax and EasyPal share;
+  - audio: wspr-decode-worker with wspr-rx and wspr-codec, FaxReceiver,
+    easypal-decode-worker with HamDrmReceiver and the drm/ receive parts,
+    easypal-encode-worker with HamDrmTransmitter and tx-picture;
+  - outside services: wsprnet.org and wspr.live.
+- The title now names the build, and the sw.js box shows the current cache
+  name. The CivDriver link lists WSPR, Fax and EasyPal.
+- Page 2 (event wiring) has rows for the six new bridges: what each
+  listens to, whether it reads or writes audio, what it sends, and what it
+  does to the radio.
+- The bridges, server and audio areas grew to the right, so the diagram is
+  now about 5900 units wide. `docs/architecture.png` was made again from
+  page 1 with draw.io's own viewer in headless Chromium (2676 x 915).
+- No code changed. Service-worker cache v104.
+
