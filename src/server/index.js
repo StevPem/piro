@@ -14,6 +14,7 @@ const { clampOliviaCentre } = require('../audio/olivia-dsp');
 const { HellDecoderBridge } = require('./hell-decoder-bridge');
 const { SstvDecoderBridge } = require('./sstv-decoder-bridge');
 const { SstvTxBridge, DEFAULT_SSTV_TX_MODE } = require('./sstv-tx-bridge');
+const { EasypalTxBridge, easypalTxConfig } = require('./easypal-tx-bridge');
 const { WsprBridge, parseBandList, WSPR_DIAL_HZ } = require('./wspr-bridge');
 const { FaxDecoderBridge } = require('./fax-decoder-bridge');
 const { EasypalDecoderBridge } = require('./easypal-decoder-bridge');
@@ -288,6 +289,7 @@ let sstvTxBridge;
 let wsprBridge;
 let faxDecoderBridge;
 let easypalDecoderBridge;
+let easypalTxBridge;
 let bandConditions;
 let radeBridge;
 let freeDvReporterBridge;
@@ -595,6 +597,30 @@ async function main() {
     easypalDecoderBridge.start();
     console.log(`EasyPal receive ready${process.env.EASYPAL_SAVE_DIR ? ` (saving files to ${process.env.EASYPAL_SAVE_DIR})` : ''}.`);
 
+    // EasyPal transmit, with fixed settings like SSTV_TX_MODE:
+    // EASYPAL_TX_MODE (A, B or E), EASYPAL_TX_BANDWIDTH (2.3 or 2.5 kHz),
+    // EASYPAL_TX_QAM (4, 16 or 64), EASYPAL_TX_PROTECTION (high or normal),
+    // EASYPAL_TX_INTERLEAVE (short or long), EASYPAL_TX_RS (off, rs1-rs4)
+    // and EASYPAL_TX_SECONDS, the longest a picture may take (90 by
+    // default). The callsign is STATION_CALLSIGN. EASYPAL_TX_POWER_W, if
+    // set, is the TX power while sending. See server/easypal-tx-bridge.js.
+    {
+      const cfg = easypalTxConfig(process.env, STATION_CALLSIGN || '');
+      for (const w of cfg.warnings) console.warn(w);
+      easypalTxBridge = new EasypalTxBridge({
+        controlServer,
+        audioBridge,
+        settings: cfg.settings,
+        rsType: cfg.rsType,
+        seconds: cfg.seconds,
+        callsign: STATION_CALLSIGN || '',
+        txPowerW: process.env.EASYPAL_TX_POWER_W ? Number(process.env.EASYPAL_TX_POWER_W) : undefined,
+      });
+      easypalTxBridge.start();
+      const t = controlServer.state.easypalTx;
+      console.log(`EasyPal transmit ready (mode ${t.mode}, ${t.bandwidth} kHz, ${t.qam}-QAM, ${t.protection} protection, ${t.interleave} interleave, ${t.rs || 'no RS'}, up to ${t.seconds} s).`);
+    }
+
     // WSPR receive and transmit (the third choice of the DIGI button).
     // WSPR_GRID is the Maidenhead locator sent and reported (defaults to
     // STATION_GRID); spots go to wsprnet.org unless WSPR_UPLOAD=off;
@@ -713,6 +739,7 @@ async function shutdown(signal) {
     if (sstvTxBridge) sstvTxBridge.stop();
     if (wsprBridge) wsprBridge.stop();
     if (faxDecoderBridge) faxDecoderBridge.stop();
+    if (easypalTxBridge) easypalTxBridge.stop();
     if (easypalDecoderBridge) easypalDecoderBridge.stop();
     if (bandConditions) bandConditions.stop();
     if (radeBridge) radeBridge.stop();

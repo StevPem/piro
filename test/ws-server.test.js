@@ -1272,6 +1272,24 @@ async function run() {
     a.send(JSON.stringify({ id: 'e3', type: 'getEasypalPictures' }));
     const pics = await nextMessage(a);
     check(pics.data.pictures.length === 1 && pics.data.preview.transportId === 7, 'getEasypalPictures returns the kept files and the preview of the one coming in');
+    // transmit: sendEasypal / abortEasypal passed on
+    check(hello.data.easypalTx === null, 'connected snapshot has easypalTx (null without the transmitter)');
+    const jpeg = Buffer.from([0xff, 0xd8, 0xff, 0xe0, 1, 2, 3]).toString('base64');
+    a.send(JSON.stringify({ id: 'e4', type: 'sendEasypal', jpeg }));
+    check(/not available/.test((await nextMessage(a)).error), 'sendEasypal is refused without the transmitter');
+    eServer.state.easypalTx = { mode: 'B', seconds: 90 };
+    const sends = [];
+    let aborts = 0;
+    eServer.on('easypal-send', (e) => sends.push(e));
+    eServer.on('easypal-abort', () => aborts++);
+    a.send(JSON.stringify({ id: 'e5', type: 'sendEasypal', jpeg }));
+    check((await nextMessage(a)).data.accepted === true && sends.length === 1 && sends[0].jpeg.length === 7 && sends[0].jpeg[1] === 0xd8, 'sendEasypal passes the decoded JPEG on');
+    a.send(JSON.stringify({ id: 'e6', type: 'sendEasypal', jpeg: Buffer.from('GIF89a').toString('base64') }));
+    check((await nextMessage(a)).ok === false && sends.length === 1, 'sendEasypal rejects what is not a JPEG');
+    a.send(JSON.stringify({ id: 'e7', type: 'sendEasypal' }));
+    check((await nextMessage(a)).ok === false, 'sendEasypal needs the picture');
+    a.send(JSON.stringify({ id: 'e8', type: 'abortEasypal' }));
+    check((await nextMessage(a)).data.accepted === true && aborts === 1, 'abortEasypal is passed on');
     a.close();
     b.close();
     await new Promise((r) => setTimeout(r, 100));
