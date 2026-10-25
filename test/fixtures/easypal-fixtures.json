@@ -34,5 +34,18 @@
     "protection": "high",
     "interleave": "long",
     "seconds": 24.8
+  },
+  "onair": {
+    "note": "The first 22 s of a real transmission: PiRO (build v102) on VK3TR's IC-7300, heard on the KiwiSDR at vk3jst.ddns.net on 28.690 MHz USB, 2026-10-25 06:54 UTC. Cut from the SDR's 12 kHz recording (9 s to 31 s) to keep the repository small; the whole 92.5 s gave VK3TR-20261025-065420.jpg (15204 bytes, 510 x 287, SHA-256 280bb45b473c8fe928741374506570af36986ce6678b004488844c77fcd5286e), with 42 of 176 segments put back by Reed-Solomon.",
+    "sentAs": "VK3TR-20261025-065420.rs2",
+    "bodySize": 20400,
+    "segments": 176,
+    "callsign": "VK3TR",
+    "mode": "B",
+    "bandwidth": 2.5,
+    "qam": 16,
+    "protection": "high",
+    "interleave": "short",
+    "seconds": 22
   }
 }

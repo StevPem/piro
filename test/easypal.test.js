@@ -3,7 +3,8 @@
 // Run with: node test/easypal.test.js
 // The EasyPal (HamDRM) receiver, src/audio/drm/, a port of QSSTV's: real
 // transmissions from QSSTV's own transmitter (test/fixtures/easypal-*.ulaw,
-// made by third_party/qsstv-drm/make-fixtures.js), clean and with noise, a
+// made by third_party/qsstv-drm/make-fixtures.js) and the start of one off
+// air (PiRO's own, recorded from a KiwiSDR), clean and with noise, a
 // mistuning and a gap; and its parts (Reed-Solomon, CRCs, interleavers).
 
 const fs = require('fs');
@@ -174,6 +175,19 @@ for (const name of ['b16-rs2', 'a64', 'e4']) {
   const { audio, file } = fx.loadFixture('e4');
   const { files } = receive(fx.addNoise(audio, 6, 11));
   check(files.length === 1 && files[0].data.equals(file), 'mode E 4-QAM (the most robust) at 6 dB S/N: received');
+}
+{
+  // off air: the first 22 s of PiRO's own transmitter (v102, defaults) from an IC-7300, heard on a KiwiSDR on 28.690 MHz at about 9 dB S/N
+  const { meta, audio } = fx.loadFixture('onair');
+  const { events, receiving } = receive(audio);
+  const header = events.find((e) => e.type === 'header');
+  check(header && header.fileName === meta.sentAs && header.bodySize === meta.bodySize, `off air (KiwiSDR recording): the MOT header names ${header?.fileName}, ${header?.bodySize} bytes`);
+  const segs = events.filter((e) => e.type === 'segment');
+  const last = segs.at(-1);
+  check(segs.length >= 38 && last.total === meta.segments && last.callsign === meta.callsign, `off air: ${segs.length} good segments in ${meta.seconds} s, of ${last?.total}, from ${last?.callsign}`);
+  const snrs = receiving.map((e) => e.snr).sort((x, y) => x - y);
+  const mid = snrs[snrs.length >> 1];
+  check(describe(receiving.at(-1)?.mode) === `${meta.mode} ${meta.bandwidth} kHz ${meta.qam}-QAM ${meta.protection} ${meta.interleave}` && mid > 7 && mid < 12, `off air: ${describe(receiving.at(-1)?.mode)}, S/N about ${mid?.toFixed(1)} dB`);
 }
 {
   // noise (and a whistle) only: nothing is found

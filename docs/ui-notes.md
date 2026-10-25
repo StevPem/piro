@@ -4270,3 +4270,27 @@ model for how to approach that.
   ws-server.test.js (`sendEasypal`, `abortEasypal`), manual-tty-ui.js
   (choose, tag, send, progress in both browsers, Stop from the other one).
   Not tested on air. Service-worker cache v102.
+
+### EasyPal transmit tested on air (v103)
+
+- VK3TR sent a picture with PiRO's EasyPal defaults (mode B, 2.5 kHz,
+  16-QAM, high protection, short interleave, RS2, 90 s) from an IC-7300 on
+  28.690 MHz USB on 25 October 2026, 06:54 UTC. The KiwiSDR at
+  vk3jst.ddns.net recorded it (12 kHz WAV).
+- PiRO's receiver decoded it completely: `VK3TR-20261025-065420.jpg`,
+  510 x 287, 15.2 kB, from VK3TR. The S/N was about 9 dB. 42 of the 176
+  segments were lost and put back by Reed-Solomon; the picture was
+  complete after 134 had arrived. Without RS it would not have decoded,
+  so RS2 stays the default.
+- The first 22 s of the recording is a new fixture:
+  `test/fixtures/easypal-onair.ulaw` (8-bit mu-law, 264 kB). The whole
+  transmission would be 1.1 MB, too big for the repository, and the
+  picture needs at least 134 segments (about 65 s) to complete. The 22 s
+  hold the start, the MOT header and the first segments.
+  `easypal-fixtures.json` records what the whole recording gave.
+  `make-fixtures.js` now keeps fixture entries it doesn't make.
+- Docs: EasyPal transmit is now "tested on air" (once) in the README and
+  `third_party/qsstv-drm/README.md`. Not yet tried with EasyPal itself.
+- Tests: easypal.test.js decodes the 22 s of off-air recording (the MOT
+  header, good segments, callsign, mode, S/N). Service-worker cache v103.
+

@@ -12,7 +12,7 @@ Hamlib, no separate audio server and no extra apps.
 Written by VK3TR. Licensed AGPL-3.0-only (see
 [Licence](#licence)).
 
-**Current build: v102.** This is the version the app shows next to its title.
+**Current build: v103.** This is the version the app shows next to its title.
 It is the `CACHE_NAME` number in `src/client/sw.js`, which goes up with every
 change to the web app.
 
@@ -803,8 +803,11 @@ test/
                            decoded exactly, with the mode, callsign and S/N;
                            noise, mistuning, a burst of static (segments
                            recovered), two transmissions in a row, no false
-                           files from noise; Reed-Solomon, CRCs,
-                           interleavers; see third_party/qsstv-drm/README.md
+                           files from noise; the start of an off-air
+                           recording of PiRO's own transmitter (KiwiSDR,
+                           about 9 dB S/N: header, segments, callsign);
+                           Reed-Solomon, CRCs, interleavers; see
+                           third_party/qsstv-drm/README.md
   easypal-decoder-bridge.test.js  EasyPal bridge with the real worker:
                            status, pictures (JPEG as sent, JPEG 2000 as JPEG),
                            kept and saved, PTT, the radio set up and put back
@@ -1717,8 +1720,14 @@ against QSSTV's own transmitter with the same file: the same frames, and
 the same samples to within 2 parts in 32768, in modes A, B and E, both
 interleaves and all three QAMs; QSSTV's receiver decodes it. Fitting the
 picture and making 90 s of audio takes about 1.5 s on a desktop; expect
-several seconds on a Pi (not measured). EasyPal itself has not been tried, but
-it uses the same format. **Not tested on air.**
+several seconds on a Pi (not measured).
+
+**Tested on air** once, on 25 October 2026: a picture sent with the
+defaults from an IC-7300 on 28.690 MHz was recorded on a KiwiSDR
+(vk3jst.ddns.net) and decoded completely, at about 9 dB S/N. 42 of its
+176 segments were lost and put back by Reed-Solomon. The first 22 s of
+the recording is a test fixture. EasyPal itself has not been tried, but it uses the same
+format.
 
 ### SSTV
 
