@@ -79,5 +79,8 @@ for (const f of FIXTURES) {
   };
   console.log(f.name, meta[f.name]);
 }
+// keep the entries not made here (the off-air recording, easypal-onair.ulaw)
+const old = fs.existsSync(path.join(FIX, 'easypal-fixtures.json')) ? JSON.parse(fs.readFileSync(path.join(FIX, 'easypal-fixtures.json'), 'utf8')) : {};
+for (const [k, v] of Object.entries(old)) if (!(k in meta)) meta[k] = v;
 fs.writeFileSync(path.join(FIX, 'easypal-fixtures.json'), JSON.stringify(meta, null, 2) + '\n');
 fs.rmSync(tmp, { recursive: true });

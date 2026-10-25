@@ -2,7 +2,8 @@
 
 /**
  * Helpers for the EasyPal (HamDRM) fixtures and tests: 8-bit mu-law storage
- * (12 kHz audio, made by third_party/qsstv-drm/make-fixtures.js) and some
+ * (12 kHz audio, made by third_party/qsstv-drm/make-fixtures.js, and
+ * easypal-onair.ulaw, recorded off air from a KiwiSDR) and some
  * radio trouble to add: noise, a mistuning, a gap.
  */
 
@@ -37,7 +38,8 @@ function decodeMuLaw(buf) {
 function loadFixture(name) {
   const meta = JSON.parse(fs.readFileSync(path.join(__dirname, 'easypal-fixtures.json'), 'utf8'))[name];
   const audio = decodeMuLaw(fs.readFileSync(path.join(__dirname, `easypal-${name}.ulaw`)));
-  const file = fs.readFileSync(path.join(__dirname, meta.source));
+  // (an off-air recording has no source file: its meta has the sha256 of what it carries)
+  const file = meta.source ? fs.readFileSync(path.join(__dirname, meta.source)) : null;
   return { meta, audio, file };
 }
 

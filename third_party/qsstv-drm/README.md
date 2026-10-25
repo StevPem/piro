@@ -89,8 +89,14 @@ from QSSTV:
 
 PiRO adds the rest of a transmission: the picture is fitted to a time
 (`EASYPAL_TX_SECONDS`), protected with Reed-Solomon (`.rs1`-`.rs4`, as
-EasyPal and QSSTV write it), and named `CALL-YYYYMMDD-HHMMSS`. Not tested
-on air, and not yet with EasyPal itself.
+EasyPal and QSSTV write it), and named `CALL-YYYYMMDD-HHMMSS`.
+
+Tested on air on 25 October 2026: PiRO (build v102, mode B, 16-QAM, high
+protection, short interleave, RS2, 90 s) on VK3TR's IC-7300, 28.690 MHz
+USB, recorded on the KiwiSDR at vk3jst.ddns.net. The receiver decoded the
+15 kB JPEG at about 9 dB S/N, with 42 of 176 segments put back by
+Reed-Solomon. The first 22 s of the recording is
+`test/fixtures/easypal-onair.ulaw`. Not yet tried with EasyPal itself.
 
 ## Testing against QSSTV
 
