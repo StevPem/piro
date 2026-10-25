@@ -186,6 +186,10 @@ class ControlServer extends EventEmitter {
       // server/fax-decoder-bridge.js), and the receiver's state (state.fax).
       faxActive: false,
       fax: null,
+      // Whether EasyPal (HamDRM) receive is on (REQUEST.SET_EASYPAL_ACTIVE /
+      // server/easypal-decoder-bridge.js), and the receiver's state (state.easypal).
+      easypalActive: false,
+      easypal: null,
       // Which variant the FreeDV mode button is currently in — '700E' or
       // 'RADE' (see REQUEST.SET_FREEDV_VARIANT / src/server/rade-bridge.js).
       // Defaults to 'RADE' — the only variant the client's FreeDV chip
@@ -362,6 +366,7 @@ class ControlServer extends EventEmitter {
       sstvActive: s.sstvActive,
       wsprActive: s.wsprActive,
       faxActive: s.faxActive,
+      easypalActive: s.easypalActive,
     };
   }
 
@@ -402,6 +407,12 @@ class ControlServer extends EventEmitter {
     this.emit('fax-active', active);
   }
 
+  _setEasypalActive(active) {
+    this.state.easypalActive = active;
+    // Handled by EasypalDecoderBridge (internal-only event).
+    this.emit('easypal-active', active);
+  }
+
   _setSstvActive(active) {
     this.state.sstvActive = active;
     // Handled by SstvDecoderBridge (internal-only event).
@@ -425,6 +436,7 @@ class ControlServer extends EventEmitter {
     if (this.state.hellActive) this._setHellActive(false);
     if (this.state.sstvActive) this._setSstvActive(false);
     if (this.state.faxActive) this._setFaxActive(false);
+    if (this.state.easypalActive) this._setEasypalActive(false);
     // WSPR too (it may transmit). WSPR_UNATTENDED can start a receive-only run later; see wspr-bridge.js.
     if (this.state.wsprActive) {
       this._setWsprActive(false);
@@ -659,6 +671,20 @@ class ControlServer extends EventEmitter {
           this._setFaxActive(msg.active);
           ws.send(makeResult(id, { active: msg.active }));
           this._broadcastAppModes(ws);
+          break;
+        }
+        case REQUEST.SET_EASYPAL_ACTIVE: {
+          if (typeof msg.active !== 'boolean') {
+            throw new Error('"active" must be a boolean');
+          }
+          this._setEasypalActive(msg.active);
+          ws.send(makeResult(id, { active: msg.active }));
+          this._broadcastAppModes(ws);
+          break;
+        }
+        case REQUEST.GET_EASYPAL_PICTURES: {
+          // Kept here by EasypalDecoderBridge (newest last).
+          ws.send(makeResult(id, { pictures: this.easypalPictures ?? [], preview: this.easypalPreview ?? null }));
           break;
         }
         case REQUEST.SET_VOICE_SQUELCH: {

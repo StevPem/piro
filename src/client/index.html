@@ -262,6 +262,22 @@
         </div>
       </section>
 
+      <!-- EasyPal (HamDRM digital SSTV) receive: status, how much of the file
+           has come, the picture, and recent ones. See app.js "EasyPal". -->
+      <section class="ft8-panel sstv-rx easypal-rx" id="easypal-rx" aria-label="EasyPal received" hidden>
+        <div class="ft8-panel__header">
+          <span class="row-group__label">EasyPal</span>
+          <button class="chip sstv-rx__btn" id="easypal-save-btn" type="button" hidden title="Save this file as it was sent">Save</button>
+        </div>
+        <div class="ft8-panel__slot sstv-rx__status" id="easypal-status" aria-live="polite">listening…</div>
+        <div class="sstv-tx__bar easypal-rx__bar" id="easypal-bar" role="progressbar" aria-label="File received so far" aria-valuemin="0" aria-valuemax="100" aria-valuenow="0" hidden>
+          <div class="sstv-tx__bar-fill" id="easypal-bar-fill"></div>
+        </div>
+        <img class="sstv-rx__picture easypal-rx__picture" id="easypal-picture" alt="" title="Tap to open full size" hidden />
+        <pre class="easypal-rx__text" id="easypal-text" hidden></pre>
+        <div class="sstv-rx__strip" id="easypal-strip" aria-label="Recent EasyPal pictures"></div>
+      </section>
+
       <!-- Radiofax receive: status, Start now / Stop / Save, and recent charts.
            The chart itself is drawn in the spectrum area (#fax-view). -->
       <section class="ft8-panel sstv-rx fax-rx" id="fax-rx" aria-label="Radiofax received" hidden>

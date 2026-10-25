@@ -16,6 +16,7 @@ const { SstvDecoderBridge } = require('./sstv-decoder-bridge');
 const { SstvTxBridge, DEFAULT_SSTV_TX_MODE } = require('./sstv-tx-bridge');
 const { WsprBridge, parseBandList, WSPR_DIAL_HZ } = require('./wspr-bridge');
 const { FaxDecoderBridge } = require('./fax-decoder-bridge');
+const { EasypalDecoderBridge } = require('./easypal-decoder-bridge');
 const { BandConditions } = require('./band-conditions');
 // Outgoing connections: give far-away servers (Europe is ~300 ms from Australia) time to answer; see net-options.js.
 require('./net-options').applyDefaults();
@@ -286,6 +287,7 @@ let sstvDecoderBridge;
 let sstvTxBridge;
 let wsprBridge;
 let faxDecoderBridge;
+let easypalDecoderBridge;
 let bandConditions;
 let radeBridge;
 let freeDvReporterBridge;
@@ -579,6 +581,20 @@ async function main() {
     faxDecoderBridge.start();
     console.log(`Radiofax receive ready${process.env.FAX_SAVE_DIR ? ` (saving charts to ${process.env.FAX_SAVE_DIR})` : ''}.`);
 
+    // EasyPal (HamDRM digital SSTV) receive, the Image button's second
+    // choice. EASYPAL_SAVE_DIR, if set, also saves each received file there
+    // as it was sent. Like Radiofax it turns the radio's NR and auto notch
+    // off and selects FIL1 (EASYPAL_RADIO_SETUP=off leaves them). See
+    // server/easypal-decoder-bridge.js.
+    easypalDecoderBridge = new EasypalDecoderBridge({
+      controlServer,
+      audioBridge,
+      saveDir: process.env.EASYPAL_SAVE_DIR || undefined,
+      setUpRadio: !/^(0|false|off)$/i.test(process.env.EASYPAL_RADIO_SETUP || ''),
+    });
+    easypalDecoderBridge.start();
+    console.log(`EasyPal receive ready${process.env.EASYPAL_SAVE_DIR ? ` (saving files to ${process.env.EASYPAL_SAVE_DIR})` : ''}.`);
+
     // WSPR receive and transmit (the third choice of the DIGI button).
     // WSPR_GRID is the Maidenhead locator sent and reported (defaults to
     // STATION_GRID); spots go to wsprnet.org unless WSPR_UPLOAD=off;
@@ -697,6 +713,7 @@ async function shutdown(signal) {
     if (sstvTxBridge) sstvTxBridge.stop();
     if (wsprBridge) wsprBridge.stop();
     if (faxDecoderBridge) faxDecoderBridge.stop();
+    if (easypalDecoderBridge) easypalDecoderBridge.stop();
     if (bandConditions) bandConditions.stop();
     if (radeBridge) radeBridge.stop();
     if (freeDvReporterBridge) freeDvReporterBridge.stop();

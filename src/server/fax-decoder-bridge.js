@@ -7,6 +7,7 @@ const { StreamDecimator } = require('../audio/decimator');
 const { FaxReceiver, FAX_SAMPLE_RATE } = require('../audio/fax-rx');
 const { EVENT, BINARY_TYPE } = require('./protocol');
 const { encodePngGrey } = require('./png');
+const { ReceiveRadioSetup } = require('./radio-setup');
 
 const DEFAULT_KEEP_PICTURES = 6; // charts are big (a few hundred kB as PNG)
 // The sound card's clock error, as measured on lined-up charts, is kept here
@@ -70,7 +71,7 @@ class FaxDecoderBridge {
     this.setUpRadio = setUpRadio && !!this.civ;
     this.cleanUp = cleanUp;
     this._radio = Promise.resolve(); // radio set-up and restore, in order
-    this._saved = null; // what _setUpRadio() changed: {nr, notch, filter, mode}
+    this._radioSetup = new ReceiveRadioSetup({ civ: this.civ, purpose: 'fax', report: (m) => this._reportError(m) });
 
     this._onPcm = (chunk) => this._handlePcm(chunk);
     this._onActive = (on) => {
@@ -110,55 +111,13 @@ class FaxDecoderBridge {
     }
   }
 
-  /**
-   * Radiofax needs the radio's NR and auto notch off and its widest filter
-   * (FIL1): NR smears every quick black/white change (thin vertical lines
-   * vanish, strokes go hollow; seen on VMC charts), and the auto notch
-   * attacks steady tones, which is what a white or black area is. What is
-   * changed here is put back by _restoreRadio() when Radiofax is left (by
-   * the browser, or when the last browser goes), and only if it is still as
-   * set here (the operator may have changed it since).
-   */
+  /** The radio's NR and auto notch off and FIL1 for fax (see radio-setup.js), put back when Radiofax is left. */
   async _setUpRadio() {
-    if (!this.setUpRadio || this._saved) return;
-    const civ = this.civ;
-    const saved = {};
-    try {
-      if (await civ.getNoiseReduction()) {
-        await civ.setNoiseReduction(false);
-        saved.nr = true;
-      }
-      if (await civ.getNotch()) {
-        await civ.setNotch(false);
-        saved.notch = true;
-      }
-      const filter = await civ.getFilter();
-      if (filter !== 1) {
-        saved.mode = (await civ.getMode?.())?.mode;
-        await civ.setFilter(1);
-        saved.filter = filter;
-      }
-    } catch (err) {
-      this._reportError(`couldn't set the radio up for fax (NR off, notch off, FIL1): ${err.message}`);
-    }
-    this._saved = saved;
-    if (Object.keys(saved).length) console.log(`Radiofax: radio set up for fax (${Object.keys(saved).join(', ')} changed)`);
+    if (this.setUpRadio) await this._radioSetup.setUp();
   }
 
   async _restoreRadio() {
-    const saved = this._saved;
-    this._saved = null;
-    if (!saved || !this.setUpRadio) return;
-    const civ = this.civ;
-    try {
-      if (saved.nr && !(await civ.getNoiseReduction())) await civ.setNoiseReduction(true);
-      if (saved.notch && !(await civ.getNotch())) await civ.setNotch(true);
-      // the filter only in the same mode (leaving fax for another mode picks that mode's filter)
-      const modeNow = saved.mode && (await civ.getMode?.())?.mode;
-      if (saved.filter && (await civ.getFilter()) === 1 && modeNow === saved.mode) await civ.setFilter(saved.filter);
-    } catch (err) {
-      this._reportError(`couldn't put the radio's settings back after fax: ${err.message}`);
-    }
+    if (this.setUpRadio) await this._radioSetup.restore();
   }
 
   /** Resolves once any radio set-up or restore has finished (for tests). */

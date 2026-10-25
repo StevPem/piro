@@ -4152,3 +4152,46 @@ model for how to approach that.
   operator's later change kept; a mode change keeps that mode's filter;
   nothing touched if already set; put back on stop). Service-worker cache
   v99.
+
+### EasyPal receive (v100)
+
+- The Image button now cycles SSTV → EasyPal → Radiofax → SSTV. EasyPal
+  receives HamDRM digital SSTV as EasyPal and QSSTV send it. Receive only.
+- Entering EasyPal sets USB on the current frequency and arms the server's
+  receiver. The audio spectrum stays, with guide lines at 400 and 2750 Hz
+  (the edges of a 2.5 kHz signal tuned right). The panel (`#easypal-rx`)
+  shows the receiver's status (mode, bandwidth, QAM, S/N, mistuning if 20 Hz
+  or more, callsign, segments so far), a progress bar, the top of a JPEG as
+  it comes in, then the finished file with a description, Save, a full-size
+  view on tap, and a strip of the last 8. A text file is shown as text.
+  Leaving USB (once confirmed) ends EasyPal, as for Radiofax.
+- Server: `EasypalDecoderBridge` (like the SSTV bridge: decimate to 12 kHz,
+  a worker, the audio spectrum) and `ReceiveRadioSetup` (radio-setup.js),
+  now shared with Radiofax: NR off, auto notch off, FIL1, put back on leaving.
+  New requests `setEasypalActive`, `getEasypalPictures`; events
+  `easypal-status`, `easypal-preview`, `easypal-picture`; env
+  `EASYPAL_SAVE_DIR`, `EASYPAL_RADIO_SETUP`. The last browser leaving turns
+  it off. JPEG 2000 is decoded in the worker (`jpeg2000` npm package) and
+  sent as PNG.
+- Receiver: `src/audio/drm/`, a port of QSSTV's drmrx (see
+  third_party/qsstv-drm/README.md). Checked against QSSTV's own receiver,
+  built from source (third_party/qsstv-drm/harness), on signals from
+  QSSTV's own transmitter: all 72 mode combinations decode with the same
+  packet counts. Three changes from QSSTV, each found by testing:
+  - Bug found: on noisy signals the port (and QSSTV) often lost the signal
+    part-way. Cause: the timing loop starts at the mode detector's
+    sample-rate estimate, which in the case studied (13 dB S/N) was about
+    800 ppm out when the true error was 0; the loop drifted for many frames. The starting value
+    is now limited to ±300 ppm. Mode B 16-QAM at 10 dB: 29 → 49 of 50
+    packets (QSSTV 21); with an echo 10 → 50 (QSSTV 27).
+  - A second transmission straight after the first was missed: the
+    receiver waited 10 bad frames (4 s) before looking afresh. Now 3.
+  - Reed-Solomon (.rsN) files came out padded: QSSTV reads the length byte
+    as a signed char. The exact length is now worked out.
+- Tests: easypal.test.js (3 QSSTV-made fixtures, 8-bit mu-law at 12 kHz;
+  noise, mistuning, static, back-to-back, noise only; RS, CRCs,
+  interleavers, JPEG 2000), easypal-decoder-bridge.test.js (real worker,
+  pictures, saving, PTT, radio set-up), ws-server.test.js (requests),
+  manual-tty-ui.js (Image button order, panel, a real transmission shown
+  in two browsers and a late one). Not tested on air. Service-worker cache
+  v100.
