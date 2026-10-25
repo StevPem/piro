@@ -4157,12 +4157,8 @@ model for how to approach that.
 
 - The Image button now cycles SSTV → EasyPal → Radiofax → SSTV. EasyPal
   receives HamDRM digital SSTV as EasyPal and QSSTV send it. Receive only.
-- Entering EasyPal tunes the band's EasyPal frequency on USB, like SSTV:
-  7.173 (40 m), 10.144 (30 m), 14.233 (20 m), 21.337 MHz (15 m), from the
-  common digital SSTV lists (W9FE, PA8S, PD2TX, VK6YSF); other bands stay
-  where they are. The band buttons follow the same table while EasyPal is
-  on. Always USB: a mirror-image (LSB) copy of a test signal doesn't decode
-  (nor does it in QSSTV). It then arms the server's receiver. The audio spectrum stays, with guide lines at 400 and 2750 Hz
+- Entering EasyPal sets USB on the current frequency and arms the server's
+  receiver. The audio spectrum stays, with guide lines at 400 and 2750 Hz
   (the edges of a 2.5 kHz signal tuned right). The panel (`#easypal-rx`)
   shows the receiver's status (mode, bandwidth, QAM, S/N, mistuning if 20 Hz
   or more, callsign, segments so far), a progress bar, the top of a JPEG as
@@ -4192,6 +4188,16 @@ model for how to approach that.
     receiver waited 10 bad frames (4 s) before looking afresh. Now 3.
   - Reed-Solomon (.rsN) files came out padded: QSSTV reads the length byte
     as a signed char. The exact length is now worked out.
+- Tests: easypal.test.js (3 QSSTV-made fixtures, 8-bit mu-law at 12 kHz;
+  noise, mistuning, static, back-to-back, noise only; RS, CRCs,
+  interleavers, JPEG 2000), easypal-decoder-bridge.test.js (real worker,
+  pictures, saving, PTT, radio set-up), ws-server.test.js (requests),
+  manual-tty-ui.js (Image button order, panel, a real transmission shown
+  in two browsers and a late one). Not tested on air. Service-worker cache
+  v100.
+
+### EasyPal: a real recording, big pictures, band frequencies (v101)
+
 - A real EasyPal recording (found online, 4 min, mode A 64-QAM long
   interleave, `110612170202-Last_TX_Picture.rs2`, a 3648 x 2736 JPEG 2000
   photo of 106 kB) decoded: 588 of 595 frames good, complete after 431 of
@@ -4201,11 +4207,13 @@ model for how to approach that.
   shrunk to at most 1600 pixels across (block average) and sent as a JPEG
   (jpeg-js): 161 kB for this one. `EASYPAL_SAVE_DIR` still keeps the
   original file.
-- Tests: easypal.test.js (3 QSSTV-made fixtures, 8-bit mu-law at 12 kHz;
-  noise, mistuning, static, back-to-back, noise only; RS, CRCs,
-  interleavers, JPEG 2000), easypal-decoder-bridge.test.js (real worker,
-  pictures, saving, PTT, radio set-up), ws-server.test.js (requests),
-  manual-tty-ui.js (Image button order, EasyPal frequencies on entry and
-  from the band buttons, panel, a real transmission shown
-  in two browsers and a late one). Not tested on air. Service-worker cache
-  v100.
+- Entering EasyPal now tunes the band's EasyPal frequency on USB, like SSTV:
+  7.173 (40 m), 10.144 (30 m), 14.233 (20 m), 21.337 MHz (15 m), from the
+  common digital SSTV lists (W9FE, PA8S, PD2TX, VK6YSF). Other bands stay
+  where they are. The band buttons follow the same table while EasyPal is
+  on. Always USB: a mirror-image (LSB) copy of a test signal doesn't decode
+  (nor does it in QSSTV).
+- Tests: easypal.test.js (a big picture shrunk; JPEG 2000 sent as JPEG),
+  easypal-decoder-bridge.test.js (JPEG 2000 broadcast as JPEG),
+  manual-tty-ui.js (EasyPal tunes 14.233 MHz USB from 20 m; the 40m button
+  goes to 7.173 MHz). Not tested on air. Service-worker cache v101.
