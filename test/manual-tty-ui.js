@@ -19,6 +19,7 @@ const { WsprBridge } = require(PKG + '/src/server/wspr-bridge');
 const { BandConditions } = require(PKG + '/src/server/band-conditions');
 const { FaxDecoderBridge } = require(PKG + '/src/server/fax-decoder-bridge');
 const { EasypalDecoderBridge } = require(PKG + '/src/server/easypal-decoder-bridge');
+const { EasypalTxBridge } = require(PKG + '/src/server/easypal-tx-bridge');
 const easypalFx = require('./fixtures/easypal-audio');
 const { encodeFax, FAX_WIDTH } = require(PKG + '/src/audio/fax-tx');
 const { EVENT } = require(PKG + '/src/server/protocol');
@@ -91,6 +92,8 @@ class Civ extends EventEmitter {
   faxRx.start();
   const easypalRx = new EasypalDecoderBridge({ controlServer: server, audioBridge });
   easypalRx.start();
+  const easypalTx = new EasypalTxBridge({ controlServer: server, audioBridge, callsign: 'VK2IO', seconds: 30, pttReleaseMarginMs: 20 });
+  easypalTx.start();
   // "Current conditions", with wspr.live answered by hand
   const conditions = new BandConditions({ controlServer: server, grid: 'QF56', query: async () => [[1409, 'K1ABC', 16500, ['VK2IO']], [704, 'VK3TR', 700, ['VK2IO']]] });
   conditions.start();
@@ -807,6 +810,37 @@ class Civ extends EventEmitter {
     check(await pageC.waitForFunction(() => document.querySelectorAll('#easypal-strip .sstv-rx__thumb').length === 1 && !document.getElementById('easypal-rx').hidden, null, { timeout: 8000 }).then(() => true, () => false), 'a browser opened later joins EasyPal and has the picture');
     await pageC.close();
   }
+  // EasyPal transmit: choose an image, tag it, send; progress in both browsers; Stop from the other one
+  {
+    check((await vis('#easypal-tx')) && !(await vis('#easypal-tx-editor')), 'EasyPal: "Send a picture" offers Camera and Choose image');
+    const pw = 1600;
+    const ph = 1200;
+    const photo = new Uint8Array(pw * ph * 3);
+    for (let y = 0; y < ph; y++) for (let x = 0; x < pw; x++) photo.set([(x * 255) / pw, (y * 255) / ph, 128], (y * pw + x) * 3);
+    await page.locator('#easypal-file-input').setInputFiles({ name: 'photo.png', mimeType: 'image/png', buffer: encodePng(photo, pw, ph) });
+    await page.waitForFunction(() => !document.getElementById('easypal-tx-editor').hidden, null, { timeout: 5000 });
+    await sleep(200);
+    const label = await page.locator('#easypal-tx-send').textContent();
+    check(label === 'Send (mode B, 16-QAM, up to 0:30)', 'the Send button shows the settings: ' + label);
+    const size = await page.locator('#easypal-tx-canvas').evaluate((c) => [c.width, c.height]);
+    check(size[0] === 800 && size[1] === 600 && (await page.locator('#easypal-tx-call').inputValue()) === 'VK2IO', `the whole picture, fitted to ${size.join(' x ')}, tagged VK2IO`);
+    const pttBefore = civ.log.filter((l) => l[0] === 'setPtt').length;
+    const writesBefore = writes.length;
+    await page.locator('#easypal-tx-send').click();
+    check(await page.waitForFunction(() => /^Sending /.test(document.getElementById('easypal-tx-progress-label').textContent), null, { timeout: 15000 }).then(() => true, () => false), 'Send: "Preparing", then "Sending" with a progress bar');
+    check(server.state.ptt === true && writes.length === writesBefore + 1, 'PTT on and the audio written');
+    const detail = await page.locator('#easypal-tx-progress-detail').textContent();
+    check(/x \d+ · quality \d+ · [\d.]+ kB · mode B · 16-QAM · RS2 · \d:\d\d left/.test(detail), 'the details: ' + detail);
+    check(Math.abs(writes.at(-1).length / 96000 - 30) < 2, `the audio fits the 30 s allowed (${(writes.at(-1).length / 96000).toFixed(1)} s)`);
+    check(await bFollows(() => !document.getElementById('easypal-tx-progress').hidden && /^Sending /.test(document.getElementById('easypal-status').textContent) && /^data:image\/jpeg/.test(document.getElementById('easypal-picture').src)), 'the second browser shows the progress and the picture going out');
+    if (process.env.EASYPAL_TX_SHOT) await page.locator('#easypal-rx').screenshot({ path: process.env.EASYPAL_TX_SHOT });
+    await pageB.locator('#easypal-tx-progress-stop').click();
+    check(await page.waitForFunction(() => document.getElementById('easypal-tx-status').textContent === 'Stopped.' && document.getElementById('easypal-tx-progress').hidden, null, { timeout: 5000 }).then(() => true, () => false), 'Stop in the other browser stops it: "Stopped."');
+    check(server.state.ptt === false && !easypalTx.transmitting && civ.log.filter((l) => l[0] === 'setPtt').length >= pttBefore, 'PTT off');
+    check((await page.locator('#easypal-tx-send').textContent()) === label && (await page.locator('#easypal-strip .sstv-rx__thumb').count()) === 1, 'Send is back, and nothing was added to the pictures');
+    await page.locator('#easypal-tx-cancel').click();
+    check(!(await vis('#easypal-tx-editor')), 'Cancel closes the editor');
+  }
   // Radiofax: the Image button's third press; the chart replaces the spectrum; VMC/VMW buttons below the S-meter
   {
     await chip('EasyPal').click();
@@ -885,7 +919,8 @@ class Civ extends EventEmitter {
   {
     // Following must never drive the radio. (Seeing the radio leave a TTY
     // mode's sideband, it may repeat a "leave" the first browser also sent.)
-    const bad = bRequests.filter((r) => /^(set(Mode|Frequency|Ptt|Ft8Variant|CwDecoderVariant)|send|abort)/.test(r.type) || (r.type === 'setDataMode' && r.on) || (/Active$/.test(r.type) && r.active));
+    // (abortEasypal: the EasyPal transmit test presses Stop in this browser on purpose)
+    const bad = bRequests.filter((r) => r.type !== 'abortEasypal').filter((r) => /^(set(Mode|Frequency|Ptt|Ft8Variant|CwDecoderVariant)|send|abort)/.test(r.type) || (r.type === 'setDataMode' && r.on) || (/Active$/.test(r.type) && r.active));
     check(bad.length === 0, 'the second browser sent no radio or mode commands of its own' + (bad.length ? ': ' + bad.map((r) => JSON.stringify(r)).join(' ') : ''));
   }
 
@@ -902,6 +937,7 @@ class Civ extends EventEmitter {
   wspr.stop();
   conditions.stop();
   faxRx.stop();
+  easypalTx.stop();
   easypalRx.stop();
   await server.close();
   console.log(failures ? `\n${failures} FAILED` : '\nAll UI checks passed');

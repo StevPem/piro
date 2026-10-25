@@ -4209,3 +4209,64 @@ model for how to approach that.
   from the band buttons, panel, a real transmission shown
   in two browsers and a late one). Not tested on air. Service-worker cache
   v100.
+
+### EasyPal: a real recording, big pictures, band frequencies (v101)
+
+- A real EasyPal recording (found online, 4 min, mode A 64-QAM long
+  interleave, `110612170202-Last_TX_Picture.rs2`, a 3648 x 2736 JPEG 2000
+  photo of 106 kB) decoded: 588 of 595 frames good, complete after 431 of
+  570 segments with 139 put back by Reed-Solomon (QSSTV's receiver: 565
+  good packets). It showed a real problem: as a PNG the picture was 3.4 MB,
+  sent to every browser and kept 8 times. Fix: a JPEG 2000 picture is now
+  shrunk to at most 1600 pixels across (block average) and sent as a JPEG
+  (jpeg-js): 161 kB for this one. `EASYPAL_SAVE_DIR` still keeps the
+  original file.
+- Entering EasyPal now tunes the band's EasyPal frequency on USB, like SSTV:
+  7.173 (40 m), 10.144 (30 m), 14.233 (20 m), 21.337 MHz (15 m), from the
+  common digital SSTV lists (W9FE, PA8S, PD2TX, VK6YSF). Other bands stay
+  where they are. The band buttons follow the same table while EasyPal is
+  on. Always USB: a mirror-image (LSB) copy of a test signal doesn't decode
+  (nor does it in QSSTV).
+- Tests: easypal.test.js (a big picture shrunk; JPEG 2000 sent as JPEG),
+  easypal-decoder-bridge.test.js (JPEG 2000 broadcast as JPEG),
+  manual-tty-ui.js (EasyPal tunes 14.233 MHz USB from 20 m; the 40m button
+  goes to 7.173 MHz). Not tested on air. Service-worker cache v101.
+
+### EasyPal transmit (v102)
+
+- EasyPal can now send a picture. Under the EasyPal picture, "Send a
+  picture" has Camera and Choose image. The whole picture is fitted within
+  800 x 600 (no cropping) and can carry the callsign tag, as for SSTV. The
+  browser sends it as a JPEG (quality 0.92) with `sendEasypal`.
+- The settings are fixed on the Pi, like `SSTV_TX_MODE`: `EASYPAL_TX_MODE`
+  (B), `EASYPAL_TX_BANDWIDTH` (2.5), `EASYPAL_TX_QAM` (16),
+  `EASYPAL_TX_PROTECTION` (high), `EASYPAL_TX_INTERLEAVE` (short),
+  `EASYPAL_TX_RS` (rs2), `EASYPAL_TX_SECONDS` (90, at most 540) and
+  `EASYPAL_TX_POWER_W`. Bad values give a warning and the default. The
+  callsign is `STATION_CALLSIGN`.
+- The server fits the picture to `EASYPAL_TX_SECONDS`: the best JPEG
+  quality from 30 to 90 that fits; if quality 30 is too big, the picture is
+  made smaller (by about as much as the file must shrink), down to 160
+  pixels on its short side, and only then the quality lowered. In 90 s
+  (mode B, 16-QAM, RS2) a photo goes out at about 430 to 550 pixels across.
+  Anything still too long is refused before PTT.
+- The transmitter (`src/audio/drm/transmitter.js`) is a port of QSSTV's
+  `drmtx`. Its audio matches QSSTV's to 2 parts in 32768 in modes A, B and
+  E, both interleaves and all QAMs. Two QSSTV details were needed for
+  that: the FAC bits it leaves scrambled in odd frames, and the frame it
+  never sends (frames = packets - 1).
+- A first fitting loop shrank the picture by 0.8 at a time after a full
+  quality search at each size: about 1.5 s on a desktop and too small a
+  picture. It now tries quality 30 first and jumps to the right size:
+  0.3 to 0.6 s, and pictures about 20% bigger.
+- Sending follows SSTV: DATA MODE on and confirmed, the optional power,
+  PTT, the audio, PTT off, power and DATA MODE put back (also on Stop and
+  errors). Status goes to every browser as `easypal-tx-status`, with the
+  picture going out. Stop works from any browser. Sending stops when the
+  last browser leaves. A sent picture joins the strip as "Sent".
+- Tests: easypal-tx.test.js (our receiver decodes the transmitter exactly
+  in A 64-QAM, B 16-QAM RS2 and E 4-QAM long; fitting; the settings; the
+  bridge with the real worker, Stop, refusals, the last browser leaving),
+  ws-server.test.js (`sendEasypal`, `abortEasypal`), manual-tty-ui.js
+  (choose, tag, send, progress in both browsers, Stop from the other one).
+  Not tested on air. Service-worker cache v102.

@@ -12,7 +12,7 @@ Hamlib, no separate audio server and no extra apps.
 Written by VK3TR. Licensed AGPL-3.0-only (see
 [Licence](#licence)).
 
-**Current build: v100.** This is the version the app shows next to its title.
+**Current build: v102.** This is the version the app shows next to its title.
 It is the `CACHE_NAME` number in `src/client/sw.js`, which goes up with every
 change to the web app.
 
@@ -31,7 +31,7 @@ Several of the cooler features in this app are built on the work of others:
 - Olivia support = Ported to JS from Pawel Jalocha's (SP9VRC) MFSK code in fldigi, https://github.com/w1hkj/fldigi
 - Feld-Hell support = Ported to JS from fldigi's Feld-Hell modem and font, https://github.com/w1hkj/fldigi
 - SSTV receiver = Ported to JS from slowrx by Oona Räisänen (OH2EIQ), https://github.com/windytan/slowrx
-- EasyPal (HamDRM) receiver = Ported to JS from QSSTV by Johan Maes (ON4QZ) and M. Bos (PA0MBO), https://github.com/ON4QZ/QSSTV
+- EasyPal (HamDRM) receiver and transmitter = Ported to JS from QSSTV by Johan Maes (ON4QZ) and M. Bos (PA0MBO), https://github.com/ON4QZ/QSSTV, whose transmitter builds on Dream by Volker Fischer (TU Darmstadt)
 - WSPR support = Ported to JS from wsprd and wsprsim (K1JT, K9AN) in WSJT-X, https://wsjtx.github.io/wsjtx/index.html
 
 ## Features
@@ -56,7 +56,8 @@ Several of the cooler features in this app are built on the work of others:
   [RTTY, JTTY, Olivia and Feld-Hell](#rtty-jtty-olivia-and-feld-hell).
 - **EasyPal**: the Image button's second choice receives digital SSTV
   pictures sent by EasyPal or QSSTV (HamDRM), with Reed-Solomon recovery
-  of lost segments. See [EasyPal](#easypal).
+  of lost segments, and sends a photo from the phone's camera or a chosen
+  picture. See [EasyPal](#easypal).
 - **Radiofax**: the Image button's third choice receives HF weather
   charts, such as the Bureau of Meteorology's VMC (Charleville) and VMW
   (Wiluna) broadcasts, drawn in place of the spectrum as they arrive. See
@@ -418,6 +419,14 @@ All settings are environment variables. For the systemd service they go in
 | `FAX_CLEANUP` | on | `off` stops Radiofax mending crash-hit lines and speckle when a chart ends. |
 | `EASYPAL_SAVE_DIR` | none | If set, every file received by EasyPal is also saved in this folder as it was sent (`YYYYMMDD-HHMMSSz-CALL-name.jpg`, UTC). |
 | `EASYPAL_RADIO_SETUP` | on | `off` stops EasyPal turning the radio's NR and auto notch off and selecting FIL1. |
+| `EASYPAL_TX_MODE` | `B` | EasyPal transmit robustness mode: `A`, `B` or `E`. B suits most HF paths; E is the most robust and slowest; A is fastest. |
+| `EASYPAL_TX_BANDWIDTH` | `2.5` | EasyPal transmit bandwidth in kHz: `2.5` or `2.3`. |
+| `EASYPAL_TX_QAM` | `16` | EasyPal transmit QAM: `4`, `16` or `64`. 4 is the most robust, 64 the fastest. |
+| `EASYPAL_TX_PROTECTION` | `high` | EasyPal transmit error protection: `high` or `normal` (faster, needs a better signal). |
+| `EASYPAL_TX_INTERLEAVE` | `short` | EasyPal transmit interleave: `short` or `long` (copes better with fading). |
+| `EASYPAL_TX_RS` | `rs2` | Reed-Solomon protection for EasyPal pictures sent: `off`, `rs1` (least) to `rs4` (most). It lets the other station rebuild lost segments, but makes the file bigger. |
+| `EASYPAL_TX_SECONDS` | `90` | The longest an EasyPal picture may take to send, 10 to 540 seconds. The picture is made smaller, and its JPEG quality lowered, until it fits. |
+| `EASYPAL_TX_POWER_W` | none | TX power in watts while sending EasyPal (put back afterwards). Unset leaves the power alone. |
 | `FAX_SAVE_DIR` | none | If set, every received radiofax chart is also saved in this folder as a greyscale PNG (`YYYYMMDD-HHMMSSz-fax.png`, UTC, the chart's start). |
 | `SSTV_TX_MODE` | `S1` | SSTV transmit mode: `S1` (Scottie 1), or any mode id the receiver knows (`M1`, `M2`, `S2`, `SDX`, `R36`, `R72`, `PD90`, `PD120`, `PD180`, ...; see `src/audio/sstv-modes.js`). Read at startup. |
 | `SSTV_TX_POWER_W` | none | TX power in watts while sending SSTV (put back afterwards). Unset leaves the power alone. |
@@ -533,6 +542,12 @@ one hard refresh (Ctrl+Shift+R, or Cmd+Shift+R on a Mac).
   already received is not shown a second time. Below about 10 dB S/N
   (16-QAM) or 15 dB (64-QAM) segments are lost; mode B or E with 4- or
   16-QAM copes with weaker signals.
+- **EasyPal sends a small or blurry picture.** The picture is made to fit
+  `EASYPAL_TX_SECONDS`. In 90 s (mode B, 16-QAM, RS2) that is a JPEG of
+  about 15 kB, so a photo goes out at about 430 to 550 pixels across. Allow
+  120 or 180 s for a bigger picture, or turn `EASYPAL_TX_RS` down.
+- **EasyPal won't send: "Put the radio on USB first".** EasyPal is sent on
+  USB with DATA MODE. Pressing the EasyPal button sets USB.
 
 ## Hardware diagnostics
 
@@ -588,9 +603,11 @@ src/
                    server/jtty-decoder-bridge.js;
                    WSPR (wspr-codec.js, wspr-rx.js, wspr-decode-worker.js,
                    with server/wspr-bridge.js and server/wsprnet.js);
-                   EasyPal (drm/: the HamDRM receiver ported from QSSTV;
-                   easypal-decode-worker.js, with
-                   server/easypal-decoder-bridge.js and server/radio-setup.js)
+                   EasyPal (drm/: the HamDRM receiver and transmitter
+                   ported from QSSTV; easypal-decode-worker.js and
+                   easypal-encode-worker.js, with
+                   server/easypal-decoder-bridge.js,
+                   server/easypal-tx-bridge.js and server/radio-setup.js)
   server/         WebSocket control layer (phase 2 — done), audio bridge
                    (phase 3 — done), scope bridge (phase 6 — done), static
                    file server (phase 4 — done), CW decoder bridge, FT8 protocol wiring
@@ -791,6 +808,12 @@ test/
   easypal-decoder-bridge.test.js  EasyPal bridge with the real worker:
                            status, pictures (JPEG as sent, JPEG 2000 as JPEG),
                            kept and saved, PTT, the radio set up and put back
+  easypal-tx.test.js      EasyPal transmit: the transmitter decoded exactly
+                           by our receiver (modes A, B, E; 4/16/64-QAM; RS2);
+                           pictures fitted to the time (size and quality);
+                           EASYPAL_TX_* settings; the bridge with the real
+                           worker: DATA MODE, power, PTT and Stop, all put
+                           back; refusals; the last browser leaving
   fax-decoder-bridge.test.js  radiofax bridge: line frames, the chart as a
                            greyscale PNG (decoded back), kept and saved, a
                            page joining part-way, PTT, unsupported rates,
@@ -1618,7 +1641,7 @@ Pi's. Not tested on an off-air signal yet.
 The **Image** button's second press turns on **EasyPal** receive: digital
 SSTV as EasyPal and QSSTV send it (HamDRM, a form of Digital Radio
 Mondiale). The picture is sent as a file (usually JPEG or JPEG 2000) over
-an OFDM signal about 2.4 kHz wide. Receive only.
+an OFDM signal about 2.4 kHz wide. PiRO receives and sends it.
 
 - The radio goes to **USB**, on the band's EasyPal (digital SSTV) calling
   frequency if it has one: 7.173 MHz (40 m), 10.144 MHz (30 m), 14.233 MHz
@@ -1654,6 +1677,48 @@ see [`third_party/qsstv-drm/README.md`](third_party/qsstv-drm/README.md).
 A recording of a real EasyPal transmission found online (mode A, 64-QAM, a
 10-megapixel JPEG 2000 photo sent with Reed-Solomon) decoded completely.
 Not tested yet on a signal PiRO receives off air.
+
+#### Sending
+
+Under the EasyPal picture, **Send a picture** offers **Camera** (the
+phone's camera) and **Choose image**.
+
+- The whole picture is sent, keeping its shape, fitted within 800 x 600.
+  You can put your callsign (and a second line) in a corner, as for SSTV.
+- **Send** shows the settings and the longest it will take. The server
+  then makes the picture fit that time: it picks the best JPEG quality
+  that fits (30 to 90), and makes the picture smaller if even quality 30
+  is too big. It is sent as a JPEG, with Reed-Solomon protection
+  (`.rs2` by default), named `CALL-YYYYMMDD-HHMMSS` (UTC).
+- PiRO puts the radio in **DATA MODE** (and confirms it), sets the
+  power if `EASYPAL_TX_POWER_W` is set, keys PTT and sends. Afterwards it
+  puts the power and DATA MODE back. The radio must be on USB.
+- Every browser shows the progress, the picture going out and a **Stop**
+  button. A sent picture is added to the strip, marked "Sent".
+- Sending stops if the last browser disconnects. The 10-minute PTT limit
+  applies, and `EASYPAL_TX_SECONDS` can't be more than 540.
+
+The settings are fixed on the Pi, as SSTV's mode is: `EASYPAL_TX_MODE`
+(B), `EASYPAL_TX_BANDWIDTH` (2.5 kHz), `EASYPAL_TX_QAM` (16),
+`EASYPAL_TX_PROTECTION` (high), `EASYPAL_TX_INTERLEAVE` (short),
+`EASYPAL_TX_RS` (rs2) and `EASYPAL_TX_SECONDS` (90). The callsign sent in
+every frame is `STATION_CALLSIGN`. Mode B, 16-QAM, high protection sends
+about 290 bytes a second; the start and end of each transmission add
+about 16 s. Guide, for mode B, 16-QAM and RS2:
+
+| Time allowed | JPEG size | A photo is sent at about |
+|---|---|---|
+| 90 s | 15 kB | 430-550 pixels across |
+| 120 s | 22 kB | 520-640 pixels across |
+| 180 s | 34 kB | 640-800 pixels across |
+
+The transmitter is a JavaScript port of QSSTV's. Its audio was checked
+against QSSTV's own transmitter with the same file: the same frames, and
+the same samples to within 2 parts in 32768, in modes A, B and E, both
+interleaves and all three QAMs; QSSTV's receiver decodes it. Fitting the
+picture and making 90 s of audio takes about 1.5 s on a desktop; expect
+several seconds on a Pi (not measured). EasyPal itself has not been tried, but
+it uses the same format. **Not tested on air.**
 
 ### SSTV
 
@@ -1936,6 +2001,15 @@ shapes.
   pictureSec, fskSec, gapSec, cwSec, totalSec`), the picture's `lines` and
   the picture itself (`png`); a page that connects during a transmission is
   sent the current status, with `elapsedSec` how far in it is.
+  `sendEasypal` (`{jpeg}`, base64, at most 4 MB) sends a picture with the
+  `EASYPAL_TX_*` settings (the connect snapshot's `easypalTx`: `{mode,
+  bandwidth, qam, protection, interleave, rs, seconds, bytesPerSecond,
+  maxWidth, maxHeight, callsign}`); `abortEasypal` stops it. Progress goes
+  out as `easypal-tx-status` (`{status:
+  'preparing'|'sending'|'sent'|'aborted'|'error', durationSec, startTime,
+  elapsedSec, fileName, bytes, width, height, quality, jpeg, error}`); a
+  page that connects while it is sending gets the current status. The sent
+  picture is then broadcast as an `easypal-picture` with `own: true`.
   `setEasypalActive` (`{active}`) starts and stops the EasyPal receiver.
   Its state goes out as `easypal-status` (`{state:
   'idle'|'listening'|'sync'|'receiving', snr, mode, callsign, offsetHz,

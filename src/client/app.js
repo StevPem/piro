@@ -989,6 +989,7 @@ link.addEventListener('connected', (event) => {
   // reconnect too, with no page reload needed.
   stationCallsign = data.stationCallsign || null;
   setSstvTxInfo(data.sstvTx);
+  setEasypalTxInfo(data.easypalTx);
   stationGrid = data.stationGrid || null;
   ft8Qso.configure({ myCall: stationCallsign, myGrid: stationGrid });
   if (data.frequency != null) updateFrequencyDisplay(data.frequency);
@@ -2772,9 +2773,10 @@ faxCanvas.addEventListener('click', () => {
 
 // --- EasyPal (the Image button's second choice; see server/easypal-decoder-bridge.js) ---
 // HamDRM digital SSTV, as EasyPal and QSSTV send it: an OFDM signal from
-// about 400 to 2750 Hz on USB. Receive only. The server's receiver (a port
-// of QSSTV's) sends its progress, the top of a JPEG as it comes in, and
-// each file received. The audio spectrum shows where the signal is.
+// about 400 to 2750 Hz on USB. The server's receiver (a port of QSSTV's)
+// sends its progress, the top of a JPEG as it comes in, and each file
+// received. The audio spectrum shows where the signal is. Sending is
+// "EasyPal transmit", further down.
 const EASYPAL_STRIP_MAX = 8;
 let easypalShown = null; // the received file on screen
 let easypalPreviewId = null; // the transport whose preview is on screen
@@ -2872,7 +2874,7 @@ function showEasypalStatus(s) {
 
 function easypalPictureLine(p) {
   const d = new Date(p.time);
-  const what = [p.fileName, p.callsign ? `de ${p.callsign}` : '', `${pad2(d.getUTCHours())}:${pad2(d.getUTCMinutes())} UTC`, easypalModeText(p.mode)];
+  const what = [p.own ? 'Sent' : '', p.fileName, p.callsign ? `de ${p.callsign}` : '', `${pad2(d.getUTCHours())}:${pad2(d.getUTCMinutes())} UTC`, easypalModeText(p.mode)];
   if (p.recovered) what.push(`${p.recovered} lost segment${p.recovered === 1 ? '' : 's'} recovered`);
   return what.filter(Boolean).join(' · ');
 }
@@ -2938,6 +2940,7 @@ function loadEasypalPictures() {
 
 link.addEventListener('easypal-status', (event) => {
   const s = event.detail;
+  if (easypalTxProgress) return; // the picture going out has the screen
   // a received file stays described until the next one starts coming in
   if (easypalShown && (!s.file || s.file.transportId === easypalShown.transportId)) return;
   if (easypalShown && s.file && s.file.transportId !== easypalShown.transportId) easypalShown = null;
@@ -2949,7 +2952,7 @@ link.addEventListener('easypal-preview', (event) => showEasypalPreview(event.det
 link.addEventListener('easypal-picture', (event) => {
   const p = event.detail;
   addEasypalThumb(p);
-  showEasypalPicture(p);
+  if (!easypalTxProgress) showEasypalPicture(p);
 });
 
 easypalSaveBtn.addEventListener('click', () => {
@@ -3395,6 +3398,233 @@ link.addEventListener('sstv-tx-status', (event) => {
     case 'error':
       stopSstvTxProgress();
       sstvTxStatus.textContent = `Couldn't send: ${error || 'unknown error'}`;
+      break;
+    default:
+      break;
+  }
+});
+
+// --- EasyPal transmit ---
+// Take a photo or choose an image and tag it with the callsign (and an
+// optional second line) in a corner, as for SSTV, then send it. The whole
+// picture is sent, fitted within 800 x 600 (the server's maxWidth and
+// maxHeight) and keeping its shape; no cropping. The server then makes it
+// smaller still, and lowers the JPEG quality, until it goes out within
+// EASYPAL_TX_SECONDS. Progress shows in every browser, with the picture
+// going out on the EasyPal screen.
+const easypalTxEl = document.getElementById('easypal-tx');
+const easypalTxEditor = document.getElementById('easypal-tx-editor');
+const easypalTxCanvas = document.getElementById('easypal-tx-canvas');
+const easypalTxCtx = easypalTxCanvas.getContext('2d');
+const easypalTxCall = document.getElementById('easypal-tx-call');
+const easypalTxLine2 = document.getElementById('easypal-tx-line2');
+const easypalTxCorner = document.getElementById('easypal-tx-corner');
+const easypalTxSendBtn = document.getElementById('easypal-tx-send');
+const easypalTxStatus = document.getElementById('easypal-tx-status');
+const easypalCameraInput = document.getElementById('easypal-camera-input');
+const easypalFileInput = document.getElementById('easypal-file-input');
+const easypalTxProgressEl = document.getElementById('easypal-tx-progress');
+const easypalTxProgressLabel = document.getElementById('easypal-tx-progress-label');
+const easypalTxProgressTime = document.getElementById('easypal-tx-progress-time');
+const easypalTxProgressDetail = document.getElementById('easypal-tx-progress-detail');
+const easypalTxBar = document.getElementById('easypal-tx-bar');
+const easypalTxBarFill = document.getElementById('easypal-tx-bar-fill');
+let easypalTxInfo = null; // the connect snapshot's easypalTx: {mode, bandwidth, qam, protection, interleave, rs, seconds, bytesPerSecond, maxWidth, maxHeight, callsign}
+let easypalTxImage = null; // the chosen picture (ImageBitmap or <img>)
+let easypalTxBusy = false;
+let easypalTxProgress = null; // while sending: {fileName, t0, durationSec}
+let easypalTxTimer = null;
+let easypalCancelPending = false;
+
+function updateEasypalTxSendLabel() {
+  if (!easypalTxInfo || easypalTxBusy) return;
+  easypalTxSendBtn.textContent = `Send (mode ${easypalTxInfo.mode}, ${easypalTxInfo.qam}-QAM, up to ${mmss(easypalTxInfo.seconds)})`;
+}
+
+/** Called with the connect snapshot. */
+function setEasypalTxInfo(info) {
+  easypalTxInfo = info || null;
+  easypalTxEl.hidden = !easypalTxInfo;
+  if (easypalTxInfo && !easypalTxCall.value) easypalTxCall.value = stationCallsign || '';
+  updateEasypalTxSendLabel();
+}
+
+/** The picture as it will be sent: the whole of it, within maxWidth x maxHeight, then tagged. */
+function drawEasypalTx() {
+  if (!easypalTxInfo || !easypalTxImage) return;
+  const iw = easypalTxImage.width;
+  const ih = easypalTxImage.height;
+  const scale = Math.min(1, (easypalTxInfo.maxWidth || 800) / iw, (easypalTxInfo.maxHeight || 600) / ih);
+  const W = Math.max(1, Math.round(iw * scale));
+  const H = Math.max(1, Math.round(ih * scale));
+  easypalTxCanvas.width = W;
+  easypalTxCanvas.height = H;
+  easypalTxCtx.imageSmoothingEnabled = true;
+  easypalTxCtx.imageSmoothingQuality = 'high';
+  easypalTxCtx.drawImage(easypalTxImage, 0, 0, W, H);
+  drawSstvTag(easypalTxCtx, W, H, easypalTxCall.value.trim().toUpperCase(), easypalTxLine2.value.trim(), easypalTxCorner.value);
+}
+
+async function loadEasypalTxFile(file) {
+  if (!file) return;
+  try {
+    let img;
+    try {
+      img = await createImageBitmap(file, { imageOrientation: 'from-image' });
+    } catch {
+      img = await new Promise((resolve, reject) => {
+        const el = new Image();
+        el.onload = () => resolve(el);
+        el.onerror = () => reject(new Error('not an image this browser can read'));
+        el.src = URL.createObjectURL(file);
+      });
+    }
+    easypalTxImage = img;
+    easypalTxEditor.hidden = false;
+    easypalTxStatus.textContent = 'The whole picture is sent. The server makes it smaller if it needs to, to fit the time.';
+    drawEasypalTx();
+  } catch (err) {
+    showError(`Couldn't open that picture: ${err.message}`);
+  }
+}
+
+document.getElementById('easypal-camera-btn').addEventListener('click', () => easypalCameraInput.click());
+document.getElementById('easypal-file-btn').addEventListener('click', () => easypalFileInput.click());
+for (const input of [easypalCameraInput, easypalFileInput]) {
+  input.addEventListener('change', () => {
+    loadEasypalTxFile(input.files && input.files[0]);
+    input.value = '';
+  });
+}
+for (const el of [easypalTxCall, easypalTxLine2, easypalTxCorner]) el.addEventListener('input', drawEasypalTx);
+
+function closeEasypalTxEditor() {
+  easypalTxImage = null;
+  easypalTxEditor.hidden = true;
+}
+const abortEasypal = () => link.request('abortEasypal').catch((err) => showError(`Couldn't stop the picture: ${err.message}`));
+document.getElementById('easypal-tx-cancel').addEventListener('click', () => {
+  if (easypalTxBusy) {
+    easypalCancelPending = true;
+    easypalTxStatus.textContent = 'Stopping…';
+    abortEasypal();
+    return;
+  }
+  closeEasypalTxEditor();
+});
+document.getElementById('easypal-tx-progress-stop').addEventListener('click', () => {
+  easypalTxProgressDetail.textContent = 'Stopping…';
+  abortEasypal();
+});
+
+easypalTxSendBtn.addEventListener('click', () => {
+  if (easypalTxBusy) {
+    abortEasypal();
+    return;
+  }
+  if (!easypalTxImage || !easypalTxInfo) return;
+  drawEasypalTx();
+  // quality 0.92: the server makes its own JPEG to fit the time
+  const jpeg = easypalTxCanvas.toDataURL('image/jpeg', 0.92).replace(/^data:image\/jpeg;base64,/, '');
+  link.request('sendEasypal', { jpeg }).catch((err) => showError(`Couldn't send: ${err.message}`));
+});
+
+function tickEasypalTxProgress() {
+  const p = easypalTxProgress;
+  if (!p) return;
+  const t = Math.max(0, Math.min(p.durationSec, (Date.now() - p.t0) / 1000));
+  const pct = p.durationSec > 0 ? (100 * t) / p.durationSec : 0;
+  easypalTxBarFill.style.width = `${pct.toFixed(1)}%`;
+  easypalTxBar.setAttribute('aria-valuenow', String(Math.round(pct)));
+  easypalTxProgressTime.textContent = `${mmss(t)} / ${mmss(p.durationSec)}`;
+  easypalTxProgressDetail.textContent = `${p.detail} · ${mmss(p.durationSec - t)} left`;
+  easypalStatusEl.textContent = `Sending ${p.fileName} · ${Math.round(pct)}%`;
+}
+
+function startEasypalTxProgress(d) {
+  const elapsed = Number.isFinite(d.elapsedSec) ? d.elapsedSec : d.startTime ? Math.max(0, (Date.now() - d.startTime) / 1000) : 0;
+  const kB = d.bytes ? `${(d.bytes / 1024).toFixed(1)} kB` : '';
+  const info = easypalTxInfo;
+  const how = info ? `mode ${info.mode} · ${info.qam}-QAM${info.rs ? ` · ${info.rs.toUpperCase()}` : ''}` : '';
+  easypalTxProgress = {
+    fileName: d.fileName || 'picture',
+    t0: Date.now() - elapsed * 1000,
+    durationSec: d.durationSec || 0,
+    detail: [d.width && d.height ? `${d.width} x ${d.height}` : '', d.quality ? `quality ${d.quality}` : '', kB, how].filter(Boolean).join(' · '),
+  };
+  easypalTxBar.classList.remove('sstv-tx__bar--preparing');
+  easypalTxProgressLabel.textContent = `Sending ${easypalTxProgress.fileName}`;
+  easypalTxProgressEl.hidden = false;
+  if (d.jpeg) {
+    // the picture going out, as the other station will get it
+    easypalPictureEl.hidden = false;
+    easypalTextEl.hidden = true;
+    easypalPictureEl.src = `data:image/jpeg;base64,${d.jpeg}`;
+    easypalPictureEl.alt = `Sending ${easypalTxProgress.fileName}`;
+    easypalSaveBtn.hidden = true;
+    easypalBarEl.hidden = true;
+  }
+  clearInterval(easypalTxTimer);
+  tickEasypalTxProgress();
+  easypalTxTimer = setInterval(tickEasypalTxProgress, 250);
+}
+
+/** Ends the progress display; puts the picture that was on screen back unless `keepScreen`. */
+function stopEasypalTxProgress({ keepScreen = false } = {}) {
+  const had = easypalTxProgress;
+  easypalTxProgress = null;
+  clearInterval(easypalTxTimer);
+  easypalTxTimer = null;
+  easypalTxProgressEl.hidden = true;
+  easypalTxProgressLabel.textContent = '';
+  easypalTxProgressTime.textContent = '';
+  easypalTxProgressDetail.textContent = '';
+  easypalTxBar.classList.remove('sstv-tx__bar--preparing');
+  easypalTxBarFill.style.width = '0%';
+  if (!had || keepScreen) return;
+  if (easypalShown) showEasypalPicture(easypalShown);
+  else {
+    easypalPictureEl.hidden = true;
+    easypalStatusEl.textContent = 'listening…';
+  }
+}
+
+link.addEventListener('easypal-tx-status', (event) => {
+  const d = event.detail || {};
+  const { status, durationSec, fileName, error } = d;
+  if (status !== 'preparing' && status !== 'sending' && status !== 'aborted') easypalCancelPending = false;
+  easypalTxBusy = status === 'preparing' || status === 'sending';
+  easypalTxSendBtn.classList.toggle('ptt--active', easypalTxBusy);
+  if (easypalTxBusy) easypalTxSendBtn.textContent = 'Stop';
+  else updateEasypalTxSendLabel();
+  switch (status) {
+    case 'preparing':
+      stopEasypalTxProgress({ keepScreen: true });
+      easypalTxProgressLabel.textContent = 'Preparing a picture…';
+      easypalTxProgressDetail.textContent = 'Fitting the picture to the time; the radio transmits once it is ready.';
+      easypalTxBar.classList.add('sstv-tx__bar--preparing');
+      easypalTxProgressEl.hidden = false;
+      easypalTxStatus.textContent = '';
+      break;
+    case 'sending':
+      startEasypalTxProgress(d);
+      easypalTxStatus.textContent = '';
+      break;
+    case 'sent':
+      // The sent picture follows as an easypal-picture event.
+      stopEasypalTxProgress({ keepScreen: true });
+      easypalTxStatus.textContent = `Sent ${fileName} (${mmss(durationSec)}).`;
+      break;
+    case 'aborted':
+      stopEasypalTxProgress();
+      easypalTxStatus.textContent = 'Stopped.';
+      if (easypalCancelPending) closeEasypalTxEditor();
+      easypalCancelPending = false;
+      break;
+    case 'error':
+      stopEasypalTxProgress();
+      easypalTxStatus.textContent = `Couldn't send: ${error || 'unknown error'}`;
+      if (easypalTxEditor.hidden) showError(`EasyPal: couldn't send: ${error || 'unknown error'}`);
       break;
     default:
       break;
