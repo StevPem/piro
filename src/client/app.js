@@ -238,6 +238,16 @@ const SSTV_FREQUENCIES = {
   '6m': 50950000,
 };
 
+// EasyPal (HamDRM digital SSTV) calling frequencies, as commonly listed
+// (W9FE, PA8S, PD2TX, VK6YSF). EasyPal is always sent on USB: a USB signal
+// received on LSB is a mirror image and doesn't decode.
+const EASYPAL_FREQUENCIES = {
+  '40m': 7173000,
+  '30m': 10144000,
+  '20m': 14233000,
+  '15m': 21337000,
+};
+
 const HELL_FREQUENCIES = {
   '160m': 1843000,
   '80m': 3578000,
@@ -1279,6 +1289,11 @@ for (const band of BANDS) {
     // In SSTV: the band's SSTV frequency, on the band's sideband.
     if (sstvActive) {
       tuneSstvTo(SSTV_FREQUENCIES[band.name] ?? band.hz, band.name);
+      return;
+    }
+    // In EasyPal: the band's digital SSTV frequency (or the band's default), on USB.
+    if (easypalActive) {
+      tuneEasypalTo(EASYPAL_FREQUENCIES[band.name] ?? band.hz, band.name);
       return;
     }
     // In RTTY: the middle of the band's WIA digital segment.
@@ -2765,17 +2780,38 @@ let easypalShown = null; // the received file on screen
 let easypalPreviewId = null; // the transport whose preview is on screen
 const easypalSeen = new Set();
 
-/** EasyPal receive: USB on the current frequency, the receiver armed, its panel shown and the scope on the audio spectrum. */
+/**
+ * EasyPal receive: the band's EasyPal frequency (if it has one) on USB, the
+ * receiver armed, its panel shown and the scope on the audio spectrum.
+ */
 function enterEasypalMode() {
   easypalActive = true;
   easypalUsbSeen = false;
-  link
-    .request('setMode', { mode: 'USB' })
-    .then(() => updateModeButtons('USB'))
-    .catch((err) => showError(err.message));
+  const band = currentFreqHz != null ? bandNameForFrequency(currentFreqHz) : null;
+  tuneEasypalTo(band && EASYPAL_FREQUENCIES[band] != null ? EASYPAL_FREQUENCIES[band] : null, band);
   link.request('setEasypalActive', { active: true }).catch((err) => showError(`Couldn't start EasyPal receive: ${err.message}`));
   loadEasypalPictures();
   updateTtyUi();
+}
+
+/** Tunes to `hz` (if given) and puts the radio on USB. */
+function tuneEasypalTo(hz, bandName) {
+  const setUsb = () =>
+    link
+      .request('setMode', { mode: 'USB' })
+      .then(() => updateModeButtons('USB'))
+      .catch((err) => showError(`Couldn't set USB for EasyPal: ${err.message}`));
+  if (hz == null) {
+    setUsb();
+    return;
+  }
+  link
+    .request('setFrequency', { value: hz })
+    .then(() => {
+      updateFrequencyDisplay(hz);
+      return setUsb();
+    })
+    .catch((err) => showError(`Couldn't tune to the ${bandName ?? ''} EasyPal frequency: ${err.message}`));
 }
 
 function leaveEasypal({ local = false } = {}) {

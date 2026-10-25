@@ -4157,8 +4157,12 @@ model for how to approach that.
 
 - The Image button now cycles SSTV → EasyPal → Radiofax → SSTV. EasyPal
   receives HamDRM digital SSTV as EasyPal and QSSTV send it. Receive only.
-- Entering EasyPal sets USB on the current frequency and arms the server's
-  receiver. The audio spectrum stays, with guide lines at 400 and 2750 Hz
+- Entering EasyPal tunes the band's EasyPal frequency on USB, like SSTV:
+  7.173 (40 m), 10.144 (30 m), 14.233 (20 m), 21.337 MHz (15 m), from the
+  common digital SSTV lists (W9FE, PA8S, PD2TX, VK6YSF); other bands stay
+  where they are. The band buttons follow the same table while EasyPal is
+  on. Always USB: a mirror-image (LSB) copy of a test signal doesn't decode
+  (nor does it in QSSTV). It then arms the server's receiver. The audio spectrum stays, with guide lines at 400 and 2750 Hz
   (the edges of a 2.5 kHz signal tuned right). The panel (`#easypal-rx`)
   shows the receiver's status (mode, bandwidth, QAM, S/N, mistuning if 20 Hz
   or more, callsign, segments so far), a progress bar, the top of a JPEG as
@@ -4201,6 +4205,7 @@ model for how to approach that.
   noise, mistuning, static, back-to-back, noise only; RS, CRCs,
   interleavers, JPEG 2000), easypal-decoder-bridge.test.js (real worker,
   pictures, saving, PTT, radio set-up), ws-server.test.js (requests),
-  manual-tty-ui.js (Image button order, panel, a real transmission shown
+  manual-tty-ui.js (Image button order, EasyPal frequencies on entry and
+  from the band buttons, panel, a real transmission shown
   in two browsers and a late one). Not tested on air. Service-worker cache
   v100.
