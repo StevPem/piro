@@ -190,6 +190,9 @@ class ControlServer extends EventEmitter {
       // server/easypal-decoder-bridge.js), and the receiver's state (state.easypal).
       easypalActive: false,
       easypal: null,
+      // The EasyPal transmit settings (EASYPAL_TX_*), set by
+      // server/easypal-tx-bridge.js; null when it isn't set up.
+      easypalTx: null,
       // Which variant the FreeDV mode button is currently in — '700E' or
       // 'RADE' (see REQUEST.SET_FREEDV_VARIANT / src/server/rade-bridge.js).
       // Defaults to 'RADE' — the only variant the client's FreeDV chip
@@ -652,6 +655,22 @@ class ControlServer extends EventEmitter {
         }
         case REQUEST.ABORT_SSTV: {
           this.emit('sstv-abort');
+          ws.send(makeResult(id, { accepted: true }));
+          break;
+        }
+        case REQUEST.SEND_EASYPAL: {
+          if (typeof msg.jpeg !== 'string' || !msg.jpeg) throw new Error('"jpeg" (base64) is required');
+          if (msg.jpeg.length > Math.ceil((4 * 1024 * 1024 * 4) / 3) + 4) throw new Error('That picture is too large (4 MB at most)');
+          const jpeg = Buffer.from(msg.jpeg, 'base64');
+          if (jpeg.length < 4 || jpeg[0] !== 0xff || jpeg[1] !== 0xd8) throw new Error('"jpeg" must be a JPEG');
+          if (!this.state.easypalTx) throw new Error('EasyPal transmit is not available');
+          // Like SEND_SSTV, this only starts it; the outcome arrives as EVENT.EASYPAL_TX_STATUS.
+          this.emit('easypal-send', { jpeg });
+          ws.send(makeResult(id, { accepted: true }));
+          break;
+        }
+        case REQUEST.ABORT_EASYPAL: {
+          this.emit('easypal-abort');
           ws.send(makeResult(id, { accepted: true }));
           break;
         }

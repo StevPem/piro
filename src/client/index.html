@@ -276,6 +276,47 @@
         <img class="sstv-rx__picture easypal-rx__picture" id="easypal-picture" alt="" title="Tap to open full size" hidden />
         <pre class="easypal-rx__text" id="easypal-text" hidden></pre>
         <div class="sstv-rx__strip" id="easypal-strip" aria-label="Recent EasyPal pictures"></div>
+        <!-- EasyPal transmit: take or pick a photo, tag it with the callsign,
+             send. The server shrinks it to fit the time allowed. See app.js
+             "EasyPal transmit". -->
+        <div class="sstv-tx" id="easypal-tx" hidden>
+          <div class="sstv-tx__pick">
+            <span class="row-group__label">Send a picture</span>
+            <button class="chip sstv-rx__btn" id="easypal-camera-btn" type="button">Camera</button>
+            <button class="chip sstv-rx__btn" id="easypal-file-btn" type="button">Choose image</button>
+            <input type="file" accept="image/*" capture="environment" id="easypal-camera-input" hidden />
+            <input type="file" accept="image/*" id="easypal-file-input" hidden />
+          </div>
+          <div class="sstv-tx__progress" id="easypal-tx-progress" hidden>
+            <div class="sstv-tx__progress-head">
+              <span class="sstv-tx__progress-label" id="easypal-tx-progress-label"></span>
+              <span class="sstv-tx__progress-time" id="easypal-tx-progress-time"></span>
+              <button class="chip sstv-rx__btn sstv-tx__progress-stop" id="easypal-tx-progress-stop" type="button">Stop</button>
+            </div>
+            <div class="sstv-tx__bar" id="easypal-tx-bar" role="progressbar" aria-label="EasyPal transmission" aria-valuemin="0" aria-valuemax="100" aria-valuenow="0">
+              <div class="sstv-tx__bar-fill" id="easypal-tx-bar-fill"></div>
+            </div>
+            <div class="ft8-panel__slot sstv-tx__progress-detail" id="easypal-tx-progress-detail" aria-live="off"></div>
+          </div>
+          <div class="sstv-tx__editor" id="easypal-tx-editor" hidden>
+            <canvas class="sstv-tx__canvas" id="easypal-tx-canvas"></canvas>
+            <div class="sstv-tx__row">
+              <input class="sstv-tx__text" id="easypal-tx-call" maxlength="12" autocapitalize="characters" spellcheck="false" aria-label="Callsign shown on the picture" placeholder="callsign" />
+              <input class="sstv-tx__text" id="easypal-tx-line2" maxlength="16" spellcheck="false" aria-label="Second line shown under the callsign" placeholder="2nd line (optional)" />
+              <select class="sstv-tx__corner" id="easypal-tx-corner" aria-label="Where the callsign goes">
+                <option value="tl">Top left</option>
+                <option value="tr">Top right</option>
+                <option value="bl">Bottom left</option>
+                <option value="br">Bottom right</option>
+              </select>
+            </div>
+            <div class="sstv-tx__row">
+              <button class="chip sstv-tx__send" id="easypal-tx-send" type="button">Send</button>
+              <button class="chip" id="easypal-tx-cancel" type="button">Cancel</button>
+            </div>
+            <div class="ft8-panel__slot sstv-tx__status" id="easypal-tx-status" aria-live="polite"></div>
+          </div>
+        </div>
       </section>
 
       <!-- Radiofax receive: status, Start now / Stop / Save, and recent charts.

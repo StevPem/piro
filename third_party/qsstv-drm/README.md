@@ -1,17 +1,19 @@
-# EasyPal (HamDRM) receiver (from QSSTV)
+# EasyPal (HamDRM) receiver and transmitter (from QSSTV)
 
 PiRO's EasyPal receiver is a JavaScript port of the HamDRM receiver in
 QSSTV, Johan Maes's (ON4QZ) SSTV program for Linux. QSSTV's receiver in turn
 is M. Bos's (PA0MBO) C translation of the "diorama" MATLAB DRM receiver by
-Andreas Dittrich and Torsten Schorr (University of Kaiserslautern). No QSSTV
-binaries are involved.
+Andreas Dittrich and Torsten Schorr (University of Kaiserslautern). The
+transmitter is a port of QSSTV's `drmtx`, which M. Bos adapted for ham SSTV
+from Dream, the DRM software of Volker Fischer at Technische Universitaet
+Darmstadt. No QSSTV binaries are involved.
 
 | | |
 |---|---|
 | Upstream | QSSTV, `master` (commit `97156c9`, October 2026), https://github.com/ON4QZ/QSSTV |
-| Upstream licence | GPL-2.0-or-later (the drmrx files and `utils/rs.cpp`); QSSTV as a whole GPL-3.0 |
+| Upstream licence | GPL-2.0-or-later (the drmrx and drmtx files and `utils/rs.cpp`); QSSTV as a whole GPL-3.0 |
 | PiRO licence | AGPL-3.0-only (GPL-3.0 code may be combined with AGPL-3.0 code; the notices are kept below and in each ported file) |
-| Copyright | (C) 2009 M. Bos (PA0MBO); (C) 2004 Torsten Schorr; (C) 2000-2019 Johan Maes (ON4QZ); Reed-Solomon (C) 1999 Phil Karn (KA9Q) |
+| Copyright | (C) 2009 M. Bos (PA0MBO); (C) 2004 Torsten Schorr; (C) 2001-2007 Technische Universitaet Darmstadt, Institut fuer Nachrichtentechnik (Volker Fischer, Andrew Murphy; Dream); (C) 2000-2019 Johan Maes (ON4QZ); Reed-Solomon (C) 1999 Phil Karn (KA9Q) |
 
 HamDRM is the amateur form of Digital Radio Mondiale (ETSI ES 201 980) that
 EasyPal (Erik Sundstrup, VK4AES) made popular for "digital SSTV". QSSTV
@@ -28,11 +30,13 @@ sends and receives it compatibly with EasyPal.
 | `src/audio/drm/source-decoder.js` | `drmrx/sourcedecoder.cpp`, `crc16_bytewise.cpp`, `bits2bytes.cpp` (packets, MOT header and body, segments) |
 | `src/audio/drm/rs.js` | `utils/rs.cpp` (Phil Karn's RS decoder) and `utils/reedsolomoncoder.cpp` (the `.rs1`-`.rs4` file format) |
 | `src/audio/drm/receiver.js` | `drmrx/drmrx.cpp` and QSSTV's DRM Hilbert filter (`dsp/filterparam.cpp`): 12 kHz complex input in 1024-sample blocks |
+| `src/audio/drm/transmitter.js` | `drmtx/` (Dream as adapted by PA0MBO): `common/datadecoding/DABMOT.cpp`, `MOTSlideShow.cpp`, `DataDecoder.cpp` (MOT objects, segments, data groups, packets), `common/FAC/FAC.cpp`, `common/mlc/` (`MLC.cpp`, `ConvEncoder.cpp`, `ChannelCode.cpp`, `EnergyDispersal.cpp`, `BitInterleaver.cpp`, `QAMMapping.cpp`), `common/interleaver/SymbolInterleaver.cpp`, `BlockInterleaver.cpp`, `common/ofdmcellmapping/` (`CellMappingTable.cpp`, `OFDMCellMapping.cpp`), `common/OFDM.cpp`, `common/util/CRC.cpp`, and `drmtransmitter.cpp` (the settings) |
+| `src/audio/drm/tx-picture.js`, `src/audio/easypal-encode-worker.js`, `src/server/easypal-tx-bridge.js` | PiRO's own: the picture fitted to the time (`jpeg-js`), the worker thread, the radio (DATA mode, power, PTT) |
 | `src/audio/drm/picture.js`, `src/audio/easypal-decode-worker.js`, `src/server/easypal-decoder-bridge.js` | PiRO's own: JPEG 2000 decoded (the `jpeg2000` npm package, Apache-2.0, from PDF.js), shrunk to at most 1600 pixels and sent as JPEG (`jpeg-js`, BSD-3-Clause), the worker thread, the browser events |
 
 Not ported: QSSTV's displays (spectrum, constellation), the hybrid (FTP)
-mode, bad segment reports (BSR, which need a transmitter), and the
-transmitter itself.
+mode, bad segment reports (BSR: neither answering them nor asking for
+them yet), and sending more than one file or text.
 
 ## Differences from QSSTV
 
@@ -61,6 +65,32 @@ transmitter itself.
   like the one EasyPal users already test against.
 * **A file received twice** (same transport ID) is not shown again; QSSTV
   says "already received".
+
+## The transmitter
+
+The port follows QSSTV's `drmtx` step for step. It was checked with the
+harness's `tx_main.cpp` (QSSTV's own transmitter): the same file, file name
+and callsign gave the same number of frames and the same audio, frame by
+frame (correlation 1.00000; at most 2 parts in 32768 apart, about
+-83 dB), in modes A, B and E, long and short interleave, and 4-, 16- and
+64-QAM. QSSTV's receiver and PiRO's both decode it exactly. Details kept
+from QSSTV:
+
+* The FAC: in odd frames QSSTV leaves bits 31 to 39 of its buffer as the
+  energy-dispersal sequence left them (it scrambles that buffer in place).
+  PiRO sends the same bits, marked "as QSSTV".
+* The frame count: QSSTV sends one frame fewer than it has packets (the
+  last packet is never sent). PiRO does the same, so transmissions are the
+  same length.
+* The OFDM modulator: a sum over the carriers in use (at most 207) rather
+  than an FFT, which is as exact and faster in JavaScript. The signal is
+  centred as QSSTV centres it (DC at 350 Hz; the carriers from about 400
+  to 2750 Hz).
+
+PiRO adds the rest of a transmission: the picture is fitted to a time
+(`EASYPAL_TX_SECONDS`), protected with Reed-Solomon (`.rs1`-`.rs4`, as
+EasyPal and QSSTV write it), and named `CALL-YYYYMMDD-HHMMSS`. Not tested
+on air, and not yet with EasyPal itself.
 
 ## Testing against QSSTV
 
@@ -106,6 +136,23 @@ same recording. Not tested yet on a signal received off air by PiRO.
     but WITHOUT ANY WARRANTY; without even the implied warranty of
     MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE. See the
     GNU General Public License for more details.
+
+## Licence notice (Dream, in QSSTV drmtx)
+
+    Technische Universitaet Darmstadt, Institut fuer Nachrichtentechnik
+    Copyright (c) 2001-2007
+    Author(s): Volker Fischer, Andrew Murphy
+    Adapted for ham sstv use Ties Bos - PA0MBO
+
+    This program is free software; you can redistribute it and/or modify it under
+    the terms of the GNU General Public License as published by the Free Software
+    Foundation; either version 2 of the License, or (at your option) any later
+    version.
+
+    This program is distributed in the hope that it will be useful, but WITHOUT
+    ANY WARRANTY; without even the implied warranty of MERCHANTABILITY or FITNESS
+    FOR A PARTICULAR PURPOSE. See the GNU General Public License for more
+    details.
 
 ## Licence notice (QSSTV, by Johan Maes)
 
