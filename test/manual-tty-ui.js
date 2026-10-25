@@ -765,11 +765,15 @@ class Civ extends EventEmitter {
   }
   // EasyPal: the Image button's second press; USB, the audio spectrum, a panel with the picture
   {
-    const freqBefore = civ.freq;
     await chip('SSTV').click();
     await page.waitForFunction(() => [...document.querySelectorAll('#modes .chip')].some((c) => c.textContent === 'EasyPal'));
     await sleep(400);
-    check(server.state.easypalActive && !server.state.sstvActive && easypalRx.attached && civ.mode === 'USB' && civ.freq === freqBefore, `Image again: EasyPal, on USB, same frequency (${civ.freq})`);
+    check(server.state.easypalActive && !server.state.sstvActive && easypalRx.attached && civ.mode === 'USB' && civ.freq === 14233000, `Image again: EasyPal, tuned to the 20 m EasyPal frequency on USB (${civ.freq} ${civ.mode})`);
+    await page.locator('#bands .chip', { hasText: /^40m$/ }).click();
+    await sleep(400);
+    check(civ.freq === 7173000 && civ.mode === 'USB' && server.state.easypalActive, `in EasyPal the 40m button goes to 7.173 MHz, still USB (${civ.freq} ${civ.mode})`);
+    await page.locator('#bands .chip', { hasText: /^20m$/ }).click();
+    await sleep(400);
     check((await vis('#easypal-rx')) && !(await vis('#sstv-rx')) && (await vis('#scope-waterfall')) && /Listening for an EasyPal signal/.test(await page.locator('#easypal-status').textContent()), 'the EasyPal panel replaces the SSTV one; the spectrum stays; "Listening"');
     check(await bFollows(() => [...document.querySelectorAll('#modes .chip')].some((c) => c.textContent === 'EasyPal' && c.classList.contains('chip--active')) && !document.getElementById('easypal-rx').hidden), 'the second browser follows into EasyPal');
     // a real transmission (QSSTV's transmitter): a JPEG, mode A 64-QAM

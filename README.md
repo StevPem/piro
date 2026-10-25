@@ -1620,7 +1620,12 @@ SSTV as EasyPal and QSSTV send it (HamDRM, a form of Digital Radio
 Mondiale). The picture is sent as a file (usually JPEG or JPEG 2000) over
 an OFDM signal about 2.4 kHz wide. Receive only.
 
-- The radio goes to **USB** on the frequency it is on. The audio spectrum
+- The radio goes to **USB**, on the band's EasyPal (digital SSTV) calling
+  frequency if it has one: 7.173 MHz (40 m), 10.144 MHz (30 m), 14.233 MHz
+  (20 m) or 21.337 MHz (15 m), as commonly listed. On other bands it stays
+  where it is. The band buttons do the same while EasyPal is on. EasyPal is
+  always USB: a USB signal heard on LSB is a mirror image and won't decode.
+  The audio spectrum
   replaces the RF scope; a signal tuned right fills the space between the
   two guide lines (400 and 2750 Hz). The receiver copes with a mistuning of
   a few hundred hertz and shows it.
