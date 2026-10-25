@@ -42,7 +42,7 @@ class FaxDecoderBridge {
   /**
    * @param {string|null} [opts.stateFile] - where the measured clock error is kept (null: not kept)
    */
-  constructor({ controlServer, audioBridge, saveDir, keep = DEFAULT_KEEP_PICTURES, now, stateFile = DEFAULT_STATE_FILE } = {}) {
+  constructor({ controlServer, audioBridge, saveDir, keep = DEFAULT_KEEP_PICTURES, now, stateFile = DEFAULT_STATE_FILE, civ, setUpRadio = true, cleanUp = true } = {}) {
     if (!controlServer) throw new Error('FaxDecoderBridge requires opts.controlServer');
     if (!audioBridge) throw new Error('FaxDecoderBridge requires opts.audioBridge');
     this.controlServer = controlServer;
@@ -66,10 +66,18 @@ class FaxDecoderBridge {
     this._pending = Promise.resolve(); // PNG encodes, in order
     this.stateFile = stateFile;
     this._clockHistory = this._loadClock();
+    this.civ = civ ?? controlServer.civ ?? null;
+    this.setUpRadio = setUpRadio && !!this.civ;
+    this.cleanUp = cleanUp;
+    this._radio = Promise.resolve(); // radio set-up and restore, in order
+    this._saved = null; // what _setUpRadio() changed: {nr, notch, filter, mode}
 
     this._onPcm = (chunk) => this._handlePcm(chunk);
     this._onActive = (on) => {
+      const was = this._active;
       this._active = !!on;
+      if (this._active && !was) this._radio = this._radio.then(() => this._setUpRadio());
+      if (!this._active && was) this._radio = this._radio.then(() => this._restoreRadio());
       this._sync();
     };
     this._onPtt = (on) => {
@@ -96,6 +104,66 @@ class FaxDecoderBridge {
     cs.off('fax-start-now', this._onStartNow);
     cs.off('fax-stop', this._onStop);
     this._detach();
+    if (this._active) {
+      this._active = false;
+      this._radio = this._radio.then(() => this._restoreRadio());
+    }
+  }
+
+  /**
+   * Radiofax needs the radio's NR and auto notch off and its widest filter
+   * (FIL1): NR smears every quick black/white change (thin vertical lines
+   * vanish, strokes go hollow; seen on VMC charts), and the auto notch
+   * attacks steady tones, which is what a white or black area is. What is
+   * changed here is put back by _restoreRadio() when Radiofax is left (by
+   * the browser, or when the last browser goes), and only if it is still as
+   * set here (the operator may have changed it since).
+   */
+  async _setUpRadio() {
+    if (!this.setUpRadio || this._saved) return;
+    const civ = this.civ;
+    const saved = {};
+    try {
+      if (await civ.getNoiseReduction()) {
+        await civ.setNoiseReduction(false);
+        saved.nr = true;
+      }
+      if (await civ.getNotch()) {
+        await civ.setNotch(false);
+        saved.notch = true;
+      }
+      const filter = await civ.getFilter();
+      if (filter !== 1) {
+        saved.mode = (await civ.getMode?.())?.mode;
+        await civ.setFilter(1);
+        saved.filter = filter;
+      }
+    } catch (err) {
+      this._reportError(`couldn't set the radio up for fax (NR off, notch off, FIL1): ${err.message}`);
+    }
+    this._saved = saved;
+    if (Object.keys(saved).length) console.log(`Radiofax: radio set up for fax (${Object.keys(saved).join(', ')} changed)`);
+  }
+
+  async _restoreRadio() {
+    const saved = this._saved;
+    this._saved = null;
+    if (!saved || !this.setUpRadio) return;
+    const civ = this.civ;
+    try {
+      if (saved.nr && !(await civ.getNoiseReduction())) await civ.setNoiseReduction(true);
+      if (saved.notch && !(await civ.getNotch())) await civ.setNotch(true);
+      // the filter only in the same mode (leaving fax for another mode picks that mode's filter)
+      const modeNow = saved.mode && (await civ.getMode?.())?.mode;
+      if (saved.filter && (await civ.getFilter()) === 1 && modeNow === saved.mode) await civ.setFilter(saved.filter);
+    } catch (err) {
+      this._reportError(`couldn't put the radio's settings back after fax: ${err.message}`);
+    }
+  }
+
+  /** Resolves once any radio set-up or restore has finished (for tests). */
+  radioSettled() {
+    return this._radio;
   }
 
   get attached() {
@@ -127,7 +195,7 @@ class FaxDecoderBridge {
     this._decimator = new StreamDecimator(this.audioBridge.sampleRate, FAX_SAMPLE_RATE, { cutoffHz: 3200 });
     // a fresh receiver each time, but it keeps the clock correction measured before
     const ppm = this._rx?.clockPpm || this.clockPpm;
-    this._rx = new FaxReceiver();
+    this._rx = new FaxReceiver({ cleanUp: this.cleanUp });
     if (ppm) {
       this._rx.clockPpm = ppm;
       this._rx.spl = this._rx.nominalSpl * (1 + ppm / 1e6);
@@ -241,6 +309,7 @@ class FaxDecoderBridge {
           phased: e.phased ?? cur.phased ?? false,
           clockPpm: e.clockPpm,
           slantPxPerLine: e.slantPxPerLine || 0,
+          repairedLines: e.repairedLines || 0,
           clockMeasured: !!e.clockMeasured,
           png: png.toString('base64'),
         };

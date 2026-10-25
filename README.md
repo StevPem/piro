@@ -12,7 +12,7 @@ Hamlib, no separate audio server and no extra apps.
 Written by VK3TR. Licensed AGPL-3.0-only (see
 [Licence](#licence)).
 
-**Current build: v98.** This is the version the app shows next to its title.
+**Current build: v99.** This is the version the app shows next to its title.
 It is the `CACHE_NAME` number in `src/client/sw.js`, which goes up with every
 change to the web app.
 
@@ -410,6 +410,8 @@ All settings are environment variables. For the systemd service they go in
 | `OLIVIA_SQUELCH` | on | `off` turns off PiRO's filtering of junk characters and decodes exactly as fldigi does with its squelch off. See [Olivia](#rtty-jtty-olivia-and-feld-hell). |
 | `SSTV_SAVE_DIR` | none | If set, every received SSTV picture is also saved in this folder as a PNG (`YYYYMMDD-HHMMSSz-<mode>.png`, UTC). |
 | `FAX_STATE_FILE` | `~/.config/piro/fax.json` | Where Radiofax keeps the sound card's measured clock error between restarts. |
+| `FAX_RADIO_SETUP` | on | `off` stops Radiofax turning the radio's NR and auto notch off and selecting FIL1. |
+| `FAX_CLEANUP` | on | `off` stops Radiofax mending crash-hit lines and speckle when a chart ends. |
 | `FAX_SAVE_DIR` | none | If set, every received radiofax chart is also saved in this folder as a greyscale PNG (`YYYYMMDD-HHMMSSz-fax.png`, UTC, the chart's start). |
 | `SSTV_TX_MODE` | `S1` | SSTV transmit mode: `S1` (Scottie 1), or any mode id the receiver knows (`M1`, `M2`, `S2`, `SDX`, `R36`, `R72`, `PD90`, `PD120`, `PD180`, ...; see `src/audio/sstv-modes.js`). Read at startup. |
 | `SSTV_TX_POWER_W` | none | TX power in watts while sending SSTV (put back afterwards). Unset leaves the power alone. |
@@ -759,12 +761,15 @@ test/
                            chart left alone, phasing with noise-hit lines
                            (all measured, none drawn), real VMC charts
                            (satellite picture, text page) straightened,
-                           noise left alone, the clock from the slant
+                           noise left alone, the clock from the slant,
+                           crash-hit lines mended and speckle cut while
+                           strokes are kept, clean charts left alone
   fax-decoder-bridge.test.js  radiofax bridge: line frames, the chart as a
                            greyscale PNG (decoded back), kept and saved, a
                            page joining part-way, PTT, unsupported rates,
                            the clock error kept across a restart, and learnt
-                           from a straightened chart's slant
+                           from a straightened chart's slant, the radio set
+                           up for fax (NR, notch, FIL1) and put back
   jtty-decoder-bridge.test.js  JTTY receive bridge: arming, PTT, decimation,
                            backlog dropping, broadcasts
   manual-tty-ui.js        optional browser test of the TTY button, text box and
@@ -1518,6 +1523,15 @@ listed frequency, on USB, so the signal's centre is at 1900 Hz. Entering
 Radiofax tunes the first button on the air now, unless the radio is
 already on one of them.
 
+Entering Radiofax also sets the radio up for fax: **NR off**, **auto notch
+off** and **FIL1** (its widest filter). NR smears every quick black/white
+change, so thin vertical lines vanish and text strokes come out hollow;
+the auto notch attacks steady tones, which is what a white or black area
+is. Leaving Radiofax (or the last browser closing) puts back whatever was
+changed, unless you changed it yourself in the meantime; the filter is
+only put back if the mode is still the same. `FAX_RADIO_SETUP=off` turns
+this off.
+
 | Station | Frequency (kHz) | Hours (UTC) |
 |---|---|---|
 | VMC, VMW | 5100, 7535, 10555, 11030, 13920, 15615 | all day |
@@ -1554,6 +1568,12 @@ How a chart is received:
   then says "slant corrected". The slant found also counts as a clock
   measurement for later charts. Its left edge stays wherever the line
   happened to start, unless phasing lined it up.
+- When a chart ends, noise damage is mended: a line spoilt across its
+  width by a static crash (up to 3 in a row) is replaced by a blend of the
+  lines either side, and patches of speckle much worse than the lines
+  around them are smoothed. Clean drawing, text and grids are left alone.
+  A deep fade that wipes out more lines can't be recovered. The chart
+  then says how many lines were mended. `FAX_CLEANUP=off` turns this off.
 - The stop signal (450 Hz) ends the chart. So do a new start signal,
   **Stop**, leaving Radiofax, transmitting, or 25 minutes.
 - **Start now** begins a chart straight away, for a broadcast that is

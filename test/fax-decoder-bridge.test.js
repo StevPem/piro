@@ -136,6 +136,79 @@ function decodeGreyPng(buf) {
     b2.stop();
   }
 
+  {
+    // the radio is set up for fax (NR off, notch off, FIL1) and put back after
+    class StubCiv {
+      constructor(nr, notch, filter) {
+        Object.assign(this, { nr, notch, filter, log: [] });
+      }
+      async getNoiseReduction() {
+        return this.nr;
+      }
+      async setNoiseReduction(on) {
+        this.log.push(['nr', on]);
+        this.nr = on;
+      }
+      async getNotch() {
+        return this.notch;
+      }
+      async setNotch(on) {
+        this.log.push(['notch', on]);
+        this.notch = on;
+      }
+      async getFilter() {
+        return this.filter;
+      }
+      async getMode() {
+        return { mode: this.mode ?? 'USB', filter: this.filter };
+      }
+      async setFilter(f) {
+        this.log.push(['filter', f]);
+        this.filter = f;
+      }
+    }
+    const civ = new StubCiv(true, true, 2);
+    const cs3 = new StubControlServer();
+    const b3 = new FaxDecoderBridge({ controlServer: cs3, civ, audioBridge: { capture: new EventEmitter(), sampleRate: 48000 }, stateFile: null });
+    b3.start();
+    cs3.emit('fax-active', true);
+    await b3.radioSettled();
+    check(!civ.nr && !civ.notch && civ.filter === 1, `Radiofax turns NR and the auto notch off and selects FIL1 (${JSON.stringify(civ.log)})`);
+    cs3.emit('fax-active', false);
+    await b3.radioSettled();
+    check(civ.nr && civ.notch && civ.filter === 2, 'leaving Radiofax puts them back');
+    civ.log = [];
+    cs3.emit('fax-active', true);
+    await b3.radioSettled();
+    await civ.setNoiseReduction(true); // the operator turns NR back on during fax
+    cs3.emit('fax-active', false);
+    await b3.radioSettled();
+    check(civ.nr && civ.notch && civ.filter === 2 && civ.log.filter(([k]) => k === 'nr').length === 2, "a setting changed by the operator during fax is left as they set it");
+    civ.log = [];
+    cs3.emit('fax-active', true);
+    await b3.radioSettled();
+    civ.mode = 'CW'; // left fax by choosing CW (which picks its own filter)
+    cs3.emit('fax-active', false);
+    await b3.radioSettled();
+    civ.mode = 'USB';
+    check(civ.log.filter(([k]) => k === 'filter').length === 1, "after a change of mode, that mode's filter is left alone");
+    civ.filter = 2;
+    const civ2 = new StubCiv(false, false, 1);
+    const cs4 = new StubControlServer();
+    const b4 = new FaxDecoderBridge({ controlServer: cs4, civ: civ2, audioBridge: { capture: new EventEmitter(), sampleRate: 48000 }, stateFile: null });
+    b4.start();
+    cs4.emit('fax-active', true);
+    await b4.radioSettled();
+    b4.stop();
+    await b4.radioSettled();
+    check(civ2.log.length === 0, 'a radio already set up for fax is not touched');
+    cs3.emit('fax-active', true);
+    await b3.radioSettled();
+    b3.stop();
+    await b3.radioSettled();
+    check(civ.nr && civ.notch && civ.filter === 2, 'stopping the server (or the last browser leaving) puts them back too');
+  }
+
   if (failures) {
     console.error(`\n${failures} failure(s)`);
     process.exit(1);

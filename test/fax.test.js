@@ -2,7 +2,7 @@
 'use strict';
 
 const { encodeFax, FAX_WIDTH } = require('../src/audio/fax-tx');
-const { FaxReceiver, toneStrength, deslant } = require('../src/audio/fax-rx');
+const { FaxReceiver, toneStrength, deslant, cleanChart } = require('../src/audio/fax-rx');
 
 let failures = 0;
 function check(cond, msg) {
@@ -241,6 +241,66 @@ for (const [snr, maxErr] of [[10, 25], [3, 45]]) {
   run(audio, rx);
   const end = rx.flush().find((e) => e.type === 'end');
   check(end && !end.clockMeasured && Math.abs(end.slantPpm + 150) <= 10, `the slant gives the clock error: ${end?.slantPpm} ppm (phasing would say -150)`);
+}
+
+{
+  // Noise damage mended at the end of a chart (cleanChart): static crashes
+  // spoil whole lines; a fade speckles a few lines. A clean chart, text
+  // and grids are left alone.
+  const H = 240;
+  const text = new Uint8Array(W * H).fill(255);
+  for (let y = 0; y < H; y++) {
+    for (let x = 0; x < W; x++) {
+      const ly = y % 30;
+      const cx = (x - 100) % 18;
+      if (ly >= 5 && ly < 25 && x > 100 && x < 1300 && (cx < 3 || (ly >= 13 && ly < 16 && cx < 12))) text[y * W + x] = 0; // rows of letter-like strokes
+      if (x % 300 === 150) text[y * W + x] = 0; // thin vertical lines
+    }
+  }
+  const audio = encodeFax({ grey: text, width: W, lines: H, phasingSec: 20 });
+  const start = 25 * 12000;
+  for (let i = start; i < audio.length; i++) {
+    const l = (i - start) / 6000;
+    if (l > 40 && l < 60) audio[i] *= 0.12 + 0.88 * Math.abs(Math.cos((Math.PI * (l - 40)) / 20)); // a fade to -18 dB
+  }
+  for (const l of [90, 150, 151, 200]) for (let i = 0; i < 6000; i++) audio[start + l * 6000 + i] += 2 * gauss(); // crashes
+  const noisyAudio = noisy(audio, 12);
+  const measure = (end) => {
+    let specks = 0;
+    let white = 0;
+    let kept = 0;
+    let ink = 0;
+    const L = Math.min(end.lines, H);
+    for (let y = 2; y < L - 2; y++) {
+      for (let x = 4; x < W - 4; x++) {
+        let far = true;
+        for (let dy = -2; dy <= 2 && far; dy++) for (let dx = -4; dx <= 4; dx++) if (text[(y + dy) * W + x + dx] < 128) far = false;
+        if (far) {
+          white++;
+          if (end.grey[y * W + x] < 170) specks++;
+        }
+        if (text[y * W + x] === 0) {
+          ink++;
+          if (end.grey[y * W + x] < 128) kept++;
+        }
+      }
+    }
+    return { specks: (100 * specks) / white, kept: (100 * kept) / ink };
+  };
+  const raw = measure(run(noisyAudio, new FaxReceiver({ cleanUp: false })).ends[0]);
+  const { ends } = run(noisyAudio);
+  const cleaned = measure(ends[0]);
+  check(ends[0].repairedLines >= 3 && ends[0].repairedLines <= 5, `crash-hit lines are mended (${ends[0].repairedLines} lines)`);
+  check(cleaned.specks < raw.specks / 3 && cleaned.kept >= raw.kept - 0.5, `specks in the white cut from ${raw.specks.toFixed(2)}% to ${cleaned.specks.toFixed(2)}%, strokes kept (${raw.kept.toFixed(1)}% -> ${cleaned.kept.toFixed(1)}%)`);
+  for (const [name, g, lines] of [
+    ['the test chart (bars, a diagonal)', chart(300), 300],
+    ['a page of text and grid lines', text, H],
+  ]) {
+    const c = cleanChart(g, W, lines);
+    let changed = 0;
+    for (let i = 0; i < g.length; i++) if (c.grey[i] !== g[i]) changed++;
+    check(c.repairedLines === 0 && changed / g.length < 0.001, `clean, ${name} is left alone (${c.repairedLines} lines, ${changed} pixels changed)`);
+  }
 }
 
 {
