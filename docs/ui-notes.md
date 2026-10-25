@@ -4188,6 +4188,15 @@ model for how to approach that.
     receiver waited 10 bad frames (4 s) before looking afresh. Now 3.
   - Reed-Solomon (.rsN) files came out padded: QSSTV reads the length byte
     as a signed char. The exact length is now worked out.
+- A real EasyPal recording (found online, 4 min, mode A 64-QAM long
+  interleave, `110612170202-Last_TX_Picture.rs2`, a 3648 x 2736 JPEG 2000
+  photo of 106 kB) decoded: 588 of 595 frames good, complete after 431 of
+  570 segments with 139 put back by Reed-Solomon (QSSTV's receiver: 565
+  good packets). It showed a real problem: as a PNG the picture was 3.4 MB,
+  sent to every browser and kept 8 times. Fix: a JPEG 2000 picture is now
+  shrunk to at most 1600 pixels across (block average) and sent as a JPEG
+  (jpeg-js): 161 kB for this one. `EASYPAL_SAVE_DIR` still keeps the
+  original file.
 - Tests: easypal.test.js (3 QSSTV-made fixtures, 8-bit mu-law at 12 kHz;
   noise, mistuning, static, back-to-back, noise only; RS, CRCs,
   interleavers, JPEG 2000), easypal-decoder-bridge.test.js (real worker,
