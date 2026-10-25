@@ -18,6 +18,8 @@ const { CwTxBridge } = require(PKG + '/src/server/cw-tx-bridge');
 const { WsprBridge } = require(PKG + '/src/server/wspr-bridge');
 const { BandConditions } = require(PKG + '/src/server/band-conditions');
 const { FaxDecoderBridge } = require(PKG + '/src/server/fax-decoder-bridge');
+const { EasypalDecoderBridge } = require(PKG + '/src/server/easypal-decoder-bridge');
+const easypalFx = require('./fixtures/easypal-audio');
 const { encodeFax, FAX_WIDTH } = require(PKG + '/src/audio/fax-tx');
 const { EVENT } = require(PKG + '/src/server/protocol');
 const { encodePng } = require(PKG + '/src/server/png');
@@ -87,6 +89,8 @@ class Civ extends EventEmitter {
   wspr.start();
   const faxRx = new FaxDecoderBridge({ controlServer: server, audioBridge, stateFile: null });
   faxRx.start();
+  const easypalRx = new EasypalDecoderBridge({ controlServer: server, audioBridge });
+  easypalRx.start();
   // "Current conditions", with wspr.live answered by hand
   const conditions = new BandConditions({ controlServer: server, grid: 'QF56', query: async () => [[1409, 'K1ABC', 16500, ['VK2IO']], [704, 'VK3TR', 700, ['VK2IO']]] });
   conditions.start();
@@ -759,12 +763,52 @@ class Civ extends EventEmitter {
     await sleep(200);
     check(civ.dataMode === false && civ.log.filter((e) => e[0] === 'setPtt').at(-1)[1] === false, 'Cancel while sending: transmission stopped (PTT off, DATA MODE off), editor closed');
   }
-  // Radiofax: the Image button's second press; the chart replaces the spectrum; VMC/VMW buttons below the S-meter
+  // EasyPal: the Image button's second press; USB, the audio spectrum, a panel with the picture
   {
+    const freqBefore = civ.freq;
     await chip('SSTV').click();
+    await page.waitForFunction(() => [...document.querySelectorAll('#modes .chip')].some((c) => c.textContent === 'EasyPal'));
+    await sleep(400);
+    check(server.state.easypalActive && !server.state.sstvActive && easypalRx.attached && civ.mode === 'USB' && civ.freq === freqBefore, `Image again: EasyPal, on USB, same frequency (${civ.freq})`);
+    check((await vis('#easypal-rx')) && !(await vis('#sstv-rx')) && (await vis('#scope-waterfall')) && /Listening for an EasyPal signal/.test(await page.locator('#easypal-status').textContent()), 'the EasyPal panel replaces the SSTV one; the spectrum stays; "Listening"');
+    check(await bFollows(() => [...document.querySelectorAll('#modes .chip')].some((c) => c.textContent === 'EasyPal' && c.classList.contains('chip--active')) && !document.getElementById('easypal-rx').hidden), 'the second browser follows into EasyPal');
+    // a real transmission (QSSTV's transmitter): a JPEG, mode A 64-QAM
+    const { audio, file } = easypalFx.loadFixture('a64');
+    const pcm = upsampleFloatToPcm(audio, 12000, 48000);
+    const seenStatus = [];
+    const watch = setInterval(() => page.locator('#easypal-status').textContent().then((t) => seenStatus.push(t), () => {}), 150);
+    for (let i = 0; i < pcm.length; i += 9600) {
+      capture.emit('data', pcm.subarray(i, i + 9600));
+      await sleep(15);
+    }
+    await page.waitForFunction(() => document.querySelectorAll('#easypal-strip .sstv-rx__thumb').length === 1, null, { timeout: 10000 }).catch(() => {});
+    clearInterval(watch);
+    const shown = await page.evaluate(() => {
+      const img = document.getElementById('easypal-picture');
+      return { hidden: img.hidden, w: img.naturalWidth, h: img.naturalHeight, src: img.src.slice(0, 30), status: document.getElementById('easypal-status').textContent, save: !document.getElementById('easypal-save-btn').hidden };
+    });
+    check(seenStatus.some((t) => /Mode A · 2.5 kHz · 64-QAM · S\/N \d+ dB/.test(t)), `while it comes in the status shows the mode and S/N ("${seenStatus.find((t) => /Mode A/.test(t))}")`);
+    check(!shown.hidden && shown.w === 160 && shown.h === 120 && shown.src.startsWith('data:image/jpeg;base64,') && shown.save, `the picture is shown (${shown.w}x${shown.h}), with Save`);
+    check(/^tiny\.jpg · de VK2XYZ · \d\d:\d\d UTC · Mode A/.test(shown.status), 'and described: ' + shown.status);
+    check(server.easypalPictures.length === 1 && Buffer.from(server.easypalPictures[0].data, 'base64').equals(file), 'the server has the file exactly as sent');
+    check(await bFollows(() => document.querySelectorAll('#easypal-strip .sstv-rx__thumb').length === 1 && !document.getElementById('easypal-picture').hidden), 'the second browser shows it too');
+    if (process.env.EASYPAL_SHOT) await page.locator('#easypal-rx').screenshot({ path: process.env.EASYPAL_SHOT });
+    await page.locator('#easypal-picture').click();
+    check(await page.locator('.sstv-viewer').isVisible(), 'tap: full size');
+    await page.locator('.sstv-viewer').click();
+    // a page opened afterwards gets it too
+    const pageC = await browser.newPage({ viewport: { width: 430, height: 1100 } });
+    pageC.on('pageerror', (e) => errors.push('C: ' + e.message));
+    await pageC.goto(`http://localhost:${port}/`);
+    check(await pageC.waitForFunction(() => document.querySelectorAll('#easypal-strip .sstv-rx__thumb').length === 1 && !document.getElementById('easypal-rx').hidden, null, { timeout: 8000 }).then(() => true, () => false), 'a browser opened later joins EasyPal and has the picture');
+    await pageC.close();
+  }
+  // Radiofax: the Image button's third press; the chart replaces the spectrum; VMC/VMW buttons below the S-meter
+  {
+    await chip('EasyPal').click();
     await page.waitForFunction(() => [...document.querySelectorAll('#modes .chip')].some((c) => c.textContent === 'Fax'));
     await sleep(400);
-    check(server.state.faxActive && !server.state.sstvActive && faxRx.attached && civ.mode === 'USB' && civ.freq === 5098100, `Image again: Radiofax, on USB, tuned to VMC 5100 (dial ${civ.freq})`);
+    check(server.state.faxActive && !server.state.sstvActive && !server.state.easypalActive && !easypalRx.attached && faxRx.attached && civ.mode === 'USB' && civ.freq === 5098100, `Image again: Radiofax, on USB, tuned to VMC 5100 (dial ${civ.freq})`);
     check((await vis('#fax-view')) && !(await vis('#scope-waterfall')) && !(await vis('#scope-trace')) && (await vis('#fax-rx')) && !(await vis('#sstv-rx')), 'the chart view replaces the spectrum; the fax panel replaces the SSTV one');
     const meter = await page.locator('.meter').boundingBox();
     const list = await page.locator('#fax-stations').boundingBox();
@@ -854,6 +898,7 @@ class Civ extends EventEmitter {
   wspr.stop();
   conditions.stop();
   faxRx.stop();
+  easypalRx.stop();
   await server.close();
   console.log(failures ? `\n${failures} FAILED` : '\nAll UI checks passed');
   process.exit(failures ? 1 : 0);

@@ -1250,6 +1250,35 @@ async function run() {
     await fServer.close();
   }
 
+  // EasyPal: setEasypalActive (an app mode, shared), getEasypalPictures, off when the last client leaves
+  {
+    const eServer = new ControlServer({ civ: new StubCivDriver(), port: 0 });
+    const ePort = await eServer.listen();
+    const seen = [];
+    eServer.on('easypal-active', (e) => seen.push(e));
+    eServer.easypalPictures = [{ id: 1, fileName: 'a.jpg', mime: 'image/jpeg', data: '/9j/' }];
+    eServer.easypalPreview = { transportId: 7, fileName: 'b.jpg', mime: 'image/jpeg', data: '/9j/' };
+    const a = await connect(ePort);
+    const b = await connect(ePort);
+    const hello = await nextMessage(a);
+    await nextMessage(b);
+    check(hello.data.easypalActive === false && 'easypal' in hello.data, 'connected snapshot reports easypalActive=false and the receiver state');
+    a.send(JSON.stringify({ id: 'e1', type: 'setEasypalActive', active: 1 }));
+    check((await nextMessage(a)).ok === false, 'setEasypalActive rejects a non-boolean');
+    a.send(JSON.stringify({ id: 'e2', type: 'setEasypalActive', active: true }));
+    const ok = await nextMessage(a);
+    const toB = await nextMessage(b);
+    check(ok.data.active === true && eServer.state.easypalActive === true && toB.type === 'app-modes' && toB.data.easypalActive === true && toB.data.faxActive === false, 'setEasypalActive turns EasyPal on, and the other browser hears it');
+    a.send(JSON.stringify({ id: 'e3', type: 'getEasypalPictures' }));
+    const pics = await nextMessage(a);
+    check(pics.data.pictures.length === 1 && pics.data.preview.transportId === 7, 'getEasypalPictures returns the kept files and the preview of the one coming in');
+    a.close();
+    b.close();
+    await new Promise((r) => setTimeout(r, 100));
+    check(eServer.state.easypalActive === false && seen.join() === 'true,false', 'last client disconnecting turns EasyPal off');
+    await eServer.close();
+  }
+
   // getBandConditions: answered by the BandConditions the server is given
   {
     const bServer = new ControlServer({ civ: new StubCivDriver(), port: 0 });

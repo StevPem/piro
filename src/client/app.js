@@ -452,6 +452,14 @@ const jttyRxEl = document.getElementById('jtty-rx');
 const jttyTableBodyEl = document.getElementById('jtty-table-body');
 const oliviaRxEl = document.getElementById('olivia-rx');
 const sstvRxEl = document.getElementById('sstv-rx');
+const easypalRxEl = document.getElementById('easypal-rx');
+const easypalStatusEl = document.getElementById('easypal-status');
+const easypalBarEl = document.getElementById('easypal-bar');
+const easypalBarFillEl = document.getElementById('easypal-bar-fill');
+const easypalPictureEl = document.getElementById('easypal-picture');
+const easypalTextEl = document.getElementById('easypal-text');
+const easypalStripEl = document.getElementById('easypal-strip');
+const easypalSaveBtn = document.getElementById('easypal-save-btn');
 const faxRxEl = document.getElementById('fax-rx');
 const faxViewEl = document.getElementById('fax-view');
 const faxCanvas = document.getElementById('fax-canvas');
@@ -586,6 +594,10 @@ let sstvActive = false; // the SSTV receiver is selected (on LSB/USB, no DATA MO
 let sstvSidebandSeen = false;
 let faxActive = false; // the radiofax receiver is selected (Image button on Fax; USB)
 let faxUsbSeen = false;
+let easypalActive = false; // the EasyPal (HamDRM) receiver is selected (Image button on EasyPal; USB)
+let easypalUsbSeen = false;
+const EASYPAL_LOW_HZ = 400; // a 2.5 kHz HamDRM signal's edges, when tuned right (see EasyPal below)
+const EASYPAL_HIGH_HZ = 2750;
 let hellActive = false;
 let hellUsbSeen = false;
 const ttyFreqByMode = { JTTY: 1450, OLIVIA: OLIVIA_DEFAULT_CENTRE_HZ, HELL: HELL_DEFAULT_TONE_HZ };
@@ -838,11 +850,11 @@ const scopeDisplay = new ScopeDisplay({
   },
 });
 link.addEventListener('scope-line', (event) => {
-  if (ft8Active || wsprActive || jttyActive || oliviaActive || hellActive || sstvActive || faxActive) return; // audio-domain FFT spectrum takes over the display; see the 'ft8-spectrum' listener below
+  if (ft8Active || wsprActive || jttyActive || oliviaActive || hellActive || sstvActive || faxActive || easypalActive) return; // audio-domain FFT spectrum takes over the display; see the 'ft8-spectrum' listener below
   scopeDisplay.pushLine(event.detail);
 });
 link.addEventListener('ft8-spectrum', (event) => {
-  if (!ft8Active && !wsprActive && !jttyActive && !oliviaActive && !hellActive && !sstvActive) return;
+  if (!ft8Active && !wsprActive && !jttyActive && !oliviaActive && !hellActive && !sstvActive && !easypalActive) return;
   // The audio spectrum comes from the RX audio, not the radio's scope, so it
   // works with CIV_SCOPE_ENABLED off: don't leave the "scope not enabled"
   // notice over it (which would also hide the Feld-Hell picture).
@@ -1358,11 +1370,14 @@ for (const entry of MODE_CHIPS) {
         .catch((err) => showError(err.message));
     });
   } else if (entry === 'Image') {
-    // SSTV, then Radiofax, then SSTV again (the chip reads "SSTV" or "Fax" while one is on).
+    // SSTV, then EasyPal, then Radiofax, then SSTV again (the chip reads "SSTV", "EasyPal" or "Fax" while one is on).
     sstvModeBtn = btn;
     btn.addEventListener('click', () => {
       if (sstvActive) {
         exitSstvMode();
+        enterEasypalMode();
+      } else if (easypalActive) {
+        exitEasypalMode();
         enterFaxMode();
       } else if (faxActive) {
         exitFaxMode();
@@ -1393,6 +1408,7 @@ for (const entry of MODE_CHIPS) {
       if (hellActive) exitHellMode();
       if (sstvActive) exitSstvMode();
       if (faxActive) exitFaxMode();
+      if (easypalActive) exitEasypalMode();
       // First click enters FT8/FT4 mode (whichever variant was last
       // active, or 'FT8' the first time); a click while already active
       // toggles the protocol instead — see toggleFt8Variant()'s doc
@@ -1425,6 +1441,7 @@ for (const entry of MODE_CHIPS) {
       if (hellActive) exitHellMode();
       if (sstvActive) exitSstvMode();
       if (faxActive) exitFaxMode();
+      if (easypalActive) exitEasypalMode();
       // Unlike FT8, there's no second variant to toggle to any more (the
       // '700E' option was removed — see enterFreeDvMode()'s doc comment),
       // so a click while already active is simply a no-op.
@@ -1439,6 +1456,7 @@ for (const entry of MODE_CHIPS) {
       if (freeDvActive) exitFreeDvMode();
       if (sstvActive) exitSstvMode();
       if (faxActive) exitFaxMode();
+      if (easypalActive) exitEasypalMode();
       // First click selects RTTY; after that the button cycles RTTY ->
       // JTTY -> Olivia -> Feld-Hell -> RTTY ... until a non-TTY mode is
       // picked (which resets it to "TTY").
@@ -1464,6 +1482,7 @@ for (const entry of MODE_CHIPS) {
       if (hellActive) exitHellMode();
       if (sstvActive) exitSstvMode();
       if (faxActive) exitFaxMode();
+      if (easypalActive) exitEasypalMode();
       // First click enters CW mode (using whichever decoder variant is
       // already selected); a click while CW mode is already active
       // cycles the variant (CW1 -> CW2 -> CW3 -> CW1) instead of
@@ -1499,6 +1518,7 @@ for (const entry of MODE_CHIPS) {
       if (hellActive) exitHellMode();
       if (sstvActive) exitSstvMode();
       if (faxActive) exitFaxMode();
+      if (easypalActive) exitEasypalMode();
       link
         .request('setMode', { mode })
         .then(() => updateModeButtons(mode))
@@ -1512,7 +1532,7 @@ for (const entry of MODE_CHIPS) {
 
 /** True while one of the app-level modes layered on LSB/USB is selected. */
 function appModeActive() {
-  return ft8Active || wsprActive || freeDvActive || jttyActive || oliviaActive || hellActive || sstvActive || faxActive;
+  return ft8Active || wsprActive || freeDvActive || jttyActive || oliviaActive || hellActive || sstvActive || faxActive || easypalActive;
 }
 
 /** Leaves whichever app-level mode is selected (picking SSB or SSTV). */
@@ -1525,6 +1545,7 @@ function exitAppModes() {
   if (hellActive) exitHellMode();
   if (sstvActive) exitSstvMode();
   if (faxActive) exitFaxMode();
+  if (easypalActive) exitEasypalMode();
 }
 
 /**
@@ -1549,6 +1570,7 @@ function applyAppModes(s) {
   if (!s.hellActive) exitHellMode({ local: true });
   if (!s.sstvActive) exitSstvMode({ local: true });
   if (!s.faxActive) exitFaxMode({ local: true });
+  if (!s.easypalActive) exitEasypalMode({ local: true });
   // ...then whatever was switched on.
   if (s.ft8Active) reflectFt8ActiveFromServer();
   if (s.wsprActive) reflectWsprActiveFromServer();
@@ -1558,6 +1580,7 @@ function applyAppModes(s) {
   if (s.hellActive) reflectHellActiveFromServer(s.hellToneHz);
   if (s.sstvActive) reflectSstvActiveFromServer();
   if (s.faxActive) reflectFaxActiveFromServer();
+  if (s.easypalActive) reflectEasypalActiveFromServer();
   // A new audio frequency in the mode already shown (unless it's being typed here).
   const mode = ttyMode();
   if ((mode === 'JTTY' || mode === 'OLIVIA' || mode === 'HELL') && document.activeElement !== ttyFreqEl) {
@@ -1580,7 +1603,7 @@ link.addEventListener('app-modes', (event) => applyAppModes(event.detail));
  * page carries on and re-arms it.
  */
 function syncAppModesOnConnect(data) {
-  const serverAny = data.ft8Active || data.wsprActive || data.freeDvActive || data.jttyActive || data.oliviaActive || data.hellActive || data.sstvActive || data.faxActive;
+  const serverAny = data.ft8Active || data.wsprActive || data.freeDvActive || data.jttyActive || data.oliviaActive || data.hellActive || data.sstvActive || data.faxActive || data.easypalActive;
   const radio = data.mode?.mode;
   const fits = sstvActive || freeDvActive ? radio === 'LSB' || radio === 'USB' : radio === 'USB';
   if (!serverAny && appModeActive() && fits) {
@@ -1592,6 +1615,7 @@ function syncAppModesOnConnect(data) {
     if (hellActive) link.request('setHellActive', { active: true, toneHz: ttyFreqByMode.HELL }).catch(() => {});
     if (sstvActive) link.request('setSstvActive', { active: true }).catch(() => {});
     if (faxActive) link.request('setFaxActive', { active: true }).catch(() => {});
+    if (easypalActive) link.request('setEasypalActive', { active: true }).catch(() => {});
     return;
   }
   applyAppModes(data);
@@ -1604,8 +1628,8 @@ function updateSsbChip() {
   ssbModeBtn.textContent = on ? currentMode : 'SSB';
   ssbModeBtn.classList.toggle('chip--active', on);
   if (sstvModeBtn) {
-    sstvModeBtn.classList.toggle('chip--active', sstvActive || faxActive);
-    sstvModeBtn.textContent = sstvActive ? 'SSTV' : faxActive ? 'Fax' : 'Image';
+    sstvModeBtn.classList.toggle('chip--active', sstvActive || faxActive || easypalActive);
+    sstvModeBtn.textContent = sstvActive ? 'SSTV' : easypalActive ? 'EasyPal' : faxActive ? 'Fax' : 'Image';
   }
 }
 
@@ -1624,6 +1648,11 @@ function updateModeButtons(mode) {
   if (faxActive) {
     if (mode === 'USB') faxUsbSeen = true;
     else if (faxUsbSeen) leaveFax();
+  }
+  // EasyPal is on USB too.
+  if (easypalActive) {
+    if (mode === 'USB') easypalUsbSeen = true;
+    else if (easypalUsbSeen) leaveEasypal();
   }
   updateSsbChip();
   // JTTY runs on USB: if the radio is later reported in any other mode (a
@@ -2027,7 +2056,8 @@ function updateTtyUi() {
   oliviaRxEl.hidden = mode !== 'OLIVIA';
   hellRxEl.hidden = mode !== 'HELL';
   // JTTY, Olivia and Feld-Hell show the 0-3 kHz audio spectrum (like FT8/FT4), so the RF span buttons don't apply.
-  scopeSpansEl.hidden = ft8Active || wsprActive || freqMode || sstvActive || faxActive;
+  scopeSpansEl.hidden = ft8Active || wsprActive || freqMode || sstvActive || faxActive || easypalActive;
+  easypalRxEl.hidden = !easypalActive;
   sstvRxEl.hidden = !sstvActive;
   // Radiofax: the chart replaces the spectrum, and the station buttons appear below the S-meter.
   faxRxEl.hidden = !faxActive;
@@ -2044,13 +2074,14 @@ function updateTtyUi() {
   }
   // SSTV: faint guides at the sync (1200 Hz), black (1500 Hz) and white (2300 Hz) tones.
   // WSPR: the edges of the 200 Hz WSPR window.
-  scopeDisplay.setGuideFreqs(sstvActive ? [1200, 1500, 2300] : wsprActive ? [1400, 1600] : []);
+  // EasyPal: the edges of a 2.5 kHz HamDRM signal, when it is tuned right.
+  scopeDisplay.setGuideFreqs(sstvActive ? [1200, 1500, 2300] : wsprActive ? [1400, 1600] : easypalActive ? [EASYPAL_LOW_HZ, EASYPAL_HIGH_HZ] : []);
   updateSsbChip();
   // Feld-Hell turns the waterfall into the received picture, scrolling right to left.
   scopeDisplay.setHellMode(mode === 'HELL');
   // Back on the RF scope: show its "not enabled" notice again if it applies
   // (it only has text once the server has said the scope is off).
-  if (!ft8Active && !wsprActive && !freqMode && !sstvActive && !faxActive && scopePlaceholder.textContent) scopePlaceholder.hidden = scopeEnabled;
+  if (!ft8Active && !wsprActive && !freqMode && !sstvActive && !faxActive && !easypalActive && scopePlaceholder.textContent) scopePlaceholder.hidden = scopeEnabled;
   if (freqMode) {
     ttyFreqLabelEl.firstChild.textContent = `${TTY_FREQ_LABEL[mode]} `;
     ttyFreqEl.min = String(TTY_FREQ_RANGE[mode][0]);
@@ -2721,6 +2752,184 @@ faxSaveBtn.addEventListener('click', () => {
 faxCanvas.addEventListener('click', () => {
   sstvViewerImg.src = !faxCurrent && faxShown ? `data:image/png;base64,${faxShown.png}` : faxCanvas.toDataURL('image/png');
   sstvViewerImg.alt = 'Radiofax chart, full size';
+  sstvViewer.hidden = false;
+});
+
+// --- EasyPal (the Image button's second choice; see server/easypal-decoder-bridge.js) ---
+// HamDRM digital SSTV, as EasyPal and QSSTV send it: an OFDM signal from
+// about 400 to 2750 Hz on USB. Receive only. The server's receiver (a port
+// of QSSTV's) sends its progress, the top of a JPEG as it comes in, and
+// each file received. The audio spectrum shows where the signal is.
+const EASYPAL_STRIP_MAX = 8;
+let easypalShown = null; // the received file on screen
+let easypalPreviewId = null; // the transport whose preview is on screen
+const easypalSeen = new Set();
+
+/** EasyPal receive: USB on the current frequency, the receiver armed, its panel shown and the scope on the audio spectrum. */
+function enterEasypalMode() {
+  easypalActive = true;
+  easypalUsbSeen = false;
+  link
+    .request('setMode', { mode: 'USB' })
+    .then(() => updateModeButtons('USB'))
+    .catch((err) => showError(err.message));
+  link.request('setEasypalActive', { active: true }).catch((err) => showError(`Couldn't start EasyPal receive: ${err.message}`));
+  loadEasypalPictures();
+  updateTtyUi();
+}
+
+function leaveEasypal({ local = false } = {}) {
+  if (!easypalActive) return false;
+  easypalActive = false;
+  easypalUsbSeen = false;
+  if (!local) link.request('setEasypalActive', { active: false }).catch(() => {});
+  updateTtyUi();
+  return true;
+}
+
+function reflectEasypalActiveFromServer() {
+  if (easypalActive) return;
+  easypalActive = true;
+  easypalUsbSeen = false;
+  loadEasypalPictures();
+  updateTtyUi();
+}
+
+function exitEasypalMode(opts) {
+  leaveEasypal(opts);
+}
+
+const easypalModeText = (m) => (m ? `Mode ${m.mode} · ${m.bandwidth} kHz · ${m.qam}-QAM` : '');
+const easypalDataUrl = (p) => `data:${p.mime};base64,${p.data}`;
+
+function easypalStatusText(s) {
+  if (!s) return '';
+  switch (s.state) {
+    case 'listening':
+      return 'Listening for an EasyPal signal… (USB; the signal fills the space between the guide lines)';
+    case 'sync':
+      return `Signal heard, locking on…${Number.isFinite(s.snr) ? ` S/N ${Math.round(s.snr)} dB` : ''}`;
+    case 'receiving': {
+      const parts = [easypalModeText(s.mode)];
+      if (Number.isFinite(s.snr)) parts.push(`S/N ${Math.round(s.snr)} dB`);
+      if (Math.abs(s.offsetHz) >= 20) parts.push(`tuned ${s.offsetHz > 0 ? '+' : ''}${s.offsetHz} Hz`);
+      if (s.callsign) parts.push(`de ${s.callsign}`);
+      const f = s.file;
+      if (f) parts.push(`${f.fileName || 'file'}: ${f.received}${f.totalKnown ? ` of ${f.total}` : ''} segments`);
+      return parts.filter(Boolean).join(' · ');
+    }
+    default:
+      return 'EasyPal receiver off.';
+  }
+}
+
+function showEasypalStatus(s) {
+  easypalStatusEl.textContent = easypalStatusText(s);
+  const f = s?.state === 'receiving' || s?.state === 'sync' ? s.file : null;
+  easypalBarEl.hidden = !f;
+  if (f) {
+    const pct = f.total ? Math.round((100 * f.received) / f.total) : 0;
+    easypalBarFillEl.style.width = `${f.totalKnown ? pct : Math.min(pct, 90)}%`;
+    easypalBarEl.setAttribute('aria-valuenow', String(pct));
+  }
+}
+
+function easypalPictureLine(p) {
+  const d = new Date(p.time);
+  const what = [p.fileName, p.callsign ? `de ${p.callsign}` : '', `${pad2(d.getUTCHours())}:${pad2(d.getUTCMinutes())} UTC`, easypalModeText(p.mode)];
+  if (p.recovered) what.push(`${p.recovered} lost segment${p.recovered === 1 ? '' : 's'} recovered`);
+  return what.filter(Boolean).join(' · ');
+}
+
+function showEasypalPicture(p) {
+  easypalShown = p;
+  easypalPreviewId = null;
+  easypalPictureEl.hidden = !p.data;
+  easypalTextEl.hidden = !p.text;
+  if (p.data) {
+    easypalPictureEl.src = easypalDataUrl(p);
+    easypalPictureEl.alt = easypalPictureLine(p);
+  }
+  if (p.text) easypalTextEl.textContent = p.text;
+  easypalSaveBtn.hidden = false;
+  easypalStatusEl.textContent = easypalPictureLine(p);
+  easypalBarEl.hidden = true;
+  for (const t of easypalStripEl.children) t.classList.toggle('sstv-rx__thumb--shown', t.dataset.key === `${p.id}:${p.time}`);
+}
+
+function addEasypalThumb(p) {
+  const key = `${p.id}:${p.time}`;
+  if (easypalSeen.has(key)) return;
+  easypalSeen.add(key);
+  const btn = document.createElement('button');
+  btn.type = 'button';
+  btn.className = 'sstv-rx__thumb';
+  btn.dataset.key = key;
+  btn.title = easypalPictureLine(p);
+  if (p.data) {
+    const img = document.createElement('img');
+    img.alt = easypalPictureLine(p);
+    img.src = easypalDataUrl(p);
+    btn.appendChild(img);
+  } else {
+    btn.classList.add('sstv-rx__thumb--file');
+    btn.textContent = p.fileName;
+  }
+  btn.addEventListener('click', () => showEasypalPicture(p));
+  easypalStripEl.prepend(btn);
+  while (easypalStripEl.children.length > EASYPAL_STRIP_MAX) easypalStripEl.lastElementChild.remove();
+}
+
+function showEasypalPreview(p) {
+  easypalPreviewId = p.transportId;
+  easypalPictureEl.hidden = false;
+  easypalTextEl.hidden = true;
+  easypalPictureEl.src = easypalDataUrl(p);
+  easypalPictureEl.alt = `${p.fileName || 'Picture'} coming in`;
+  easypalSaveBtn.hidden = true;
+}
+
+function loadEasypalPictures() {
+  link
+    .request('getEasypalPictures')
+    .then(({ pictures, preview }) => {
+      for (const p of pictures || []) addEasypalThumb(p);
+      if (preview) showEasypalPreview(preview);
+      else if (!easypalShown && pictures?.length) showEasypalPicture(pictures[pictures.length - 1]);
+    })
+    .catch(() => {});
+}
+
+link.addEventListener('easypal-status', (event) => {
+  const s = event.detail;
+  // a received file stays described until the next one starts coming in
+  if (easypalShown && (!s.file || s.file.transportId === easypalShown.transportId)) return;
+  if (easypalShown && s.file && s.file.transportId !== easypalShown.transportId) easypalShown = null;
+  showEasypalStatus(s);
+});
+
+link.addEventListener('easypal-preview', (event) => showEasypalPreview(event.detail));
+
+link.addEventListener('easypal-picture', (event) => {
+  const p = event.detail;
+  addEasypalThumb(p);
+  showEasypalPicture(p);
+});
+
+easypalSaveBtn.addEventListener('click', () => {
+  const p = easypalShown;
+  if (!p) return;
+  const a = document.createElement('a');
+  a.href = p.data ? easypalDataUrl(p) : `data:text/plain;charset=utf-8,${encodeURIComponent(p.text || '')}`;
+  // a JPEG 2000 picture was converted to PNG for the browser: save the PNG under a matching name
+  a.download = p.mime === 'image/png' && !/\.png$/i.test(p.fileName) ? p.fileName.replace(/\.[^.]*$/, '') + '.png' : p.fileName;
+  document.body.appendChild(a);
+  a.click();
+  a.remove();
+});
+easypalPictureEl.addEventListener('click', () => {
+  sstvViewerImg.src = easypalPictureEl.src;
+  sstvViewerImg.alt = easypalPictureEl.alt || 'EasyPal picture, full size';
   sstvViewer.hidden = false;
 });
 

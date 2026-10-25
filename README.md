@@ -12,7 +12,7 @@ Hamlib, no separate audio server and no extra apps.
 Written by VK3TR. Licensed AGPL-3.0-only (see
 [Licence](#licence)).
 
-**Current build: v99.** This is the version the app shows next to its title.
+**Current build: v100.** This is the version the app shows next to its title.
 It is the `CACHE_NAME` number in `src/client/sw.js`, which goes up with every
 change to the web app.
 
@@ -31,6 +31,7 @@ Several of the cooler features in this app are built on the work of others:
 - Olivia support = Ported to JS from Pawel Jalocha's (SP9VRC) MFSK code in fldigi, https://github.com/w1hkj/fldigi
 - Feld-Hell support = Ported to JS from fldigi's Feld-Hell modem and font, https://github.com/w1hkj/fldigi
 - SSTV receiver = Ported to JS from slowrx by Oona Räisänen (OH2EIQ), https://github.com/windytan/slowrx
+- EasyPal (HamDRM) receiver = Ported to JS from QSSTV by Johan Maes (ON4QZ) and M. Bos (PA0MBO), https://github.com/ON4QZ/QSSTV
 - WSPR support = Ported to JS from wsprd and wsprsim (K1JT, K9AN) in WSJT-X, https://wsjtx.github.io/wsjtx/index.html
 
 ## Features
@@ -53,7 +54,10 @@ Several of the cooler features in this app are built on the work of others:
   text is decoded as it arrives, or for Feld-Hell painted in the scope and
   read from the picture as text. See
   [RTTY, JTTY, Olivia and Feld-Hell](#rtty-jtty-olivia-and-feld-hell).
-- **Radiofax**: the Image button's second choice receives HF weather
+- **EasyPal**: the Image button's second choice receives digital SSTV
+  pictures sent by EasyPal or QSSTV (HamDRM), with Reed-Solomon recovery
+  of lost segments. See [EasyPal](#easypal).
+- **Radiofax**: the Image button's third choice receives HF weather
   charts, such as the Bureau of Meteorology's VMC (Charleville) and VMW
   (Wiluna) broadcasts, drawn in place of the spectrum as they arrive. See
   [Radiofax](#radiofax).
@@ -412,6 +416,8 @@ All settings are environment variables. For the systemd service they go in
 | `FAX_STATE_FILE` | `~/.config/piro/fax.json` | Where Radiofax keeps the sound card's measured clock error between restarts. |
 | `FAX_RADIO_SETUP` | on | `off` stops Radiofax turning the radio's NR and auto notch off and selecting FIL1. |
 | `FAX_CLEANUP` | on | `off` stops Radiofax mending crash-hit lines and speckle when a chart ends. |
+| `EASYPAL_SAVE_DIR` | none | If set, every file received by EasyPal is also saved in this folder as it was sent (`YYYYMMDD-HHMMSSz-CALL-name.jpg`, UTC). |
+| `EASYPAL_RADIO_SETUP` | on | `off` stops EasyPal turning the radio's NR and auto notch off and selecting FIL1. |
 | `FAX_SAVE_DIR` | none | If set, every received radiofax chart is also saved in this folder as a greyscale PNG (`YYYYMMDD-HHMMSSz-fax.png`, UTC, the chart's start). |
 | `SSTV_TX_MODE` | `S1` | SSTV transmit mode: `S1` (Scottie 1), or any mode id the receiver knows (`M1`, `M2`, `S2`, `SDX`, `R36`, `R72`, `PD90`, `PD120`, `PD180`, ...; see `src/audio/sstv-modes.js`). Read at startup. |
 | `SSTV_TX_POWER_W` | none | TX power in watts while sending SSTV (put back afterwards). Unset leaves the power alone. |
@@ -521,6 +527,13 @@ one hard refresh (Ctrl+Shift+R, or Cmd+Shift+R on a Mac).
 - **The Audio button can't be tapped.** The server can't compress audio:
   `AUDIO_CHANNELS` must be 1.
 
+- **EasyPal shows the mode and S/N but no picture.** A plain (not
+  Reed-Solomon) file needs every segment: one lost segment and it never
+  completes. Ask the sender to use an `.rs` setting, or to send again. A file
+  already received is not shown a second time. Below about 10 dB S/N
+  (16-QAM) or 15 dB (64-QAM) segments are lost; mode B or E with 4- or
+  16-QAM copes with weaker signals.
+
 ## Hardware diagnostics
 
 The `test/manual-*.js` scripts talk to a real radio. Stop the service first,
@@ -574,7 +587,10 @@ src/
                    out by tty-bridge.js and receive is fed by
                    server/jtty-decoder-bridge.js;
                    WSPR (wspr-codec.js, wspr-rx.js, wspr-decode-worker.js,
-                   with server/wspr-bridge.js and server/wsprnet.js)
+                   with server/wspr-bridge.js and server/wsprnet.js);
+                   EasyPal (drm/: the HamDRM receiver ported from QSSTV;
+                   easypal-decode-worker.js, with
+                   server/easypal-decoder-bridge.js and server/radio-setup.js)
   server/         WebSocket control layer (phase 2 — done), audio bridge
                    (phase 3 — done), scope bridge (phase 6 — done), static
                    file server (phase 4 — done), CW decoder bridge, FT8 protocol wiring
@@ -764,6 +780,17 @@ test/
                            noise left alone, the clock from the slant,
                            crash-hit lines mended and speckle cut while
                            strokes are kept, clean charts left alone
+  easypal.test.js         EasyPal (HamDRM) receiver: QSSTV-made transmissions
+                           (modes A, B, E; 4/16/64-QAM; long and short
+                           interleave; JPEG, JPEG 2000, Reed-Solomon .rs2)
+                           decoded exactly, with the mode, callsign and S/N;
+                           noise, mistuning, a burst of static (segments
+                           recovered), two transmissions in a row, no false
+                           files from noise; Reed-Solomon, CRCs,
+                           interleavers; see third_party/qsstv-drm/README.md
+  easypal-decoder-bridge.test.js  EasyPal bridge with the real worker:
+                           status, pictures (JPEG as sent, JPEG 2000 as PNG),
+                           kept and saved, PTT, the radio set up and put back
   fax-decoder-bridge.test.js  radiofax bridge: line frames, the chart as a
                            greyscale PNG (decoded back), kept and saved, a
                            page joining part-way, PTT, unsupported rates,
@@ -1503,9 +1530,9 @@ the squares, the time windows and when the local area was last fetched.
 
 ### Radiofax
 
-The **Image** button selects SSTV on the first press and **Radiofax** on
-the second (then SSTV again). Its label reads "SSTV" or "Fax" while one is
-on. Radiofax receives HF weather charts: frequency-modulated audio around
+The **Image** button selects SSTV on the first press, EasyPal on the
+second and **Radiofax** on the third (then SSTV again). Its label reads
+"SSTV", "EasyPal" or "Fax" while one is on. Radiofax receives HF weather charts: frequency-modulated audio around
 1900 Hz (black 1500 Hz, white 2300 Hz), 120 lines a minute, IOC 576, 1810
 pixels a line. That is what the Bureau of Meteorology sends. It receives
 only, on USB with DATA MODE off.
@@ -1585,6 +1612,40 @@ that opens part-way through a chart is sent it so far). `FAX_SAVE_DIR`
 also saves them to a folder. The receiver is PiRO's own JavaScript, run on
 the server: 0.6% of a desktop CPU core (measured), so a few percent of a
 Pi's. Not tested on an off-air signal yet.
+
+### EasyPal
+
+The **Image** button's second press turns on **EasyPal** receive: digital
+SSTV as EasyPal and QSSTV send it (HamDRM, a form of Digital Radio
+Mondiale). The picture is sent as a file (usually JPEG or JPEG 2000) over
+an OFDM signal about 2.4 kHz wide. Receive only.
+
+- The radio goes to **USB** on the frequency it is on. The audio spectrum
+  replaces the RF scope; a signal tuned right fills the space between the
+  two guide lines (400 and 2750 Hz). The receiver copes with a mistuning of
+  a few hundred hertz and shows it.
+- Like Radiofax, EasyPal turns the radio's **NR** and **auto notch** off and
+  selects **FIL1**, and puts them back when you leave
+  (`EASYPAL_RADIO_SETUP=off` stops this). NR upsets the phase of the
+  carriers, and the auto notch attacks the pilot tones.
+- The panel shows what the receiver hears: the mode (A, B or E), the
+  bandwidth, the QAM, the S/N, the sender's callsign and how many segments
+  of the file have come. While a plain JPEG comes in, its top part is shown
+  as it grows. When the file is complete it is shown, described, and added
+  to the strip of recent ones (the last 8, for pages that open later). Tap
+  the picture for full size; **Save** saves the file (a JPEG 2000 picture
+  as the PNG it was shown as).
+- Files sent with Reed-Solomon protection (EasyPal's and QSSTV's `.rs1` to
+  `.rs4`) are put back together when some segments are lost, once enough
+  have arrived. A plain file needs every segment.
+- `EASYPAL_SAVE_DIR` also saves every file, as it was sent.
+
+The receiver is a JavaScript port of QSSTV's, run in a worker thread on
+the server: 1 to 2% of a desktop CPU core (measured), so a few percent of a Pi's. It was checked against QSSTV's own
+receiver on signals made by QSSTV's own transmitter, in all 72 mode
+combinations and with noise, mistuning, clock errors, echoes and fading;
+see [`third_party/qsstv-drm/README.md`](third_party/qsstv-drm/README.md).
+Not tested on an off-air signal, or with EasyPal itself, yet.
 
 ### SSTV
 
@@ -1867,6 +1928,15 @@ shapes.
   pictureSec, fskSec, gapSec, cwSec, totalSec`), the picture's `lines` and
   the picture itself (`png`); a page that connects during a transmission is
   sent the current status, with `elapsedSec` how far in it is.
+  `setEasypalActive` (`{active}`) starts and stops the EasyPal receiver.
+  Its state goes out as `easypal-status` (`{state:
+  'idle'|'listening'|'sync'|'receiving', snr, mode, callsign, offsetHz,
+  file}`, also the connect snapshot's `easypal`), the top of a JPEG coming
+  in as `easypal-preview` (`{transportId, fileName, mime, data}`), and each
+  file received as `easypal-picture` (`{id, transportId, time, fileName,
+  callsign, mode, snr, segments, recovered, size, mime, data, width,
+  height, text}`; JPEG 2000 is sent as PNG). `getEasypalPictures` returns
+  the kept files and the current preview.
   `setFaxActive` (`{active}`) starts and stops the radiofax receiver;
   `faxStartNow` starts a chart without a start signal and `faxStop` ends
   one. Receiver state goes out as `fax-status` (`{state:

@@ -1239,6 +1239,42 @@ button {
   border-color: var(--led-green);
 }
 
+/* EasyPal: the progress bar is the SSTV transmit one; the picture keeps its
+   own shape (EasyPal pictures are any size); a text file is shown as text. */
+.easypal-rx__bar {
+  margin: 0 0 6px;
+}
+
+.easypal-rx__bar[hidden],
+.easypal-rx__picture[hidden],
+.easypal-rx__text[hidden] {
+  display: none;
+}
+
+.easypal-rx__picture {
+  max-height: 70vh;
+  object-fit: contain;
+}
+
+.easypal-rx__text {
+  margin: 0;
+  padding: 6px 8px;
+  max-height: 40vh;
+  overflow: auto;
+  white-space: pre-wrap;
+  font-size: 0.8rem;
+  border: 1px solid var(--panel-border);
+  border-radius: 4px;
+}
+
+.sstv-rx__thumb--file {
+  height: 54px;
+  color: inherit;
+  font-size: 0.65rem;
+  overflow: hidden;
+  word-break: break-all;
+}
+
 /* Full-size view: tap a picture; pinch to zoom, tap again to close. */
 .sstv-viewer {
   position: fixed;

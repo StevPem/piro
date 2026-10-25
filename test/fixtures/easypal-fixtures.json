@@ -1,0 +1,38 @@
+{
+  "b16-rs2": {
+    "fileName": "tiny.jp2",
+    "sentAs": "tiny.rs2",
+    "source": "easypal-tiny.jp2",
+    "callsign": "VK3ABC",
+    "mode": "B",
+    "bandwidth": 2.5,
+    "qam": 16,
+    "protection": "high",
+    "interleave": "short",
+    "seconds": 8.4
+  },
+  "a64": {
+    "fileName": "tiny.jpg",
+    "sentAs": "tiny.jpg",
+    "source": "easypal-tiny.jpg",
+    "callsign": "VK2XYZ",
+    "mode": "A",
+    "bandwidth": 2.5,
+    "qam": 64,
+    "protection": "normal",
+    "interleave": "short",
+    "seconds": 5.7
+  },
+  "e4": {
+    "fileName": "tiny.jp2",
+    "sentAs": "tiny.jp2",
+    "source": "easypal-tiny.jp2",
+    "callsign": "VK4QRS",
+    "mode": "E",
+    "bandwidth": 2.3,
+    "qam": 4,
+    "protection": "high",
+    "interleave": "long",
+    "seconds": 24.8
+  }
+}
