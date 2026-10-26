@@ -129,6 +129,20 @@ class Civ extends EventEmitter {
   const bFollows = (fn, arg) => pageB.waitForFunction(fn, arg, { timeout: 4000 }).then(() => true, () => false);
   const bChips = () => pageB.locator('#modes .chip').allTextContents();
 
+  // How many browsers are connected, in brackets after "Connected"
+  {
+    const count = (pg) => pg.locator('#led-count').textContent();
+    const shows = (pg, text) => pg.waitForFunction((t) => document.getElementById('led-count').textContent === t && !document.getElementById('led-count').hidden, text, { timeout: 4000 }).then(() => true, () => false);
+    check((await shows(page, '(2)')) && (await shows(pageB, '(2)')), `two browsers: both show "Connected (2)"`);
+    check(/^\s*Connected\s*\(2\)\s*$/.test(await page.locator('.led').textContent()), `it reads "${(await page.locator('.led').textContent()).trim().replace(/\s+/g, ' ')}"`);
+    if (process.env.COUNT_SHOT) await page.locator('header').screenshot({ path: process.env.COUNT_SHOT });
+    const pageK = await browser.newPage();
+    await pageK.goto(`http://localhost:${port}/`);
+    check((await shows(pageK, '(3)')) && (await shows(page, '(3)')) && (await shows(pageB, '(3)')), 'a third opens: all three show (3)');
+    await pageK.close();
+    check((await shows(page, '(2)')) && (await shows(pageB, '(2)')), `it closes: back to (2) (${await count(page)})`);
+  }
+
   const chip = (label) => page.locator('#modes .chip', { hasText: new RegExp(`^${label}$`) });
   const ttyLabel = async () => (await page.locator('#modes .chip').allTextContents());
   const vis = async (sel) => page.locator(sel).isVisible();

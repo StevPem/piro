@@ -945,7 +945,20 @@ link.addEventListener('cw-decoder-variant', (event) => {
 function setLed(state, label) {
   ledDot.dataset.state = state;
   ledText.textContent = label;
+  // the browser count only means something while connected
+  if (state !== 'connected') setClientCount(null);
 }
+
+// How many browsers are connected to PiRO, this one included, in brackets
+// after "Connected". The server sends it on connect and whenever it changes.
+const ledCount = document.getElementById('led-count');
+function setClientCount(n) {
+  const ok = Number.isInteger(n) && n > 0;
+  ledCount.hidden = !ok;
+  ledCount.textContent = ok ? `(${n})` : '';
+  ledCount.title = ok ? (n === 1 ? 'Only this browser is connected' : `${n} browsers are connected, this one included`) : '';
+}
+link.addEventListener('clients', (event) => setClientCount(event.detail?.count));
 
 function showError(message) {
   errorLine.textContent = message;
@@ -961,6 +974,7 @@ link.addEventListener('connecting', () => setLed('connecting', 'Connecting\u2026
 link.addEventListener('connected', (event) => {
   const data = event.detail || {};
   setLed('connected', 'Connected');
+  setClientCount(data.clients);
 
   if (data.screenTitle) {
     document.title = data.screenTitle;

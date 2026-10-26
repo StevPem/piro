@@ -4315,3 +4315,22 @@ model for how to approach that.
   page 1 with draw.io's own viewer in headless Chromium (2676 x 915).
 - No code changed. Service-worker cache v104.
 
+### How many browsers are connected (v105)
+
+- The top right now reads "Connected (2)": the number in brackets is how
+  many browsers are connected to PiRO, this one included. Its tooltip says
+  the same in words. It is hidden while not connected.
+- Server: the `connected` snapshot carries `clients` (the count, this
+  browser included), and a new `clients` event (`{count}`) goes to the
+  other browsers when one connects or disconnects. The browser that has
+  just connected isn't sent the event, since its snapshot has the number.
+- A dropped socket fires both 'error' and 'close', and each removes it.
+  The count is only broadcast when it changes, so a dropped browser is
+  counted once.
+- Tests: ws-server.test.js (snapshot 1, then 2; the others hear 3, 2 and
+  1 as browsers open, close and drop; the new browser gets no event; the
+  helper keeps `clients` events apart so the other tests' message order is
+  unchanged), manual-tty-ui.js (two pages show "(2)", a third opens and
+  all show "(3)", it closes and they show "(2)"). Service-worker cache
+  v105.
+

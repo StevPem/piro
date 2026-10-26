@@ -136,7 +136,8 @@ const EVENT = {
   PTT_TIMEOUT: 'ptt-timeout', // broadcast when the PTT watchdog force-releases TX — see ws-server.js
   CW_TEXT: 'cw-text', // broadcast per decoded CW character/word-space — see cw-decoder-bridge.js
   RTTY_TEXT: 'rtty-text', // broadcast per decoded RTTY (Baudot/ITA2) character — see rtty-decoder-bridge.js
-  CONNECTED: 'connected', // sent once to a newly-connected client with a full state snapshot
+  CONNECTED: 'connected', // sent once to a newly-connected client with a full state snapshot, plus clients: how many browsers are connected (this one included)
+  CLIENTS: 'clients', // broadcast when a browser connects or disconnects: {count}, how many browsers are connected now. Shown in brackets after "Connected" at the top right
   RIG_ERROR: 'rig-error', // broadcast when the CI-V driver reports a hardware/serial error
   AUDIO_ERROR: 'audio-error', // broadcast when the audio pipeline (ALSA/Opus) hits an error
   SCOPE_ERROR: 'scope-error', // broadcast when the scope pipeline hits a decode error

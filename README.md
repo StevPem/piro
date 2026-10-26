@@ -12,7 +12,7 @@ Hamlib, no separate audio server and no extra apps.
 Written by VK3TR. Licensed AGPL-3.0-only (see
 [Licence](#licence)).
 
-**Current build: v104.** This is the version the app shows next to its title.
+**Current build: v105.** This is the version the app shows next to its title.
 It is the `CACHE_NAME` number in `src/client/sw.js`, which goes up with every
 change to the web app.
 
@@ -401,6 +401,8 @@ home screen: see `docs/pwa-notes.md`.
 
 From the top:
 
+- **Connected (2)**, at the top right: whether this browser is connected
+  to PiRO, and how many browsers are connected now, yours included.
 - **Frequency.** Tap it to type a new one, in MHz. The **−10**, **−1**,
   **+1** and **+10** kHz buttons step it. It is shown in groups, like
   14.195.000.
@@ -453,7 +455,9 @@ for example) have their own limits.
 
 #### Sharing the radio
 
-Several people can have PiRO open at once, on any device.
+Several people can have PiRO open at once, on any device. The number in
+brackets after **Connected**, at the top right, is how many browsers have
+it open now, yours included.
 
 - Every browser shows the same radio settings and the same mode. Pick SSTV
   on one phone and the others switch to SSTV too. A browser opened later
@@ -1906,10 +1910,13 @@ shapes.
   `getRxGain`, `setFt8Active`, `sendFt8`, `sendTty`, `abortTty`, `setJttyActive`,
   `setOliviaActive`, `setHellActive`, `setSstvActive`, `endSstvPicture`, `getSstvPictures`,
   `sendSstv`, `abortSstv`, `setWsprActive`, `setWsprTx`, `getBandConditions`)
-  correlated by `id`; events (`connected`, `frequency`, `mode`, `data-mode`, `ptt`,
+  correlated by `id`; events (`connected`, `clients`, `frequency`, `mode`, `data-mode`, `ptt`,
   `ptt-timeout`, `cw-text`, `ft8-decodes`, `ft8-tx-status`, `tty-tx-status`,
   `jtty-text`, `olivia-text`, `rig-error`, `audio-error`, `scope-error`)
-  broadcast without an `id`. `setFt8Active` arms/disarms RX decoding
+  broadcast without an `id`. The `connected` snapshot carries `clients`,
+  how many browsers are connected (this one included); a `clients`
+  broadcast (`{count}`) goes to the others whenever a browser connects or
+  disconnects. `setFt8Active` arms/disarms RX decoding
   (sent when the client opens/closes the FT8 panel); `sendFt8`
   (`{message, freqHz?}`) queues a message for transmission at the next
   15-second slot boundary and returns immediately — the actual outcome

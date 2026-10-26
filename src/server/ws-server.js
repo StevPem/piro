@@ -327,7 +327,8 @@ class ControlServer extends EventEmitter {
         clearTimeout(this._notesEmptyTimer);
         this._notesEmptyTimer = null;
       }
-      ws.send(makeEvent(EVENT.CONNECTED, { ...this.state }));
+      ws.send(makeEvent(EVENT.CONNECTED, { ...this.state, clients: this.clients.size }));
+      this._broadcastClientCount(ws); // the new browser has the count in its snapshot
       this.emit('client-connected', ws);
 
       ws.on('message', (raw, isBinary) => {
@@ -339,15 +340,30 @@ class ControlServer extends EventEmitter {
       });
       ws.on('close', () => {
         this.clients.delete(ws);
+        this._broadcastClientCount();
         this.emit('client-disconnected', ws);
         this._releaseJttyIfAlone();
       });
       ws.on('error', () => {
         this.clients.delete(ws);
+        this._broadcastClientCount();
         this.emit('client-disconnected', ws);
         this._releaseJttyIfAlone();
       });
     });
+  }
+
+  /**
+   * Tells every browser how many are connected (EVENT.CLIENTS), when the
+   * number changes; `except` (a browser that has just connected) already
+   * has it in its snapshot. A socket's 'error' and 'close' both remove it,
+   * so the second of them sends nothing.
+   */
+  _broadcastClientCount(except) {
+    const count = this.clients.size;
+    if (count === this._lastClientCount) return;
+    this._lastClientCount = count;
+    this._broadcast(makeEvent(EVENT.CLIENTS, { count }), except);
   }
 
   /**
