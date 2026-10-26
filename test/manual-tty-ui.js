@@ -963,6 +963,8 @@ class Civ extends EventEmitter {
       return [await value(), await lit('amber')];
     });
     check(swrTx[0] === 'SWR 2.0' && swrTx[1] === 4, `transmitting: ${swrTx[0]}, 4 amber segments`);
+    await sleep(700);
+    check((await value()) === 'on transmit' && (await lit('amber')) === 0, `released: back to "${await value()}", the bar cleared`);
     await page.locator('#meter-mode').click();
     await sleep(100);
     check((await title()) === 'ALC' && (await legend()).filter(Boolean).join(' ') === '25% 50% 75% 100%', `tap: ALC, legend ${(await legend()).filter(Boolean).join(' ')}`);
@@ -986,6 +988,17 @@ class Civ extends EventEmitter {
     check((await micShown()) && (await page.locator('#ptt-btn').isVisible()), 'SSB: the Mic menu shows, left of Power');
     const boxes = await Promise.all(['#mic-gain', '.tx-power:not(#mic-gain)'].map((sel) => page.locator(sel).boundingBox()));
     check(boxes[0].x < boxes[1].x && Math.abs(boxes[0].y - boxes[1].y) < 10, 'Mic sits just left of Power, on the same row');
+    // Speaker, Audio, Tuner, Tune, Mic and Power all on one line, at this phone width and narrower ones
+    for (const width of [430, 390, 360]) {
+      await page.setViewportSize({ width, height: 1100 });
+      await sleep(100);
+      const row = await page.evaluate(() => {
+        const kids = [...document.querySelector('.controls-row').children].filter((e) => !e.hidden);
+        return { n: kids.length, lines: new Set(kids.map((e) => Math.round(e.getBoundingClientRect().top))).size, text: kids.map((e) => e.textContent.replace(/\s+/g, ' ').trim()).join(' | ') };
+      });
+      check(row.n === 6 && row.lines === 1, `${width} px wide: the six controls on one line (${row.text})`);
+    }
+    await page.setViewportSize({ width: 430, height: 1100 });
     if (process.env.MIC_SHOT) await page.locator('.controls-row').screenshot({ path: process.env.MIC_SHOT });
     if (process.env.METER_SHOT) await page.locator('.meter').screenshot({ path: process.env.METER_SHOT });
     await chip('TTY').click();

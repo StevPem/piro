@@ -12,7 +12,7 @@ Hamlib, no separate audio server and no extra apps.
 Written by VK3TR. Licensed AGPL-3.0-only (see
 [Licence](#licence)).
 
-**Current build: v106.** This is the version the app shows next to its title.
+**Current build: v107.** This is the version the app shows next to its title.
 It is the `CACHE_NAME` number in `src/client/sw.js`, which goes up with every
 change to the web app.
 
@@ -435,6 +435,8 @@ From the top:
     scale (CI-V reports 0 to 120). Use it with **Mic** to set your drive.
     On receive it says "on transmit". Not yet checked against the radio's
     own ALC meter.
+- **The controls row**: **Speaker**, **Audio**, **Tuner**, **Tune**, **Mic**
+  and **Power**, on one line. Each shows its name small above its setting.
 - **Speaker** starts the received audio. Browsers only play sound after a
   tap, so it starts off. **Audio** picks full or compressed audio for this
   browser (see [Compressed audio for remote use](#compressed-audio-for-remote-use)).

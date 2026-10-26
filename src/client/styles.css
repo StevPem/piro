@@ -560,43 +560,88 @@ button {
 
 .controls-row {
   display: flex;
-  gap: 8px;
-  flex-wrap: wrap;
-  align-items: center;
+  gap: 4px;
+  flex-wrap: nowrap; /* one line, even on a phone */
+  align-items: stretch;
 }
 
+/* Each control takes room by its text, and may shrink a little below it. */
+.controls-row > * {
+  flex: 1 1 auto;
+  min-width: 0;
+}
+
+/* Speaker, Audio, Tuner, Tune: the name small above the setting. */
+.control {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: 1px;
+  padding: 4px 2px;
+  line-height: 1.15;
+  white-space: nowrap;
+  overflow: hidden;
+}
+
+.control__name {
+  font-size: 0.66rem;
+  color: var(--text-muted);
+}
+
+.control__sep {
+  display: none;
+}
+
+.control__value {
+  font-size: 0.82rem;
+}
+
+/* The narrowest phones: smaller text so all six still fit. */
+@media (max-width: 380px) {
+  .control__name,
+  .tx-power__label {
+    font-size: 0.6rem;
+  }
+
+  .control__value,
+  .tx-power__select {
+    font-size: 0.74rem;
+  }
+}
+
+/* Mic and Power: the name above the menu, like the buttons. */
 .tx-power {
   display: flex;
-  align-items: center;
-  gap: 6px;
-  margin-left: auto; /* push to the right-hand side of the row */
-}
-
-.tx-power--mic {
-  margin-left: auto; /* Mic and Power sit together on the right */
+  flex-direction: column;
+  align-items: stretch;
+  gap: 1px;
 }
 
 .tx-power[hidden] {
   display: none;
 }
 
-.tx-power--mic:not([hidden]) + .tx-power {
-  margin-left: 0;
-}
-
 .tx-power__label {
-  font-size: 0.8rem;
+  font-size: 0.66rem;
   color: var(--text-muted);
+  text-align: center;
 }
 
 .tx-power__select {
+  width: 100%;
+  min-width: 0;
   background: var(--panel-raised);
   border: 1px solid var(--panel-border);
   border-radius: 4px;
-  padding: 7px 8px;
+  padding: 3px 2px;
   font-family: inherit;
-  font-size: 0.85rem;
+  font-size: 0.82rem;
   color: var(--text);
+  text-align: center;
+  text-align-last: center;
+  appearance: none; /* no arrow: it would take a third of a narrow menu */
+  -webkit-appearance: none;
 }
 
 .tx-power__select:focus {
