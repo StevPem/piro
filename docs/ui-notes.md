@@ -4373,3 +4373,26 @@ model for how to approach that.
   remembered after reload; Mic shown in SSB, hidden in RTTY and CW).
   Not tested on air. Service-worker cache v106.
 
+### Speaker, Audio, Tuner, Tune, Mic and Power on one line (v107)
+
+- The controls row wrapped onto two lines on a phone (three at 360-390 px
+  wide): its six controls needed about 565 px, and a 390 px phone gives
+  the row 300 px.
+- Now each control shows its name small above its setting ("Speaker" over
+  "off"; "Mic" over "0 dB"), the row doesn't wrap, and the controls share
+  it by their text (`flex: 1 1 auto`). Below 380 px the text is a little
+  smaller. The menus have no arrow, which would take a third of a narrow
+  menu. A button's text is still "Speaker: off" (the ": " is hidden), for
+  screen readers and the tests; `setControlText()` in app.js writes it.
+- Checked at 360, 390, 412, 430 and 640 px, with the longest settings
+  (Speaker on, Audio ADPCM, Mic −20 dB): one line, no text cut off. At
+  320 px (an old iPhone SE) the page already scrolled sideways, and the
+  controls' text is cut off there.
+- **Real bug found:** in SWR or ALC, a reading taken just before PTT was
+  released could arrive afterwards and stay on the meter. Cause: the poll
+  only checked the meter's mode, not that it was still transmitting, and
+  on receive it didn't clear the bar. Fix: a reading that arrives after
+  release is dropped, and on receive the bar is cleared ("on transmit").
+- Tests: manual-tty-ui.js (the six controls on one line at 430, 390 and
+  360 px; SWR cleared after PTT release). Service-worker cache v107.
+

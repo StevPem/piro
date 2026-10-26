@@ -4809,7 +4809,7 @@ async function syncTuner() {
   try {
     const data = await link.request('getTuner');
     tunerOn = data.value === 1;
-    tunerBtn.textContent = tunerOn ? 'Tuner: on' : 'Tuner: off';
+    setControlText(tunerBtn, 'Tuner', tunerOn ? 'on' : 'off');
     tunerBtn.classList.toggle('chip--active', tunerOn);
   } catch {
     // transient — next poll will retry
@@ -4885,18 +4885,25 @@ const meterSegmentEls = Array.from({ length: METER_SEGMENTS }, () => {
   return seg;
 });
 
-/** Sets the title and the legend for what is shown, and clears the bar when that changes. */
-function setMeterShown(shown) {
+/**
+ * Sets the title and the legend for what is shown. The bar is cleared when
+ * that changes, or (`idle`) when SWR or ALC has nothing to read: on receive.
+ */
+function setMeterShown(shown, { idle = false } = {}) {
   meterModeBtn.textContent = METER_TITLES[meterMode];
   meterModeBtn.setAttribute('aria-label', `Meter: ${METER_TITLES[meterMode]}. Tap for ${METER_TITLES[nextMeterMode(meterMode)]}.`);
-  if (shown === meterShown) return;
+  const changed = shown !== meterShown;
   meterShown = shown;
-  const legend = meterLegend(shown);
-  meterSegmentEls.forEach((seg, i) => {
-    seg.firstChild.textContent = legend[i];
-    seg.classList.remove('meter__segment--green', 'meter__segment--amber', 'meter__segment--red');
-  });
-  meterValue.textContent = shown === 'S' ? '\u2014' : 'on transmit';
+  if (changed) {
+    const legend = meterLegend(shown);
+    meterSegmentEls.forEach((seg, i) => {
+      seg.firstChild.textContent = legend[i];
+    });
+  }
+  if (changed || idle) {
+    meterSegmentEls.forEach((seg) => seg.classList.remove('meter__segment--green', 'meter__segment--amber', 'meter__segment--red'));
+    meterValue.textContent = shown === 'S' ? '\u2014' : 'on transmit';
+  }
 }
 
 function showMeterReading(shown, raw) {
@@ -4928,13 +4935,16 @@ function startMeterPolling() {
     try {
       const shown = shownMeter(meterMode, pttActive);
       if (shown !== 'S' && !pttActive) {
-        setMeterShown(shown); // SWR and ALC only read while transmitting
+        setMeterShown(shown, { idle: true }); // SWR and ALC only read while transmitting
         return;
       }
       const request = { S: 'getSMeter', SWR: 'getSWR', ALC: 'getAlc' }[shown];
       const data = await link.request(request);
-      // the mode or PTT may have changed while the radio answered
-      if (shown === shownMeter(meterMode, pttActive)) showMeterReading(shown, data.value);
+      // The mode or PTT may have changed while the radio answered: an SWR or
+      // ALC reading that arrives after PTT is released is not shown.
+      const now = shownMeter(meterMode, pttActive);
+      if (shown === now && (shown === 'S' || pttActive)) showMeterReading(shown, data.value);
+      else setMeterShown(now, { idle: now !== 'S' && !pttActive });
     } catch {
       // transient — next poll will retry
     } finally {
@@ -4987,6 +4997,19 @@ function stopFunctionPolling() {
   functionPollTimer = null;
 }
 
+// --- The controls row: Speaker, Audio, Tuner, Tune, Mic, Power ---
+// All on one line, even on a phone: each button shows its name small above
+// its setting ("Speaker" over "off"), like Mic and Power above their menus.
+// The text is still "Speaker: off" (the ": " is hidden), for screen
+// readers and the tests.
+function setControlText(btn, name, value) {
+  btn.replaceChildren(
+    Object.assign(document.createElement('span'), { className: 'control__name', textContent: name }),
+    Object.assign(document.createElement('span'), { className: 'control__sep', textContent: ': ' }),
+    Object.assign(document.createElement('span'), { className: 'control__value', textContent: value })
+  );
+}
+
 // --- Speaker ---
 let speakerOn = false;
 speakerBtn.addEventListener('click', async () => {
@@ -4995,7 +5018,7 @@ speakerBtn.addEventListener('click', async () => {
     try {
       await audioPipeline.enableSpeaker();
       speakerOn = true;
-      speakerBtn.textContent = 'Speaker: on';
+      setControlText(speakerBtn, 'Speaker', 'on');
       speakerBtn.classList.add('chip--active');
     } catch (err) {
       showError(`Couldn't enable speaker: ${err.message}`);
@@ -5003,7 +5026,7 @@ speakerBtn.addEventListener('click', async () => {
   } else {
     audioPipeline.disableSpeaker();
     speakerOn = false;
-    speakerBtn.textContent = 'Speaker: off';
+    setControlText(speakerBtn, 'Speaker', 'off');
     speakerBtn.classList.remove('chip--active');
   }
 });
@@ -5045,7 +5068,7 @@ function renderAudioFormat() {
   const { rxCodec: rx, txCodec: tx } = audioPipeline;
   const canCompress = serverAudioCodecs.length > 1;
   audioFormatBtn.disabled = !canCompress && audioFormat === 'full';
-  audioFormatBtn.textContent = rx === 'pcm' ? 'Audio: full' : `Audio: ${CODEC_NAMES[rx]}`;
+  setControlText(audioFormatBtn, 'Audio', rx === 'pcm' ? 'full' : CODEC_NAMES[rx]);
   audioFormatBtn.classList.toggle('chip--active', rx !== 'pcm');
   const each = rx === tx ? `${CODEC_NAMES[rx]}, ${codecRate(rx)} each way` : `receive ${CODEC_NAMES[rx]} (${codecRate(rx)}), transmit ${CODEC_NAMES[tx]} (${codecRate(tx)})`;
   audioFormatBtn.title = canCompress

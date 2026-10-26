@@ -416,10 +416,11 @@
       </section>
 
       <section class="controls-row">
-        <button class="chip" id="speaker-btn" type="button" disabled>Speaker: off</button>
-        <button class="chip" id="audio-format-btn" type="button" disabled>Audio: full</button>
-        <button class="chip" id="tuner-btn" type="button" disabled>Tuner: off</button>
-        <button class="chip" id="tune-btn" type="button" disabled>Tune</button>
+        <!-- One line, even on a phone: each control's name sits small above its setting (app.js setControlText()). -->
+        <button class="chip control" id="speaker-btn" type="button" disabled><span class="control__name">Speaker</span><span class="control__sep">: </span><span class="control__value">off</span></button>
+        <button class="chip control" id="audio-format-btn" type="button" disabled><span class="control__name">Audio</span><span class="control__sep">: </span><span class="control__value">full</span></button>
+        <button class="chip control" id="tuner-btn" type="button" disabled><span class="control__name">Tuner</span><span class="control__sep">: </span><span class="control__value">off</span></button>
+        <button class="chip control" id="tune-btn" type="button" disabled><span class="control__value">Tune</span></button>
         <!-- Microphone gain for this browser, shown with the PTT button (app.js "Mic gain"). -->
         <label class="tx-power tx-power--mic" id="mic-gain" hidden>
           <span class="tx-power__label">Mic</span>
