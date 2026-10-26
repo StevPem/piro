@@ -112,6 +112,11 @@ button {
   color: var(--text-muted);
 }
 
+/* "(2)" after "Connected": how many browsers are connected. Sits close to the text. */
+.led__count {
+  margin-left: -4px;
+}
+
 .led__dot {
   width: 9px;
   height: 9px;

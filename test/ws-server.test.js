@@ -123,8 +123,13 @@ function connect(port) {
     const ws = new WebSocket(`ws://localhost:${port}`);
     ws._msgQueue = [];
     ws._msgWaiters = [];
+    ws._clientCounts = []; // 'clients' broadcasts are kept apart, so the tests' message order is unchanged
     ws.on('message', (raw) => {
       const parsed = JSON.parse(raw.toString());
+      if (parsed.type === 'clients') {
+        ws._clientCounts.push(parsed.data.count);
+        return;
+      }
       if (ws._msgWaiters.length) ws._msgWaiters.shift()(parsed);
       else ws._msgQueue.push(parsed);
     });
@@ -1248,6 +1253,33 @@ async function run() {
     await new Promise((r) => setTimeout(r, 100));
     check(fServer.state.faxActive === false && seen.at(-1) === 'active false', 'last client disconnecting turns Radiofax off');
     await fServer.close();
+  }
+
+  // How many browsers are connected: in the connect snapshot, and broadcast when it changes
+  {
+    const kServer = new ControlServer({ civ: new StubCivDriver(), port: 0 });
+    const kPort = await kServer.listen();
+    const a = await connect(kPort);
+    const helloA = await nextMessage(a);
+    check(helloA.data.clients === 1, 'connected snapshot says 1 browser is connected');
+    const b = await connect(kPort);
+    const helloB = await nextMessage(b);
+    await sleep(50);
+    check(helloB.data.clients === 2 && a._clientCounts.at(-1) === 2, `a second browser: its snapshot says 2, and the first hears 2 (${a._clientCounts.join()})`);
+    check(b._clientCounts.length === 0, 'the new browser gets the count only in its snapshot');
+    const c = await connect(kPort);
+    await nextMessage(c);
+    await sleep(50);
+    check(a._clientCounts.at(-1) === 3 && b._clientCounts.at(-1) === 3, 'a third: both others hear 3');
+    c.close();
+    await sleep(100);
+    check(a._clientCounts.at(-1) === 2 && b._clientCounts.at(-1) === 2, 'one closes: the others hear 2');
+    b.terminate(); // dropped, not closed cleanly
+    await sleep(100);
+    check(a._clientCounts.join() === '2,3,2,1', `a dropped browser counts once: ${a._clientCounts.join()}`);
+    a.close();
+    await sleep(50);
+    await kServer.close();
   }
 
   // EasyPal: setEasypalActive (an app mode, shared), getEasypalPictures, off when the last client leaves
