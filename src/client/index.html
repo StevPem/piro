@@ -132,9 +132,10 @@
         </div>
       </section>
 
-      <section class="meter" aria-label="S-meter">
+      <section class="meter" aria-label="Meter">
         <div class="meter__readout">
-          <span>S-meter</span>
+          <!-- Tap to show the S-meter, SWR or ALC (app.js "Meter"; meter-modes.js). -->
+          <button class="meter__mode" id="meter-mode" type="button" title="Tap to show the S-meter, SWR or ALC">S-meter</button>
           <span id="meter-value">&mdash;</span>
         </div>
         <div class="meter__bar" id="meter-bar"></div>
@@ -419,6 +420,11 @@
         <button class="chip" id="audio-format-btn" type="button" disabled>Audio: full</button>
         <button class="chip" id="tuner-btn" type="button" disabled>Tuner: off</button>
         <button class="chip" id="tune-btn" type="button" disabled>Tune</button>
+        <!-- Microphone gain for this browser, shown with the PTT button (app.js "Mic gain"). -->
+        <label class="tx-power tx-power--mic" id="mic-gain" hidden>
+          <span class="tx-power__label">Mic</span>
+          <select class="tx-power__select" id="mic-gain-select" aria-label="Microphone gain"></select>
+        </label>
         <label class="tx-power">
           <span class="tx-power__label">Power</span>
           <select class="tx-power__select" id="tx-power-select" disabled></select>

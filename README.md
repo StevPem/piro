@@ -12,7 +12,7 @@ Hamlib, no separate audio server and no extra apps.
 Written by VK3TR. Licensed AGPL-3.0-only (see
 [Licence](#licence)).
 
-**Current build: v105.** This is the version the app shows next to its title.
+**Current build: v106.** This is the version the app shows next to its title.
 It is the `CACHE_NAME` number in `src/client/sw.js`, which goes up with every
 change to the web app.
 
@@ -424,12 +424,29 @@ From the top:
   **Filter** (1, 2, 3). Each press steps to the next setting. Below them
   are **HamNoise** (see [HamNoise](#hamnoise-hamnoise-button)) and
   **Squelch** (see [Voice squelch](#voice-squelch)).
-- **S-meter**: S0 to S9, then +10 to +60 dB. While you transmit it shows
-  SWR instead: green up to 1.5, orange to 3, red above (shown up to 5).
+- **Meter.** Tap its title to choose what it shows: **S-meter**, **SWR**
+  or **ALC**, then round again. The labels under the bar change to match.
+  Each browser remembers its own choice.
+  - **S-meter**: S0 to S9, then +10 to +60 dB (red over S9). While you
+    transmit it shows SWR instead, as the S-meter reads nothing then.
+  - **SWR**, while you transmit: 1.0 to 5.0, green up to 1.5, amber to 3,
+    red above. On receive it says "on transmit".
+  - **ALC**, while you transmit: the radio's ALC meter as a percent of its
+    scale (CI-V reports 0 to 120). Use it with **Mic** to set your drive.
+    On receive it says "on transmit". Not yet checked against the radio's
+    own ALC meter.
 - **Speaker** starts the received audio. Browsers only play sound after a
   tap, so it starts off. **Audio** picks full or compressed audio for this
   browser (see [Compressed audio for remote use](#compressed-audio-for-remote-use)).
 - **Tuner** turns the antenna tuner on and off. **Tune** starts one tune.
+- **Mic**: microphone gain for this browser, +20 dB to −20 dB (0 dB to
+  start). Shown whenever the PTT button is. Microphones differ a lot
+  between phones, laptops and headsets, so each browser has its own
+  setting and remembers it. It changes only your voice from this
+  browser's microphone (including FreeDV), not the digital modes, whose
+  audio is made on the Pi. Above about 80% of full scale, peaks are
+  rounded off rather than clipped hard. Watch the **ALC** meter while you
+  talk to set it. Not tested on air.
 - **Power**: 100, 75, 50, 25 or 5 W (1 to 5 W in WSPR).
 - **Spectrum scope and waterfall**, if `CIV_SCOPE_ENABLED=true` and your
   radio sends scope data. It stays centred on your frequency. **Scope
@@ -485,7 +502,9 @@ browser in the background usually won't chime at all.
 #### Voice: SSB, AM and FM
 
 Pick **SSB**, **AM** or **FM**, tap **Speaker**, and use **PUSH TO TALK**.
-The microphone needs HTTPS.
+The microphone needs HTTPS. Set **Mic** so your audio drives the radio
+properly: tap the meter's title until it says **ALC**, then talk and watch
+it.
 
 PiRO sets the radio's USB audio levels to maximum when it starts, both in
 Linux and in the radio (`CIV_MAXIMIZE_USB_LEVELS=false` leaves the
@@ -1902,7 +1921,7 @@ shapes.
 
 - **Control (JSON, text frames)**: requests (`getFrequency`,
   `setFrequency`, `getMode`, `setMode`, `setDataMode`, `getDataMode`,
-  `setPtt`, `getSMeter`, `getSWR`,
+  `setPtt`, `getSMeter`, `getSWR`, `getAlc`,
   `setScopeBand`, `setScopeSpan`, `setPreamp`, `getPreamp`,
   `setNoiseReduction`, `getNoiseReduction`, `setNoiseBlanker`,
   `getNoiseBlanker`, `setNotch`, `getNotch`, `setFilter`, `getFilter`,
@@ -2121,6 +2140,10 @@ The test files:
                            and color zones — genuinely executes
                            src/client/vswr.js in Node, including a full
                            monotonicity sweep across all 256 raw values
+  meter-modes.test.mjs    the meter's S-meter / SWR / ALC displays (cycling,
+                           SWR while transmitting, the legends, segments
+                           and colours) and the Mic gain curve (scaling,
+                           peaks rounded off, never folding back)
   cw-decoder.test.js      unit tests for the CW decoder's DSP/timing —
                            Goertzel tone detection, morse lookup, full
                            end-to-end decoding of synthetic generated
@@ -2281,7 +2304,9 @@ The test files:
                            played, the fake microphone sent in each format,
                            the Audio button and its remembered choice, and
                            the Squelch button (noise muted, a voice played,
-                           Paused in CW) (needs Playwright and Chromium)
+                           Paused in CW), and the Mic menu (a steady test tone
+                           sent at 0, -10, +6, +10 and +20 dB) (needs
+                           Playwright and Chromium)
   ft8-bridge.test.js      integration tests for the FT8 RX/TX bridge:
                            attach/detach around active-state and PTT,
                            slot-boundary decode requests to a stub

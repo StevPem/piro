@@ -90,6 +90,7 @@ const SCOPE_MODE = {
 const SUBCMD = {
   SMETER: 0x02,
   SWR: 0x12, // paired with CMD.READ_SMETER — see docs/civ-notes.md
+  ALC: 0x13, // paired with CMD.READ_SMETER: the ALC meter, 0000=minimum to 0120=maximum (Icom CI-V reference)
   PTT: 0x00,
   TRANSCEIVER_ID: 0x00,
   // Antenna tuner, under the same command group (0x1C) as PTT. Confirmed

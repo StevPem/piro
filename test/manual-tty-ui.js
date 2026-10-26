@@ -48,7 +48,8 @@ class Civ extends EventEmitter {
   async getDataMode() { return this.dataMode; }
   async setPtt(on) { this.log.push(['setPtt', on]); return true; }
   async getSMeter() { return 100; }
-  async getSWR() { return 0; }
+  async getSWR() { return this.swr ?? 0; }
+  async getAlc() { return this.alc ?? 0; }
   async getPreamp() { return 0; } async getNoiseReduction() { return false; } async getNoiseBlanker() { return false; }
   async getNotch() { return false; } async getTuner() { return 0; } async getFilter() { return 1; }
   async getTxPower() { return this.power ?? 100; } async getRxGain() { return 255; }
@@ -930,6 +931,75 @@ class Civ extends EventEmitter {
   await page.locator('#bands .chip', { hasText: /^80m$/ }).click();
   await sleep(300);
   check(civ.freq === 3600000 && civ.mode === 'LSB', `the 80m band chip tunes to 3.600 MHz LSB (${civ.freq} ${civ.mode})`);
+
+  // The meter: tap its title for S-meter -> SWR -> ALC; the legend follows. And the Mic menu.
+  {
+    const title = () => page.locator('#meter-mode').textContent();
+    const value = () => page.locator('#meter-value').textContent();
+    const legend = () => page.locator('#meter-bar .meter__segment-label').allTextContents();
+    const lit = (colour) => page.locator(`#meter-bar .meter__segment--${colour}`).count();
+    await page.waitForFunction(() => document.getElementById('meter-value').textContent === 'S7', null, { timeout: 3000 }).catch(() => {});
+    check((await title()) === 'S-meter' && (await value()) === 'S7' && (await legend()).join(' ') === 'S0 S1 S2 S3 S4 S5 S6 S7 S8 S9 +10 +20 +30 +40 +50 +60' && (await lit('green')) === 8, `S-meter: "${await value()}", legend S0 ... +60, 8 segments lit`);
+    const hold = async (fn) => {
+      await page.locator('#ptt-btn').scrollIntoViewIfNeeded();
+      const box = await page.locator('#ptt-btn').boundingBox();
+      await page.mouse.move(box.x + box.width / 2, box.y + box.height / 2);
+      await page.mouse.down();
+      await sleep(900);
+      const r = await fn();
+      await page.mouse.up();
+      await sleep(300);
+      return r;
+    };
+    civ.swr = 80;
+    civ.alc = 60;
+    const sTx = await hold(async () => [await title(), await value(), (await legend())[3]]);
+    check(sTx[0] === 'S-meter' && sTx[1] === 'SWR 2.0' && sTx[2] === '2', `S-meter mode while transmitting shows SWR, as before (${sTx.join(', ')})`);
+    await page.locator('#meter-mode').click();
+    await sleep(100);
+    check((await title()) === 'SWR' && (await legend()).filter(Boolean).join(' ') === '1.5 2 2.5 3 4 5' && (await value()) === 'on transmit', `tap: SWR, legend ${(await legend()).filter(Boolean).join(' ')}, "${await value()}" on receive`);
+    const swrTx = await hold(async () => {
+      if (process.env.METER_SWR_SHOT) await page.locator('.meter').screenshot({ path: process.env.METER_SWR_SHOT });
+      return [await value(), await lit('amber')];
+    });
+    check(swrTx[0] === 'SWR 2.0' && swrTx[1] === 4, `transmitting: ${swrTx[0]}, 4 amber segments`);
+    await page.locator('#meter-mode').click();
+    await sleep(100);
+    check((await title()) === 'ALC' && (await legend()).filter(Boolean).join(' ') === '25% 50% 75% 100%', `tap: ALC, legend ${(await legend()).filter(Boolean).join(' ')}`);
+    const alcTx = await hold(async () => {
+      if (process.env.METER_ALC_SHOT) await page.locator('.meter').screenshot({ path: process.env.METER_ALC_SHOT });
+      return [await value(), await lit('green')];
+    });
+    check(alcTx[0] === 'ALC 50%' && alcTx[1] === 8, `transmitting: ${alcTx[0]}, 8 green segments`);
+    check(await bFollows(() => document.getElementById('meter-mode').textContent === 'S-meter'), 'the other browser keeps its own choice (S-meter)');
+    await page.reload();
+    await page.waitForFunction(() => !document.getElementById('tty-send-btn').disabled, null, { timeout: 8000 });
+    check((await title()) === 'ALC', 'the choice is remembered after a reload');
+    await page.locator('#meter-mode').click();
+    await sleep(100);
+    check((await title()) === 'S-meter', 'tap again: back to the S-meter');
+    await page.waitForFunction(() => document.getElementById('meter-value').textContent === 'S7', null, { timeout: 3000 }).catch(() => {});
+    check((await legend())[0] === 'S0' && (await value()) === 'S7', 'with its legend and reading');
+
+    // Mic: shown with the PTT button, not in the text modes or FT8
+    const micShown = () => page.locator('#mic-gain').isVisible();
+    check((await micShown()) && (await page.locator('#ptt-btn').isVisible()), 'SSB: the Mic menu shows, left of Power');
+    const boxes = await Promise.all(['#mic-gain', '.tx-power:not(#mic-gain)'].map((sel) => page.locator(sel).boundingBox()));
+    check(boxes[0].x < boxes[1].x && Math.abs(boxes[0].y - boxes[1].y) < 10, 'Mic sits just left of Power, on the same row');
+    if (process.env.MIC_SHOT) await page.locator('.controls-row').screenshot({ path: process.env.MIC_SHOT });
+    if (process.env.METER_SHOT) await page.locator('.meter').screenshot({ path: process.env.METER_SHOT });
+    await chip('TTY').click();
+    await sleep(400);
+    check(!(await micShown()) && !(await page.locator('#ptt-btn').isVisible()), 'RTTY: no PTT button, no Mic menu');
+    await chip('SSB').click();
+    await sleep(400);
+    check(await micShown(), 'back to SSB: the Mic menu is back');
+    await chip('CW').click();
+    await sleep(400);
+    check(!(await micShown()), 'CW (the paddle replaces PTT): no Mic menu');
+    await page.locator('#modes .chip').first().click();
+    await sleep(400);
+  }
   {
     // Following must never drive the radio. (Seeing the radio leave a TTY
     // mode's sideband, it may repeat a "leave" the first browser also sent.)

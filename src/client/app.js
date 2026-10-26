@@ -2,8 +2,7 @@ import { RigLink } from './rpc.js';
 import { CallAlert, baseCall } from './call-alert.js';
 import { AudioPipeline, opusSupport, isLanHost } from './audio.js';
 import { ScopeDisplay } from './scope.js';
-import { S_METER_LEVELS, sMeterLevelIndex, sMeterLabel } from './smeter.js';
-import { rawToVswr, vswrZone } from './vswr.js';
+import { METER_MODES, METER_TITLES, METER_SEGMENTS, nextMeterMode, shownMeter, meterLegend, meterReading } from './meter-modes.js';
 import { Ft8QsoSequencer, isRelatedToQso, defaultCqMessage } from './ft8-qso.js';
 
 // --- Service worker: only register in a secure context (https:, or
@@ -1077,6 +1076,7 @@ link.addEventListener('connected', (event) => {
           else renderAudioFormat();
         },
       });
+      audioPipeline.setMicGainDb(micGainDb);
     }
     speakerBtn.disabled = false;
     speakerBtn.title = '';
@@ -4816,63 +4816,108 @@ async function syncTuner() {
   }
 }
 
-// --- S-meter ---
-// Icom S-meter readings are roughly 0-255; there's no unsolicited
-// transceive push for it on most rigs, so it's polled. Bucketed per real
-// calibration data in smeter.js (S0, S1-S3, S4-S9, +10dB through +60dB
-// over S9) — see that file for the source and a note on why S1-S3 is a
-// single combined bucket rather than three individual ones.
-const meterSegmentEls = S_METER_LEVELS.map((level) => {
+// --- Mic gain ---
+// The Mic menu, left of Power: microphone gain for this browser, from +20 to
+// -20 dB (0 dB to start). Microphones differ a lot, so it belongs to the
+// browser (remembered here), not to the radio. It changes only the voice
+// sent from this browser's microphone, not the digital modes, whose audio
+// is made on the Pi. Shown whenever the PTT button is.
+const MIC_GAIN_STEPS = [20, 10, 6, 3, 0, -3, -6, -10, -20];
+const MIC_GAIN_KEY = 'piro.micGainDb';
+const micGainEl = document.getElementById('mic-gain');
+const micGainSelect = document.getElementById('mic-gain-select');
+let micGainDb = 0;
+try {
+  const saved = Number(localStorage.getItem(MIC_GAIN_KEY));
+  if (MIC_GAIN_STEPS.includes(saved)) micGainDb = saved;
+} catch {
+  // private mode: not remembered
+}
+for (const db of MIC_GAIN_STEPS) {
+  const opt = document.createElement('option');
+  opt.value = String(db);
+  opt.textContent = db > 0 ? `+${db} dB` : db < 0 ? `\u2212${-db} dB` : '0 dB';
+  micGainSelect.appendChild(opt);
+}
+micGainSelect.value = String(micGainDb);
+micGainSelect.addEventListener('change', () => {
+  micGainDb = Number(micGainSelect.value);
+  if (audioPipeline) audioPipeline.setMicGainDb(micGainDb);
+  try {
+    localStorage.setItem(MIC_GAIN_KEY, String(micGainDb));
+  } catch {
+    // not remembered
+  }
+});
+// Visible exactly when the PTT button is: the several places that show or
+// hide the PTT button and its section don't each need to know about it.
+function syncMicGainVisible() {
+  micGainEl.hidden = pttBtn.hidden || pttSectionEl.hidden;
+}
+const micGainObserver = new MutationObserver(syncMicGainVisible);
+micGainObserver.observe(pttBtn, { attributes: true, attributeFilter: ['hidden'] });
+micGainObserver.observe(pttSectionEl, { attributes: true, attributeFilter: ['hidden'] });
+syncMicGainVisible();
+
+// --- Meter ---
+// The bar under the frequency shows the S-meter, SWR or ALC; tap its title
+// to change (meter-modes.js). The choice is this browser's own and is
+// remembered. Icom's meters are polled (no transceive push for them), every
+// 500 ms. In the S-meter mode it shows SWR while transmitting, as before;
+// SWR and ALC only read while transmitting.
+const meterModeBtn = document.getElementById('meter-mode');
+const METER_MODE_KEY = 'piro.meterMode';
+let meterMode = 'S';
+try {
+  const saved = localStorage.getItem(METER_MODE_KEY);
+  if (METER_MODES.includes(saved)) meterMode = saved;
+} catch {
+  // private mode: not remembered
+}
+let meterShown = null; // what the bar shows now: 'S', 'SWR' or 'ALC'
+const meterSegmentEls = Array.from({ length: METER_SEGMENTS }, () => {
   const seg = document.createElement('div');
   seg.className = 'meter__segment';
-  if (level.over) seg.classList.add('meter__segment--over');
   const label = document.createElement('span');
   label.className = 'meter__segment-label';
-  label.textContent = level.barLabel;
   seg.appendChild(label);
   meterBarEl.appendChild(seg);
   return seg;
 });
 
-function updateMeter(value) {
-  const idx = sMeterLevelIndex(value);
-  // Per explicit request, just the bucketed label — no raw meter reading
-  // alongside it (same change already made to the VSWR-mode text below;
-  // `value` is still used for the actual bucket lookup above).
-  meterValue.textContent = sMeterLabel(value);
+/** Sets the title and the legend for what is shown, and clears the bar when that changes. */
+function setMeterShown(shown) {
+  meterModeBtn.textContent = METER_TITLES[meterMode];
+  meterModeBtn.setAttribute('aria-label', `Meter: ${METER_TITLES[meterMode]}. Tap for ${METER_TITLES[nextMeterMode(meterMode)]}.`);
+  if (shown === meterShown) return;
+  meterShown = shown;
+  const legend = meterLegend(shown);
   meterSegmentEls.forEach((seg, i) => {
-    seg.classList.toggle('meter__segment--active', i <= idx);
-    // Clear any leftover VSWR-mode coloring from a previous PTT session —
-    // the two display modes use independent classes (see updateMeterAsVswr)
-    // so switching back to S-meter mode needs to explicitly reset these.
-    seg.classList.remove('meter__segment--vswr-green', 'meter__segment--vswr-orange', 'meter__segment--vswr-red');
+    seg.firstChild.textContent = legend[i];
+    seg.classList.remove('meter__segment--green', 'meter__segment--amber', 'meter__segment--red');
+  });
+  meterValue.textContent = shown === 'S' ? '\u2014' : 'on transmit';
+}
+
+function showMeterReading(shown, raw) {
+  setMeterShown(shown);
+  const { text, segments } = meterReading(shown, raw);
+  meterValue.textContent = text;
+  meterSegmentEls.forEach((seg, i) => {
+    for (const c of ['green', 'amber', 'red']) seg.classList.toggle(`meter__segment--${c}`, segments[i] === c);
   });
 }
 
-/**
- * Repurposes the same 16-segment bar used for the S-meter to show VSWR
- * while transmitting — see docs/ui-notes.md for why PTT triggers this
- * switch and why VSWR uses its own independent set of classes rather
- * than reusing --active/--over (some segments carry --over permanently,
- * based on their S-unit bucket identity, which would conflict with
- * toggling it per-zone here).
- */
-function updateMeterAsVswr(raw) {
-  const vswr = rawToVswr(raw);
-  const zone = vswrZone(vswr);
-  const activeCount = Math.round(((vswr - 1) / 4) * meterSegmentEls.length);
-  // Per explicit request, just the computed VSWR ratio — no raw meter
-  // reading alongside it (the raw value is still passed in and used for
-  // the actual computation above; only the displayed text changed).
-  meterValue.textContent = `VSWR ${vswr.toFixed(1)}`;
-  meterSegmentEls.forEach((seg, i) => {
-    const active = i < activeCount;
-    seg.classList.remove('meter__segment--active'); // S-meter-mode class, not used here
-    seg.classList.toggle('meter__segment--vswr-green', active && zone === 'green');
-    seg.classList.toggle('meter__segment--vswr-orange', active && zone === 'orange');
-    seg.classList.toggle('meter__segment--vswr-red', active && zone === 'red');
-  });
-}
+meterModeBtn.addEventListener('click', () => {
+  meterMode = nextMeterMode(meterMode);
+  try {
+    localStorage.setItem(METER_MODE_KEY, meterMode);
+  } catch {
+    // not remembered
+  }
+  setMeterShown(shownMeter(meterMode, pttActive));
+});
+setMeterShown(shownMeter(meterMode, false));
 
 function startMeterPolling() {
   stopMeterPolling();
@@ -4881,13 +4926,15 @@ function startMeterPolling() {
     if (inFlight || !link.connected) return;
     inFlight = true;
     try {
-      if (pttActive) {
-        const data = await link.request('getSWR');
-        updateMeterAsVswr(data.value);
-      } else {
-        const data = await link.request('getSMeter');
-        updateMeter(data.value);
+      const shown = shownMeter(meterMode, pttActive);
+      if (shown !== 'S' && !pttActive) {
+        setMeterShown(shown); // SWR and ALC only read while transmitting
+        return;
       }
+      const request = { S: 'getSMeter', SWR: 'getSWR', ALC: 'getAlc' }[shown];
+      const data = await link.request(request);
+      // the mode or PTT may have changed while the radio answered
+      if (shown === shownMeter(meterMode, pttActive)) showMeterReading(shown, data.value);
     } catch {
       // transient — next poll will retry
     } finally {

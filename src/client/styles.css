@@ -572,6 +572,18 @@ button {
   margin-left: auto; /* push to the right-hand side of the row */
 }
 
+.tx-power--mic {
+  margin-left: auto; /* Mic and Power sit together on the right */
+}
+
+.tx-power[hidden] {
+  display: none;
+}
+
+.tx-power--mic:not([hidden]) + .tx-power {
+  margin-left: 0;
+}
+
 .tx-power__label {
   font-size: 0.8rem;
   color: var(--text-muted);
@@ -874,6 +886,23 @@ button {
   color: var(--text-muted);
 }
 
+/* The meter's title: tap to change what it shows (S-meter, SWR, ALC). */
+.meter__mode {
+  font: inherit;
+  color: inherit;
+  background: none;
+  border: none;
+  padding: 0;
+  cursor: pointer;
+  text-decoration: underline dotted;
+  text-underline-offset: 3px;
+}
+
+.meter__mode:focus-visible {
+  outline: 2px solid var(--led-green);
+  outline-offset: 2px;
+}
+
 /* Segmented bargraph: one box per S_METER_LEVELS entry (S1-S9, then
    +20/+40/+60 in a distinct color — conventionally the "very strong
    signal" zone on a physical S-meter). Segments up to the current
@@ -902,30 +931,20 @@ button {
   transition: background 150ms ease, border-color 150ms ease;
 }
 
-.meter__segment--active::before {
+/* A lit segment's colour (meter-modes.js meterReading()): the S-meter is
+   green, red over S9; SWR green, amber or red by its zone; ALC green, red
+   above the scale. */
+.meter__segment--green::before {
   background: var(--led-green);
   border-color: var(--led-green);
 }
 
-.meter__segment--over.meter__segment--active::before {
-  background: var(--led-red);
-  border-color: var(--led-red);
-}
-
-/* VSWR display mode (while transmitting) — independent of --active/--over
-   above, since some segments carry --over permanently based on their
-   S-unit bucket identity; see updateMeterAsVswr() in app.js. */
-.meter__segment--vswr-green::before {
-  background: var(--led-green);
-  border-color: var(--led-green);
-}
-
-.meter__segment--vswr-orange::before {
+.meter__segment--amber::before {
   background: var(--led-amber);
   border-color: var(--led-amber);
 }
 
-.meter__segment--vswr-red::before {
+.meter__segment--red::before {
   background: var(--led-red);
   border-color: var(--led-red);
 }
