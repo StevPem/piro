@@ -752,6 +752,19 @@ class CivDriver extends EventEmitter {
   }
 
   /**
+   * Read the ALC meter level while transmitting, raw (CI-V `15 13`). Icom's
+   * CI-V reference gives its range as `00 00` = minimum to `01 20` =
+   * maximum, in the same table as the S-meter and SWR, so it is decoded the
+   * same way: 0 to 120 (`src/client/meter-modes.js` shows it as a percent
+   * of that). Not yet checked against a real radio's ALC meter.
+   */
+  async getAlc() {
+    const frame = await this._send(CMD.READ_SMETER, SUBCMD.ALC);
+    this._throwIfNG(frame, 'read ALC');
+    return this._decodeMeterReply(frame, 'ALC');
+  }
+
+  /**
    * Set transmit power, in watts. The CI-V level itself is raw 0-255
    * ("00 00 to 02 55" per the manual); there's no direct watts field, so
    * this assumes a simple linear relationship between the raw level and

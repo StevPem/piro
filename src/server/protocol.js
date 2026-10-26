@@ -82,6 +82,7 @@ const REQUEST = {
   GET_NOTCH: 'getNotch',
   GET_TUNER: 'getTuner',
   GET_SWR: 'getSWR',
+  GET_ALC: 'getAlc', // {} -> {value}: the ALC meter, raw 0 (minimum) to 120 (maximum), while transmitting (CI-V 15 13)
   SET_FILTER: 'setFilter', // {value: 1|2|3}
   GET_FILTER: 'getFilter',
   SET_TX_POWER: 'setTxPower', // {watts: number}

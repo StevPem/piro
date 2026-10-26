@@ -89,6 +89,9 @@ class StubCivDriver extends EventEmitter {
   async getSWR() {
     return this._swrValue ?? 0;
   }
+  async getAlc() {
+    return this._alcValue ?? 0;
+  }
   async setFilter(value) {
     this._lastFilter = value;
     return true;
@@ -398,6 +401,11 @@ async function run() {
     swrGetReply.id === '23' && swrGetReply.ok === true && swrGetReply.data.value === 48,
     'getSWR calls through to civ.getSWR()'
   );
+
+  civ._alcValue = 60;
+  clientA.send(JSON.stringify({ id: '23a', type: 'getAlc' }));
+  const alcGetReply = await nextMessage(clientA);
+  check(alcGetReply.id === '23a' && alcGetReply.ok === true && alcGetReply.data.value === 60, 'getAlc calls through to civ.getAlc()');
 
   clientA.send(JSON.stringify({ id: '24', type: 'setFilter', value: 2 }));
   const filterSetReply = await nextMessage(clientA);

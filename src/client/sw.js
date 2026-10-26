@@ -5,7 +5,7 @@
 // can't intercept ws:// traffic anyway, and rig state should never be
 // served stale from cache.
 
-const CACHE_NAME = 'icom-rig-pwa-shell-v105';
+const CACHE_NAME = 'icom-rig-pwa-shell-v106';
 
 const SHELL_ASSETS = [
   '/',
@@ -18,6 +18,7 @@ const SHELL_ASSETS = [
   '/scope.js',
   '/smeter.js',
   '/vswr.js',
+  '/meter-modes.js',
   '/ft8-qso.js',
   '/call-alert.js',
   '/mic-capture-processor.js',

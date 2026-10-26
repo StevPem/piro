@@ -81,6 +81,16 @@ by the numeric range check alone. The client's polling loop
 thrown error, so a still-malformed reply on some other radio/firmware
 would show as a stalled meter reading rather than a crash or wrong number.
 
+## ALC read (command 0x15, sub-command 0x13) — from the manual, not yet checked on a radio
+
+`CivDriver#getAlc()` reads the ALC meter while transmitting. Icom's CI-V
+reference lists it in the same table as the S-meter and SWR: `15 13`,
+"Read ALC meter level (0000=Minimum to 0120=Maximum)". It uses the same
+decode (`_decodeMeterReply()`), so the reply is 0 to 120. The client shows
+it as a percent of 120 (`src/client/meter-modes.js`); a reading above 120
+is shown in red. Not yet compared with the radio's own ALC meter: whether
+the radio's "ALC zone" maps to some part of 0-120 is not known yet.
+
 ## SWR read (command 0x15, sub-command 0x12) — reasoned extension, not independently confirmed
 
 `CivDriver#getSWR()` reuses the exact decode logic just confirmed for

@@ -662,6 +662,25 @@ async function testGetSWR() {
     check(threw, 'getSWR() also throws on a too-short reply, sharing the S-meter decode\'s defensiveness');
     await driver.close();
   }
+
+  // ALC (15 13): the manual's range, 00 00 = minimum to 01 20 = maximum
+  for (const { bytes, expected } of [
+    { bytes: [0x00, 0x00], expected: 0 },
+    { bytes: [0x00, 0x60], expected: 60 },
+    { bytes: [0x01, 0x20], expected: 120 },
+  ]) {
+    const transport = new FakeTransport();
+    const driver = new CivDriver({ path: '/fake', radioAddr: RADIO_ADDR, transport });
+    await driver.open();
+    const promise = driver.getAlc();
+    await new Promise((resolve) => setImmediate(resolve));
+    const lastFrame = [...transport.written[transport.written.length - 1]];
+    check(lastFrame[4] === 0x15 && lastFrame[5] === 0x13, `getAlc() sends cmd=0x15 subcmd=0x13, got 0x${lastFrame[4].toString(16)} 0x${lastFrame[5].toString(16)}`);
+    transport.sendFrame({ cmd: CMD.READ_SMETER, subCmd: SUBCMD.ALC, data: Buffer.from(bytes) });
+    const value = await promise;
+    check(value === expected, `ALC [0x${bytes[0].toString(16)}, 0x${bytes[1].toString(16)}] decodes to ${expected}, got ${value}`);
+    await driver.close();
+  }
 }
 
 async function testSubCmdDisambiguation() {

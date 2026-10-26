@@ -4334,3 +4334,42 @@ model for how to approach that.
   all show "(3)", it closes and they show "(2)"). Service-worker cache
   v105.
 
+### Mic gain, and the meter shows S-meter, SWR or ALC (v106)
+
+- **Mic.** A "Mic" menu left of Power: +20, +10, +6, +3, 0 (default),
+  −3, −6, −10 and −20 dB. It is shown exactly when the PTT button is
+  (a MutationObserver on the PTT button and its section, so the many
+  places that show or hide PTT need not know about it). The gain is per
+  browser (`localStorage` `piro.micGainDb`), since it belongs to the
+  microphone, not the radio. `AudioPipeline#setMicGainDb()` applies it to
+  each 20 ms microphone frame before it is compressed (PCM, Opus or
+  ADPCM). Above 0.8 of full scale a tanh knee rounds the peaks off, so
+  high gain never wraps or clips hard. The digital modes, made on the Pi,
+  are not affected. The radio's USB MOD level is left as it was (still
+  set to maximum at start-up): changing it would also change the drive of
+  every digital mode.
+- **Meter.** The meter's title is now a button: S-meter → SWR → ALC → S-meter.
+  The labels under the 16 segments follow (S0 ... +60; 1.5, 2, 2.5, 3, 4,
+  5; 25%, 50%, 75%, 100%). Per browser (`piro.meterMode`). In the S-meter
+  mode the bar still shows SWR while transmitting, as before. SWR and ALC
+  read only while transmitting; on receive they say "on transmit" and are
+  not polled. The modes, legends and readings are pure functions in the
+  new `src/client/meter-modes.js`. The segment colour classes are now
+  `--green`, `--amber` and `--red` for all three, replacing the S-meter's
+  `--active`/`--over` and SWR's `--vswr-*`.
+- **ALC** is new on the server: CI-V `15 13` (`CivDriver#getAlc()`,
+  `REQUEST.GET_ALC`), 0 to 120 per Icom's CI-V reference, shown as a
+  percent. Not yet checked against the radio's own ALC meter.
+- **Real bug found:** the Mic menu stayed visible in RTTY. Cause: `.tx-power`
+  sets `display: flex`, which overrides the browser's own `[hidden]`
+  rule. Fix: `.tx-power[hidden] { display: none; }`.
+- Tests: meter-modes.test.mjs (cycling, SWR while transmitting, legends,
+  segments and colours; the gain curve), civ-driver.test.js (`15 13` and
+  its decode), ws-server.test.js (`getAlc`), manual-audio-ui.js (a page
+  whose microphone is a steady tone: 0 dB passes it as it is; −10, +6 and
+  +10 dB measured within 0.5 dB at the radio; +20 dB rounded off below
+  full scale; remembered), manual-tty-ui.js (the meter cycles with its
+  legends, SWR and ALC while transmitting, each browser keeps its own,
+  remembered after reload; Mic shown in SSB, hidden in RTTY and CW).
+  Not tested on air. Service-worker cache v106.
+

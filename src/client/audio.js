@@ -72,6 +72,23 @@ export function isLanHost(hostname) {
   return !h.includes('.');
 }
 
+/**
+ * Multiplies 16-bit samples by `gain` (a new array). Up to 0.8 of full scale
+ * the audio is just scaled; above that it bends smoothly towards full scale,
+ * so a high Mic setting rounds off peaks instead of clipping them hard.
+ */
+export function applyMicGain(samples, gain) {
+  const out = new Int16Array(samples.length);
+  const knee = 0.8;
+  for (let i = 0; i < samples.length; i++) {
+    let x = (samples[i] / 32768) * gain;
+    const a = Math.abs(x);
+    if (a > knee) x = Math.sign(x) * (knee + (1 - knee) * Math.tanh((a - knee) / (1 - knee)));
+    out[i] = Math.max(-32768, Math.min(32767, Math.round(x * 32768)));
+  }
+  return out;
+}
+
 export class AudioPipeline {
   /**
    * @param {object} opts
@@ -90,6 +107,7 @@ export class AudioPipeline {
     this.onCodecError = onCodecError;
     this.rxCodec = 'pcm';
     this.txCodec = 'pcm';
+    this.micGain = 1; // linear; see setMicGainDb()
     this.jitterSec = 0;
     this._opusDecoder = null;
     this._opusTs = 0;
@@ -250,7 +268,17 @@ export class AudioPipeline {
   }
 
   /** One captured mic frame (Int16 PCM at the AudioContext's rate), encoded in the TX format. */
+  /**
+   * Microphone gain for this browser, in dB (the Mic menu): applied to the
+   * microphone audio before it is compressed and sent. Above 0 dB, peaks
+   * are rounded off near full scale rather than clipped hard.
+   */
+  setMicGainDb(db) {
+    this.micGain = 10 ** ((Number(db) || 0) / 20);
+  }
+
   _sendMic(buffer) {
+    if (this.micGain !== 1) buffer = applyMicGain(new Int16Array(buffer), this.micGain).buffer;
     if (this.txCodec === 'pcm') {
       this.onMicFrame(AUDIO_TAG.pcm, buffer);
       return;

@@ -31,6 +31,7 @@ class Civ extends EventEmitter {
   async setPtt(on) { this.ptt.push(on); return true; }
   async getSMeter() { return 100; }
   async getSWR() { return 0; }
+  async getAlc() { return this.alc ?? 0; }
   async getPreamp() { return 0; } async getNoiseReduction() { return false; } async getNoiseBlanker() { return false; }
   async getNotch() { return false; } async getTuner() { return 0; } async getFilter() { return 1; }
   async getTxPower() { return 100; } async getRxGain() { return 255; }
@@ -135,6 +136,63 @@ const COUNT_BUFFERS = () => {
     txTypes.delete(p.ws);
   }
   check(civ.ptt.filter((v) => v).length === 3 && civ.ptt.at(-1) === false, 'PTT went on and off for each');
+
+  // Mic gain: the Mic menu scales this browser's microphone audio. A page
+  // whose microphone is a steady 1 kHz tone at a tenth of full scale
+  // (Chromium's fake microphone beeps, so its level varies).
+  {
+    const ctx = await browser.newContext({ viewport: { width: 430, height: 1000 } });
+    await ctx.grantPermissions(['microphone']);
+    const page = await ctx.newPage();
+    page.on('pageerror', (e) => errors.push(`mic: ${e.message}`));
+    await page.addInitScript(() => {
+      navigator.mediaDevices.getUserMedia = async () => {
+        const ac = new AudioContext({ sampleRate: 48000 });
+        const osc = new OscillatorNode(ac, { frequency: 1000 });
+        const g = new GainNode(ac, { gain: 0.1 });
+        const dest = ac.createMediaStreamDestination();
+        osc.connect(g).connect(dest);
+        osc.start();
+        return dest.stream;
+      };
+    });
+    const known = new Set(server.clients);
+    await page.goto(`http://localhost:${port}/`);
+    await page.waitForFunction(() => !document.getElementById('speaker-btn').disabled, null, { timeout: 8000 });
+    await sleep(300);
+    const mic = { page, ws: [...server.clients].find((w) => !known.has(w)) };
+    await page.click('#speaker-btn');
+    await sleep(300);
+    const rms = () => {
+      let sum = 0;
+      let n = 0;
+      // skip the first 0.2 s of each transmission (start-up)
+      const all = Buffer.concat(written);
+      for (let i = 2 * 9600; i + 1 < all.length; i += 2) { const v = all.readInt16LE(i); sum += v * v; n++; }
+      return Math.sqrt(sum / (n || 1));
+    };
+    const level = async (db) => {
+      await mic.page.selectOption('#mic-gain-select', String(db));
+      written.length = 0;
+      await talk(mic);
+      return rms();
+    };
+    const dB = (a, b) => 20 * Math.log10(a / b);
+    check(await mic.page.locator('#mic-gain').isVisible(), 'the Mic menu shows beside Power in SSB');
+    check((await mic.page.locator('#mic-gain-select').inputValue()) === '0', 'it starts at 0 dB');
+    const opts = await mic.page.locator('#mic-gain-select option').allTextContents();
+    check(opts.join('|') === '+20 dB|+10 dB|+6 dB|+3 dB|0 dB|\u22123 dB|\u22126 dB|\u221210 dB|\u221220 dB', `its steps: ${opts.join(', ')}`);
+    const l0 = await level(0);
+    check(Math.abs(l0 - 0.1 * 32768 / Math.SQRT2) < 300, `0 dB: the radio gets the microphone as it is (RMS ${l0.toFixed(0)}, a tenth of full scale is 2317)`);
+    for (const db of [-10, 6, 10, 20]) {
+      const l = await level(db);
+      const want = db === 20 ? 17 : db; // +20 dB takes the tone to full scale, where the peaks are rounded off
+      check(db === 20 ? dB(l, l0) > want && dB(l, l0) < 20 : Math.abs(dB(l, l0) - db) < 0.5, `${db > 0 ? '+' : ''}${db} dB: ${dB(l, l0).toFixed(1)} dB`);
+    }
+    check((await mic.page.evaluate(() => localStorage.getItem('piro.micGainDb'))) === '20', 'the setting is remembered by the browser');
+    await ctx.close();
+    await sleep(200);
+  }
 
   // The button switches, and the choice is remembered on that device
   await opus.page.click('#audio-format-btn');

@@ -1067,6 +1067,11 @@ class ControlServer extends EventEmitter {
           ws.send(makeResult(id, { value }));
           break;
         }
+        case REQUEST.GET_ALC: {
+          const value = await this.civ.getAlc();
+          ws.send(makeResult(id, { value }));
+          break;
+        }
         case REQUEST.SET_FILTER: {
           if (![1, 2, 3].includes(msg.value)) {
             throw new Error('"value" must be 1, 2, or 3');
