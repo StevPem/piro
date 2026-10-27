@@ -4472,3 +4472,13 @@ model for how to approach that.
   shown in the status line as well as in the error bar.
 - Tests: vara.test.js (state broadcast on start, and on a refused start),
   manual-tty-ui.js. Service-worker cache v109.
+
+### VARA frequencies on every band (v110)
+
+- VARA's band frequencies (USB dial) are now: 160 m 1.995, 80 m 3.595,
+  40 m 7.105, 30 m 10.133, 20 m 14.105, 17 m 18.107, 15 m 21.105,
+  12 m 24.927, 10 m 28.105 MHz, and 6 m 50.330 MHz as before. Before,
+  only 80, 40, 20 and 6 m had one, and the other band chips went to
+  their ordinary quick-tune point.
+- Tests: manual-tty-ui.js (in VARA, the 160, 30, 17, 12, 10 and 20 m band
+  chips go to these frequencies on USB). Service-worker cache v110.
