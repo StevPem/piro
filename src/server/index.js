@@ -633,7 +633,8 @@ async function main() {
     {
       const cfg = varaConfig(process.env);
       for (const w of cfg.warnings) console.warn(w);
-      varaBridge = new VaraBridge({ controlServer, audioBridge, callsign: STATION_CALLSIGN || '', bw: cfg.bw, latencyMs: cfg.latencyMs });
+      // PSK Spot reports share the FT8 bridge's PSK Reporter client (one sender, one 5-minute batch).
+      varaBridge = new VaraBridge({ controlServer, audioBridge, callsign: STATION_CALLSIGN || '', bw: cfg.bw, latencyMs: cfg.latencyMs, pskReporter: ft8Bridge.pskReporter });
       varaBridge.start();
       console.log(varaBridge.unavailable ? `VARA chat unavailable: ${varaBridge.unavailable}` : `VARA chat ready (${cfg.bw} Hz; runs while VARA is selected).`);
     }

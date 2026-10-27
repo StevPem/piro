@@ -219,7 +219,11 @@
             aria-label="Callsign to connect to"
           />
           <button class="chip" id="vara-connect-btn" type="button" disabled>Connect</button>
-          <button class="chip" id="vara-cq-btn" type="button" disabled title="Send a VARA CQ frame. Stations listening (VARA Chat, VarAC) see your call and can connect to you.">CQ</button>
+          <span class="vara-rx__buttons">
+            <button class="chip" id="vara-cq-btn" type="button" disabled title="Send a VARA CQ frame. Stations listening (VARA Chat, VarAC) see your call and can connect to you.">CQ</button>
+            <button class="chip vara-rx__qsy" id="vara-qsyd-btn" type="button" disabled title="Move the radio down 750 Hz (one VarAC slot). This radio only: not during a QSO.">QSYD</button>
+            <button class="chip vara-rx__qsy" id="vara-qsyu-btn" type="button" disabled title="Move the radio up 750 Hz (one VarAC slot). This radio only: not during a QSO.">QSYU</button>
+          </span>
         </div>
         <div class="vara-rx__heard" id="vara-heard" hidden></div>
         <pre class="olivia-rx__text" id="vara-rx-text" aria-live="polite" aria-label="VARA conversation"></pre>

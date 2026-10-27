@@ -1256,14 +1256,26 @@ button {
 
 .vara-rx__controls {
   display: flex;
+  flex-wrap: wrap; /* on a narrow phone the buttons go onto a second line */
   gap: 6px;
   align-items: center;
   margin-bottom: 6px;
 }
 
+.vara-rx__controls .chip {
+  flex: none;
+  padding: 4px 8px;
+}
+
+/* CQ, QSYD and QSYU stay together (on a second line on a narrow phone). */
+.vara-rx__buttons {
+  display: flex;
+  gap: 6px;
+}
+
 .vara-rx__call {
-  flex: 1 1 auto;
-  min-width: 0;
+  flex: 1 1 6em;
+  min-width: 6em;
   max-width: 12em;
   padding: 4px 6px;
   font-family: var(--font-mono);
