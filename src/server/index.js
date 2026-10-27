@@ -15,6 +15,7 @@ const { HellDecoderBridge } = require('./hell-decoder-bridge');
 const { SstvDecoderBridge } = require('./sstv-decoder-bridge');
 const { SstvTxBridge, DEFAULT_SSTV_TX_MODE } = require('./sstv-tx-bridge');
 const { EasypalTxBridge, easypalTxConfig } = require('./easypal-tx-bridge');
+const { VaraBridge, varaConfig } = require('./vara-bridge');
 const { WsprBridge, parseBandList, WSPR_DIAL_HZ } = require('./wspr-bridge');
 const { FaxDecoderBridge } = require('./fax-decoder-bridge');
 const { EasypalDecoderBridge } = require('./easypal-decoder-bridge');
@@ -290,6 +291,7 @@ let wsprBridge;
 let faxDecoderBridge;
 let easypalDecoderBridge;
 let easypalTxBridge;
+let varaBridge;
 let bandConditions;
 let radeBridge;
 let freeDvReporterBridge;
@@ -621,6 +623,21 @@ async function main() {
       console.log(`EasyPal transmit ready (mode ${t.mode}, ${t.bandwidth} kHz, ${t.qam}-QAM, ${t.protection} protection, ${t.interleave} interleave, ${t.rs || 'no RS'}, up to ${t.seconds} s).`);
     }
 
+    // VARA chat (the TTY button's VARA): Xara's VARA HF modem, compiled to
+    // WebAssembly, run in a worker while a browser has VARA selected. It
+    // needs STATION_CALLSIGN and 48 kHz audio. VARA_BW is the bandwidth
+    // (500, the VarAC/VARA Chat calling width, 2300 or 2750);
+    // VARA_AUDIO_LATENCY_MS is how far the transmit audio lags what is
+    // written to the sound card (500 by default, aplay's usual buffer).
+    // See server/vara-bridge.js.
+    {
+      const cfg = varaConfig(process.env);
+      for (const w of cfg.warnings) console.warn(w);
+      varaBridge = new VaraBridge({ controlServer, audioBridge, callsign: STATION_CALLSIGN || '', bw: cfg.bw, latencyMs: cfg.latencyMs });
+      varaBridge.start();
+      console.log(varaBridge.unavailable ? `VARA chat unavailable: ${varaBridge.unavailable}` : `VARA chat ready (${cfg.bw} Hz; runs while VARA is selected).`);
+    }
+
     // WSPR receive and transmit (the third choice of the DIGI button).
     // WSPR_GRID is the Maidenhead locator sent and reported (defaults to
     // STATION_GRID); spots go to wsprnet.org unless WSPR_UPLOAD=off;
@@ -740,6 +757,7 @@ async function shutdown(signal) {
     if (wsprBridge) wsprBridge.stop();
     if (faxDecoderBridge) faxDecoderBridge.stop();
     if (easypalTxBridge) easypalTxBridge.stop();
+    if (varaBridge) await varaBridge.stop();
     if (easypalDecoderBridge) easypalDecoderBridge.stop();
     if (bandConditions) bandConditions.stop();
     if (radeBridge) radeBridge.stop();

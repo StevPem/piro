@@ -4396,3 +4396,58 @@ model for how to approach that.
 - Tests: manual-tty-ui.js (the six controls on one line at 430, 390 and
   360 px; SWR cleared after PTT release). Service-worker cache v107.
 
+
+### VARA chat (v108)
+
+- **TTY button:** RTTY → JTTY → Olivia → **VARA** → Feld-Hell → RTTY.
+  VARA is app-level on USB + DATA MODE, like Olivia. Entering it tunes to
+  the band's VarAC calling frequency (3.595, 7.105, 14.105, 50.330 MHz
+  dial, USB). Olivia → VARA → Feld-Hell leave the radio's mode alone.
+- **The modem** is Xara (https://github.com/x0rro/xara, MIT), a VARA HF
+  compatible modem in Rust, compiled to WebAssembly
+  (`src/audio/xara/xara.wasm`, about 1 MB, built by
+  `third_party/xara/build-wasm.sh`). Only xara-host's socket code is
+  patched out; the wrapper crate replaces xara's TCP host interface with
+  memory buffers. `src/audio/xara/xara.js` loads it; `vara-worker.js` runs
+  one in a worker thread.
+- **The server** (`src/server/vara-bridge.js`) runs while a browser has
+  VARA selected (`setVaraActive`, in the app modes). It confirms DATA mode
+  (`ensureDataMode`) and watches it; it feeds all received audio to the
+  modem (silence while transmitting) and writes the modem's transmit audio
+  to the radio without a break, so the delay through `aplay` stays the
+  same. The modem keys PTT itself (`PTT ON`/`PTT OFF`). It is set up as
+  VARA Chat: `MYCALL`, `BW500`, `CHAT ON`, `P2P SESSION`,
+  `COMPRESSION TEXT`, `LISTEN ON`. Requests: `vara` with `cq`, `connect`,
+  `disconnect`, `send`. State: `state.vara` and `vara-status`; the
+  conversation: `vara-text`, sent whole to a browser that connects.
+- **Limits:** a transmission over 30 s is cut off (PTT off, `ABORT`); a
+  QSO with nothing sent or received for 10 minutes is disconnected; the
+  last browser leaving stops VARA (`ABORT`, any QSO is dropped). Without
+  DATA mode confirmed it receives but never keys. The modem runs
+  unregistered.
+- **The panel:** status line, callsign box with Connect (Stop while
+  calling, Disconnect in a QSO), CQ, the stations heard calling CQ (tap
+  one to fill the box), and the conversation (own lines amber, PiRO's
+  notes grey). The composer's Send works only in a QSO and sends one line
+  ending in CR, Latin-1, as VARA Chat does.
+- **Found while testing:** VARA's acknowledgements are timed. With 600 ms
+  of untold delay each way (about what `aplay`'s buffer adds), two modems
+  heard each other's CQ but never connected. So the wrapper passes the
+  delay to xara's `tx_latency` (`VARA_AUDIO_LATENCY_MS`, default 500):
+  told, they connected with up to 1 s on one side, and a wrong guess of
+  ±300 ms still worked.
+- **Bug found before release:** the panel's notes ("Connected to …") are
+  spans in the transcript, and the shared `appendRxText()` would have
+  added the next received text into the note. It now starts a new span
+  after a note.
+- Tests: vara.test.js (the modem's `VERSION` reply and command handling;
+  two bridges with real workers on a simulated noisy channel: CQ heard,
+  connect, a line each way, disconnect, PTT on and off; a browser that
+  connects gets the conversation; the 30 s limit, the idle limit, a
+  refused CONNECT, "No answer", no keying without DATA mode),
+  ws-server.test.js (`setVaraActive`, `vara`, release when the last
+  browser leaves), manual-tty-ui.js (the cycle, tuning, the panel through
+  CQ heard → Connect → PTT → QSO → text both ways → Disconnect, a second
+  and a third browser following, VARA → Feld-Hell stops the modem).
+  Not tested on air, and not yet tested against VARA, VARA Chat or VarAC.
+  Service-worker cache v108.

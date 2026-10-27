@@ -12,7 +12,7 @@ Hamlib, no separate audio server and no extra apps.
 Written by VK3TR. Licensed AGPL-3.0-only (see
 [Licence](#licence)).
 
-**Current build: v107.** This is the version the app shows next to its title.
+**Current build: v108.** This is the version the app shows next to its title.
 It is the `CACHE_NAME` number in `src/client/sw.js`, which goes up with every
 change to the web app.
 
@@ -64,6 +64,10 @@ Note that it DOES NOT include any form of login or password - so don't present i
   text is decoded as it arrives, or for Feld-Hell painted in the scope and
   read from the picture as text. See
   [RTTY, JTTY, Olivia and Feld-Hell](#rtty-jtty-olivia-and-feld-hell).
+- **VARA chat**: the TTY button's fourth choice is a VARA HF modem for
+  keyboard QSOs with VARA Chat and VarAC users. It runs
+  [Xara](https://github.com/x0rro/xara), an open-source VARA-compatible
+  modem, on the Pi. See [VARA chat](#vara-chat).
 - **EasyPal**: the Image button's second choice receives digital SSTV
   pictures sent by EasyPal or QSSTV (HamDRM), with Reed-Solomon recovery
   of lost segments, and sends a photo from the phone's camera or a chosen
@@ -414,7 +418,7 @@ From the top:
   - **SSB**, **AM**, **FM** and **CW** are the radio's own modes. SSB picks
     the usual sideband (LSB below 10 MHz, USB above). Press it again to
     swap sidebands. It reads **LSB** or **USB** while selected.
-  - **TTY** steps through RTTY, JTTY, Olivia and Feld-Hell.
+  - **TTY** steps through RTTY, JTTY, Olivia, VARA and Feld-Hell.
   - **DIGI** steps through FT8, FT4 and WSPR.
   - **FreeDV** is RADE digital voice.
   - **Image** steps through SSTV, EasyPal and Radiofax.
@@ -629,7 +633,7 @@ but hidden; see [CW decoders](#cw-decoders) in Part 2.
 
 #### RTTY, JTTY, Olivia and Feld-Hell
 
-The **TTY** button steps through four text modes:
+The **TTY** button steps through five text modes:
 
 1. The first click selects the radio's RTTY mode, and the button now reads **RTTY**.
    Selecting RTTY also tunes to the middle of the band's digital-modes segment
@@ -642,17 +646,20 @@ The **TTY** button steps through four text modes:
 3. The next click switches to **Olivia** (Olivia 8/250), and the button reads
    **Olivia**. Entering Olivia tunes to the band's Olivia calling frequency
    (e.g. 14.0715 MHz dial on 20 m), and band buttons then go to each band's.
-4. The next click switches to **Feld-Hell**, and the button reads
+4. The next click switches to **VARA** (see [VARA chat](#vara-chat)), and
+   the button reads **VARA**. Entering VARA tunes to the band's VarAC
+   calling frequency (14.105 MHz dial on 20 m).
+5. The next click switches to **Feld-Hell**, and the button reads
    **Feld-Hell**. Entering Feld-Hell tunes so a signal on the band's Feld-Hell
    frequency (e.g. 14.063 MHz on 20 m) comes out at the audio tone (dial
    14.062 MHz with the default 1000 Hz tone), and band buttons then go to
    each band's.
-5. The next click goes back to **RTTY**, and so on round.
-6. Picking any other mode (LSB, USB, AM, FM, CW, FT8, FreeDV) puts the button
+6. The next click goes back to **RTTY**, and so on round.
+7. Picking any other mode (LSB, USB, AM, FM, CW, FT8, FreeDV) puts the button
    back to **TTY**.
 
-While RTTY, JTTY, Olivia or Feld-Hell is selected, a text box and a **Send** button replace the
-PTT button. Enter in the text box also sends. While a message is going out,
+While a TTY mode is selected, a text box and a **Send** button replace the
+PTT button (in VARA, Send works only during a QSO). Enter in the text box also sends. While a message is going out,
 Send turns into **Stop**, which cuts the transmission short and releases PTT.
 The Space bar does not key the microphone in these modes. The text box starts
 with a CQ built from `STATION_CALLSIGN` (if set), and keeps whatever you
@@ -839,6 +846,84 @@ not yet been tested over the air.
 
 Transmit is refused if the radio is already transmitting. The usual PTT
 watchdog (ten minutes) still applies.
+
+#### VARA chat
+
+**VARA** is the TTY button's fourth choice. It is the VARA HF modem that
+[VARA Chat](https://rosmodem.wordpress.com/) and
+[VarAC](https://www.varac-hamradio.com/) use for keyboard QSOs. PiRO runs
+[Xara](https://github.com/x0rro/xara), an open-source modem compatible with
+VARA HF, compiled to WebAssembly, on the Pi. Nothing else needs to be
+installed.
+
+VARA works differently from the other TTY modes. You connect to one
+station, and the two modems then exchange frames: each frame is
+acknowledged, and anything lost is sent again. Text arrives complete or not
+at all. The modem keys the transmitter itself, for its own frames and its
+acknowledgements.
+
+Selecting VARA puts the radio on USB with DATA MODE on, and tunes to the
+band's VarAC calling frequency. Band buttons then do the same. These are
+VarAC's own frequencies, used worldwide; check that they suit the band plan
+before you call.
+
+| Band | Dial frequency, USB (MHz) |
+|---|---|
+| 80 m | 3.595 |
+| 40 m | 7.105 |
+| 20 m | 14.105 |
+| 6 m | 50.330 |
+
+Other bands keep their usual quick-tune point.
+
+**The VARA panel** (under the S-meter):
+
+- **Status**, at the top right: "listening (500 Hz)", "calling VK3ABC…",
+  or in a QSO the other station, the link's S/N, its speed and any text
+  still to send. It also shows "transmitting" and "channel busy".
+- **CQ** sends a short CQ frame with your callsign. VARA Chat and VarAC
+  users who are listening see it and can connect to you.
+- **Callsign** and **Connect** call a station. While calling, Connect
+  reads **Stop**; in a QSO it reads **Disconnect**.
+- **CQ heard** lists the stations heard calling CQ, newest first. Tap one
+  to put its call in the callsign box.
+- **The conversation**: received text in white, your own in amber, and
+  PiRO's notes about the link ("Connected to VK3ABC (500 Hz)") in grey.
+
+In a QSO, type a line and press **Send** (or Enter). It is sent as one line,
+as VARA Chat sends it.
+
+**Other stations can call you.** While VARA is selected the modem listens,
+answers a call by itself, and keys the radio. Leave VARA selected only while
+you are there. Picking another mode, or the last browser leaving, ends VARA;
+a QSO still open is dropped without a goodbye, so press Disconnect first.
+
+**Speed.** The modem runs unregistered, as VARA HF does without a licence
+key. At 500 Hz a short line takes about 10 to 15 seconds to arrive.
+
+**Limits.**
+* No single transmission may last more than 30 seconds (VARA's frames last
+  a few seconds). A longer one is stopped.
+* A QSO with nothing sent or received for 10 minutes is disconnected.
+* The usual PTT watchdog (ten minutes) still applies.
+* VARA needs `STATION_CALLSIGN`, and audio at 48 kHz (the default).
+* Only basic QSOs. VarAC's own features (its beacons, slots, file
+  transfer, and the tags it adds) are not supported. A plain VarAC QSO is
+  text over a VARA link, the same as VARA Chat, and should work.
+
+**Bandwidth.** `VARA_BW` sets it: 500 Hz (the default, used on the VarAC
+calling frequencies), 2300 or 2750 Hz. Both stations must use the same.
+
+**Audio delay.** VARA's acknowledgements must arrive in time, so the modem
+must know how far its transmit audio lags. `VARA_AUDIO_LATENCY_MS` (500 by
+default, the usual sound-card buffer) tells it. If calls never connect,
+see [Troubleshooting](#troubleshooting).
+
+PiRO's VARA has only been tested against itself (two modems through a
+simulated channel). It has not been tested with VARA itself, VARA Chat or
+VarAC, and it has not been tested on air. Xara's author reports testing
+Xara against VARA HF 4.9.0. See
+[`third_party/xara/README.md`](third_party/xara/README.md).
 
 #### FT8 and FT4
 
@@ -1300,6 +1385,8 @@ All settings are environment variables. For the systemd service they go in
 | `JTTY_RX_LOW_HZ`, `JTTY_RX_HIGH_HZ` | `200`, `2900` | Audio range, in Hz, searched for JTTY signals. The default is the whole range the decoder supports. Two extra fixed channels at 1350 and 1650 Hz (±150 Hz) are always searched as well. A narrower range saves a little CPU. |
 | `JTTY_RX_QUALITY` | `economy` | JTTY decoder effort. `economy` uses about 40% of `full`'s CPU and decoded nearly as many weak signals in testing. `light` is in between, `full` matches WSJT-X's search exactly, and `auto` runs `full` but drops to `economy` when the Pi falls behind. |
 | `OLIVIA_FREQ_HZ` | `1500` | Olivia's default audio centre frequency, in Hz, for sending and receiving, until it is changed in the UI. The signal is 250 Hz wide; the receiver searches 125 Hz either side. |
+| `VARA_BW` | `500` | VARA bandwidth in Hz: `500`, `2300` or `2750`. See [VARA chat](#vara-chat). |
+| `VARA_AUDIO_LATENCY_MS` | `500` | How far VARA's transmit audio lags what is written to the sound card, in ms (0 to 2000). The modem holds PTT that much longer and times its replies to suit. |
 | `OLIVIA_SQUELCH` | on | `off` turns off PiRO's filtering of junk characters and decodes exactly as fldigi does with its squelch off. See [Olivia](#rtty-jtty-olivia-and-feld-hell). |
 | `SSTV_SAVE_DIR` | none | If set, every received SSTV picture is also saved in this folder as a PNG (`YYYYMMDD-HHMMSSz-<mode>.png`, UTC). |
 | `FAX_STATE_FILE` | `~/.config/piro/fax.json` | Where Radiofax keeps the sound card's measured clock error between restarts. |
@@ -1376,7 +1463,7 @@ one hard refresh (Ctrl+Shift+R, or Cmd+Shift+R on a Mac).
   build. Re-do the check in [RNNoise](#rnnoise-rnn-button).
 - **The server runs at 100% CPU after turning HamNoise on.** Make sure
   `HAMNOISE_QUALITY` is not set to `v2` on a Raspberry Pi.
-- **A digital transmission (FT8, RTTY, JTTY, Olivia, Feld-Hell, SSTV) keys
+- **A digital transmission (FT8, RTTY, JTTY, Olivia, VARA, Feld-Hell, SSTV) keys
   the radio but shows no power.** The radio's display should read USB-D or
   LSB-D while it transmits; PiRO turns DATA mode on with CI-V `1A 06`
   (before v78 it sent the wrong command, so DATA mode never came on). Then
@@ -1424,6 +1511,14 @@ one hard refresh (Ctrl+Shift+R, or Cmd+Shift+R on a Mac).
 - **The Audio button can't be tapped.** The server can't compress audio:
   `AUDIO_CHANNELS` must be 1.
 
+- **VARA calls never connect, or links drop.** Both stations must use the
+  same bandwidth (`VARA_BW`). Watch the status line: if the other station
+  is heard (its CQ is listed, or "someone is calling…" shows) but the link
+  fails, the timing may be off. Try `VARA_AUDIO_LATENCY_MS` at 300 or 800.
+  Check the transmit audio level the same way as for the other digital
+  modes: no ALC.
+- **The VARA panel says it isn't available.** It needs `STATION_CALLSIGN`,
+  audio set up (`AUDIO_RX_DEVICE`) and a sample rate of 48000.
 - **EasyPal shows the mode and S/N but no picture.** A plain (not
   Reed-Solomon) file needs every segment: one lost segment and it never
   completes. Ask the sender to use an `.rs` setting, or to send again. A file
@@ -1507,7 +1602,7 @@ browser. There is no build step: the browser loads plain ES modules.
   or writes transmit audio, drives the radio through CivDriver, and
   broadcasts results.
 - **Workers.** Heavy decoding and encoding (FT8, JTTY, Olivia, SSTV, WSPR,
-  EasyPal) runs in worker threads, so the main thread stays free for CI-V,
+  EasyPal) and the VARA modem run in worker threads, so the main thread stays free for CI-V,
   audio and the WebSocket.
 - **The client** (`src/client/`): `app.js` is the whole UI. `rpc.js`
   (RigLink) wraps the WebSocket and re-dispatches every server event as a
@@ -1528,8 +1623,8 @@ is a preview of the first page.
 - **The radio is the source of truth** for its settings: frequency, mode,
   filter, DATA mode, power, preamp, NR and the rest, including changes made
   on its front panel. **The server is the source of truth** for its own
-  settings: the app-level modes (FT8/FT4, FreeDV, JTTY, Olivia, Feld-Hell,
-  SSTV, EasyPal, Radiofax, WSPR) and their frequencies, the decoder
+  settings: the app-level modes (FT8/FT4, FreeDV, JTTY, Olivia, VARA,
+  Feld-Hell, SSTV, EasyPal, Radiofax, WSPR) and their frequencies, the decoder
   options, the notes. Every browser shows what the radio or the server
   reports, by event or by polling. A browser never treats its own copy as
   the truth.
@@ -1590,6 +1685,8 @@ src/
                 EasyPal  drm/ (HamDRM receiver and transmitter),
                          easypal-decode-worker.js, easypal-encode-worker.js
                 FreeDV   rade-pipeline.js (runs the rade_c programs)
+                VARA     xara/xara.wasm (Xara's VARA HF modem in
+                         WebAssembly), xara/xara.js, vara-worker.js
               tty-bridge.js sends RTTY, JTTY, Olivia and Feld-Hell.
   client/     the PWA: index.html, styles.css, app.js (the whole UI),
               rpc.js (RigLink), audio.js, mic-capture-processor.js,
@@ -1608,7 +1705,8 @@ docs/
   architecture.png    preview of the class diagram
 deploy/       piro.service (systemd unit) and piro.env.example
 models/       bundled DeepCW and HamNoise models, with their licences
-third_party/  notes, licences and test harnesses for the ported code
+third_party/  notes, licences and test harnesses for the ported code;
+              xara/ also builds xara.wasm (build-wasm.sh)
 ```
 
 ### Components in detail
@@ -1929,11 +2027,11 @@ shapes.
   `getNoiseBlanker`, `setNotch`, `getNotch`, `setFilter`, `getFilter`,
   `setTuner`, `getTuner`, `setTxPower`, `getTxPower`, `setRxGain`,
   `getRxGain`, `setFt8Active`, `sendFt8`, `sendTty`, `abortTty`, `setJttyActive`,
-  `setOliviaActive`, `setHellActive`, `setSstvActive`, `endSstvPicture`, `getSstvPictures`,
+  `setOliviaActive`, `setVaraActive`, `vara`, `setHellActive`, `setSstvActive`, `endSstvPicture`, `getSstvPictures`,
   `sendSstv`, `abortSstv`, `setWsprActive`, `setWsprTx`, `getBandConditions`)
   correlated by `id`; events (`connected`, `clients`, `frequency`, `mode`, `data-mode`, `ptt`,
   `ptt-timeout`, `cw-text`, `ft8-decodes`, `ft8-tx-status`, `tty-tx-status`,
-  `jtty-text`, `olivia-text`, `rig-error`, `audio-error`, `scope-error`)
+  `jtty-text`, `olivia-text`, `vara-status`, `vara-text`, `rig-error`, `audio-error`, `scope-error`)
   broadcast without an `id`. The `connected` snapshot carries `clients`,
   how many browsers are connected (this one included); a `clients`
   broadcast (`{count}`) goes to the others whenever a browser connects or
@@ -1961,6 +2059,19 @@ shapes.
   and sets the centre frequency (sending it again retunes); decoded text
   arrives as `olivia-text` broadcasts (`{text, snr, freqOffsetHz, centreHz,
   time}`, a block of up to three characters at a time).
+  `setVaraActive` (`{active}`) starts and stops the VARA chat modem. While
+  it runs it listens for calls and keys PTT itself. `vara` (`{action:
+  'cq'|'connect'|'disconnect'|'send', call?, text?}`) drives it: a CQ
+  frame, a call to `call`, the end of a QSO (or of calling), or `text`
+  sent as one line. It fails, with a reason, if VARA isn't running or the
+  action doesn't fit (`send` with no QSO). The modem's state is the connect
+  snapshot's `vara` and the `vara-status` broadcast (`{available, reason,
+  callsign, bw, state: 'off'|'starting'|'listening'|'calling'|'connected'|
+  'disconnecting', peer, linkBw, pending, busy, ptt, sn, bitrate, buffer,
+  heard: [{call, bw, time}]}`). The conversation goes out as `vara-text`
+  (`{text, own, note, time}`: received text, own text, or a note about the
+  link); a page that connects is sent `{replace: true, segments}`, the
+  conversation so far.
   `setHellActive` (`{active, toneHz?}`) starts and stops the Feld-Hell
   receiver and sets its tone; the picture arrives as binary
   `BINARY_TYPE.HELL_COLUMNS` frames (below), and the text read from it as
@@ -2026,10 +2137,10 @@ shapes.
   myError, tags, bands: [{band, myQth: {tag, rangeKm?, stations?, slots?,
   lastMs?}, local: {tag, rangeKm?, stations?, reporters?}}]}`.
   An `app-modes` broadcast (`{ft8Active, freeDvActive, jttyActive, jttyTxHz,
-  oliviaActive, oliviaCentreHz, hellActive, hellToneHz, sstvActive,
+  oliviaActive, oliviaCentreHz, varaActive, hellActive, hellToneHz, sstvActive,
   wsprActive, faxActive}`) goes to the other browsers after any
   `setFt8Active`, `setFreeDvActive`, `setJttyActive`, `setOliviaActive`,
-  `setHellActive`, `setSstvActive`, `setWsprActive` or `setFaxActive`, so they show the same mode; the
+  `setVaraActive`, `setHellActive`, `setSstvActive`, `setWsprActive` or `setFaxActive`, so they show the same mode; the
   connect snapshot has the same fields.
   `sendCw` (`{text, wpm?}`) sends text with the radio's CW keyer;
   progress arrives as `cw-tx-status` broadcasts (`sending` →
@@ -2226,6 +2337,10 @@ The test files:
                            third_party/olivia/README.md
   olivia-decoder-bridge.test.js  Olivia receive bridge: arming, retuning, PTT,
                            decimation, spectrum, and a real worker end to end
+  vara.test.js            VARA chat: the Xara modem in WebAssembly, and two
+                           VARA bridges (each with its real worker) joined by a
+                           simulated channel: CQ, call, text both ways,
+                           disconnect; PTT, DATA mode, the 30 s and idle limits
   hell.test.js            Feld-Hell port checked against fldigi's own transmit
                            code (40 half-pixel sequences, a waveform), the
                            font, and the received picture clean, in noise,
@@ -2401,6 +2516,7 @@ checked against the original, and the original's licence notice:
 | SSTV receive | slowrx (Oona Räisänen) | [`third_party/sstv/`](third_party/sstv/README.md) |
 | WSPR | wsprd and wsprsim (WSJT-X) | [`third_party/wsjtx-wsprd/`](third_party/wsjtx-wsprd/README.md) |
 | EasyPal | QSSTV (and Dream) | [`third_party/qsstv-drm/`](third_party/qsstv-drm/README.md) |
+| VARA HF modem | Xara (x0rro), compiled to WebAssembly, not ported | [`third_party/xara/`](third_party/xara/README.md) |
 | RNNoise (patched demo) | xiph/rnnoise | [`third_party/rnnoise/`](third_party/rnnoise/README.md) |
 
 The DeepCW and HamNoise models are in `models/`, each with its `LICENSE`
@@ -2422,6 +2538,7 @@ Several of the cooler features in this app are built on the work of others:
 - SSTV receiver = Ported to JS from slowrx by Oona Räisänen (OH2EIQ), https://github.com/windytan/slowrx
 - EasyPal (HamDRM) receiver and transmitter = Ported to JS from QSSTV by Johan Maes (ON4QZ) and M. Bos (PA0MBO), https://github.com/ON4QZ/QSSTV, whose transmitter builds on Dream by Volker Fischer (TU Darmstadt)
 - WSPR support = Ported to JS from wsprd and wsprsim (K1JT, K9AN) in WSJT-X, https://wsjtx.github.io/wsjtx/index.html
+- VARA chat = Xara, an open-source VARA-compatible modem by x0rro (MIT), compiled to WebAssembly, https://github.com/x0rro/xara. VARA is by Jose Alberto Nieto Ros (EA5HVK).
 
 ## Licence
 

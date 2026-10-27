@@ -1188,6 +1188,47 @@ async function run() {
     await hServer.close();
   }
 
+  // VARA chat: setVaraActive and vara requests (passed to the bridge), release when the last client leaves.
+  {
+    const vServer = new ControlServer({ civ: new StubCivDriver(), port: 0 });
+    const vPort = await vServer.listen();
+    const c = await connect(vPort);
+    const hello = await nextMessage(c);
+    check(hello.data.varaActive === false && hello.data.vara === null, 'connected snapshot reports varaActive=false and no VARA state');
+    c.send(JSON.stringify({ id: 'v1', type: 'setVaraActive', active: true }));
+    const none = await nextMessage(c);
+    check(none.type === 'error' && /not set up/.test(none.error), 'setVaraActive fails without a VARA bridge');
+    c.send(JSON.stringify({ id: 'v1b', type: 'vara', action: 'cq' }));
+    const none2 = await nextMessage(c);
+    check(none2.type === 'error' && /not set up/.test(none2.error), 'vara fails without a VARA bridge');
+    const actives = [];
+    const reqs = [];
+    vServer.on('vara-active', (a) => actives.push(a));
+    vServer.on('vara', (r) => {
+      if (r.action === 'send' && !r.text) throw new Error('Nothing to send.');
+      reqs.push(r);
+    });
+    c.send(JSON.stringify({ id: 'v2', type: 'setVaraActive', active: 'on' }));
+    const bad = await nextMessage(c);
+    check(bad.type === 'error', 'setVaraActive rejects a non-boolean');
+    c.send(JSON.stringify({ id: 'v3', type: 'setVaraActive', active: true }));
+    const ok = await nextMessage(c);
+    check(ok.data.active === true && vServer.state.varaActive === true && actives[0] === true, 'setVaraActive arms VARA');
+    c.send(JSON.stringify({ id: 'v4', type: 'vara', action: 'jump' }));
+    const badAction = await nextMessage(c);
+    check(badAction.type === 'error', 'vara rejects an unknown action');
+    c.send(JSON.stringify({ id: 'v5', type: 'vara', action: 'connect', call: 'VK3ABC' }));
+    const conn = await nextMessage(c);
+    check(conn.ok === true && reqs[0]?.action === 'connect' && reqs[0].call === 'VK3ABC', 'vara connect is passed to the bridge');
+    c.send(JSON.stringify({ id: 'v6', type: 'vara', action: 'send', text: '' }));
+    const refused = await nextMessage(c);
+    check(refused.type === 'error' && refused.error === 'Nothing to send.', "the bridge's refusal goes back to the browser");
+    c.close();
+    await new Promise((r) => setTimeout(r, 100));
+    check(vServer.state.varaActive === false && actives.at(-1) === false, 'last client disconnecting stops VARA');
+    await vServer.close();
+  }
+
   // SSTV: setSstvActive, endSstvPicture, getSstvPictures, release when the last client leaves.
   {
     const sServer = new ControlServer({ civ: new StubCivDriver(), port: 0 });

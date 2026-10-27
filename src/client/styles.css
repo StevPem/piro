@@ -1241,6 +1241,65 @@ button {
   display: none;
 }
 
+/* VARA chat: callsign box, Connect and CQ on one line, then the stations heard calling CQ. */
+.vara-rx .ft8-panel__header {
+  gap: 10px;
+}
+
+.vara-rx .row-group__label {
+  white-space: nowrap;
+}
+
+.vara-rx #vara-status {
+  text-align: right;
+}
+
+.vara-rx__controls {
+  display: flex;
+  gap: 6px;
+  align-items: center;
+  margin-bottom: 6px;
+}
+
+.vara-rx__call {
+  flex: 1 1 auto;
+  min-width: 0;
+  max-width: 12em;
+  padding: 4px 6px;
+  font-family: var(--font-mono);
+  text-transform: uppercase;
+  color: var(--text);
+  background: #08080f;
+  border: 1px solid var(--panel-border);
+  border-radius: 4px;
+}
+
+.vara-rx__heard {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 4px;
+  align-items: center;
+  margin-bottom: 6px;
+  font-size: 0.75rem;
+  color: var(--text-muted);
+}
+
+.vara-rx__heard[hidden] {
+  display: none;
+}
+
+.vara-rx__heard-call {
+  padding: 2px 8px;
+  font-size: 0.75rem;
+  font-family: var(--font-mono);
+}
+
+/* PiRO's own lines about the link ("Connected to VK3ABC"). */
+.vara-rx__note {
+  color: var(--text-muted);
+  font-style: italic;
+}
+
 /* SSTV receive panel: the picture at full panel width (it is 320-800
    pixels wide, so on a phone it is shown at or above its own resolution),
    keeping its shape, with recent pictures as thumbnails underneath. */

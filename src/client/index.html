@@ -197,6 +197,33 @@
         </div>
         <pre class="olivia-rx__text" id="olivia-rx-text" aria-live="polite" aria-label="Received Olivia text"></pre>
       </section>
+      <!-- VARA chat, shown while the TTY chip is on VARA (see updateTtyUi()
+           and renderVaraStatus() in app.js): the modem's state, CQ and
+           Connect/Disconnect, the stations heard calling CQ, and the
+           conversation, with this station's own lines inline. -->
+      <section class="ft8-panel olivia-rx vara-rx" id="vara-rx" aria-label="VARA chat" hidden>
+        <div class="ft8-panel__header">
+          <span class="row-group__label">VARA chat</span>
+          <span class="ft8-panel__slot" id="vara-status" aria-live="polite">off</span>
+        </div>
+        <div class="vara-rx__controls">
+          <input
+            type="text"
+            class="vara-rx__call"
+            id="vara-call"
+            placeholder="Callsign"
+            maxlength="12"
+            autocapitalize="characters"
+            autocomplete="off"
+            spellcheck="false"
+            aria-label="Callsign to connect to"
+          />
+          <button class="chip" id="vara-connect-btn" type="button" disabled>Connect</button>
+          <button class="chip" id="vara-cq-btn" type="button" disabled title="Send a VARA CQ frame. Stations listening (VARA Chat, VarAC) see your call and can connect to you.">CQ</button>
+        </div>
+        <div class="vara-rx__heard" id="vara-heard" hidden></div>
+        <pre class="olivia-rx__text" id="vara-rx-text" aria-live="polite" aria-label="VARA conversation"></pre>
+      </section>
       <!-- Feld-Hell text: what the server reads from the received picture
            by matching it against the Feld-Hell font (audio/hell-ocr.js),
            a few seconds behind it. Own transmissions appear inline. -->

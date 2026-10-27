@@ -260,6 +260,16 @@ const HELL_FREQUENCIES = {
   '6m': 50286000,
 };
 const HELL_DEFAULT_TONE_HZ = 1000;
+
+// VARA chat: the VarAC calling frequencies (USB dial), where VarAC and VARA
+// Chat users call CQ at 500 Hz bandwidth. Other bands have no agreed
+// frequency, so their chips keep their ordinary quick-tune point.
+const VARA_FREQUENCIES = {
+  '80m': 3595000,
+  '40m': 7105000,
+  '20m': 14105000,
+  '6m': 50330000,
+};
 const HELL_MIN_TONE_HZ = 300; // same limits as the server (audio/hell-rx.js)
 const HELL_MAX_TONE_HZ = 2700;
 
@@ -491,6 +501,13 @@ const hellRxEl = document.getElementById('hell-rx');
 const hellRxTextEl = document.getElementById('hell-rx-text');
 const oliviaSignalEl = document.getElementById('olivia-signal');
 const oliviaTuneBtn = document.getElementById('olivia-tune-btn');
+const varaRxEl = document.getElementById('vara-rx');
+const varaRxTextEl = document.getElementById('vara-rx-text');
+const varaStatusEl = document.getElementById('vara-status');
+const varaCallEl = document.getElementById('vara-call');
+const varaConnectBtn = document.getElementById('vara-connect-btn');
+const varaCqBtn = document.getElementById('vara-cq-btn');
+const varaHeardEl = document.getElementById('vara-heard');
 const cwPaddleEl = document.getElementById('cw-paddle');
 const cwDotBtn = document.getElementById('cw-dot-btn');
 const cwDashBtn = document.getElementById('cw-dash-btn');
@@ -609,6 +626,10 @@ const EASYPAL_LOW_HZ = 400; // a 2.5 kHz HamDRM signal's edges, when tuned right
 const EASYPAL_HIGH_HZ = 2750;
 let hellActive = false;
 let hellUsbSeen = false;
+// VARA chat: between Olivia and Feld-Hell on the TTY button; app-level on USB + DATA MODE.
+let varaActive = false;
+let varaUsbSeen = false;
+let varaStatus = null; // the server's state.vara (EVENT.VARA_STATUS)
 const ttyFreqByMode = { JTTY: 1450, OLIVIA: OLIVIA_DEFAULT_CENTRE_HZ, HELL: HELL_DEFAULT_TONE_HZ };
 let ttyTxInFlight = false;
 let ttyShownMode = null; // which TTY mode updateTtyUi() last laid the composer out for
@@ -1003,6 +1024,7 @@ link.addEventListener('connected', (event) => {
   stationCallsign = data.stationCallsign || null;
   setSstvTxInfo(data.sstvTx);
   setEasypalTxInfo(data.easypalTx);
+  renderVaraStatus(data.vara);
   stationGrid = data.stationGrid || null;
   ft8Qso.configure({ myCall: stationCallsign, myGrid: stationGrid });
   if (data.frequency != null) updateFrequencyDisplay(data.frequency);
@@ -1301,6 +1323,11 @@ for (const band of BANDS) {
       tuneOliviaToBand(band.name);
       return;
     }
+    // And in VARA: the band's VarAC calling frequency.
+    if (varaActive && VARA_FREQUENCIES[band.name] != null) {
+      tuneVaraToBand(band.name);
+      return;
+    }
     // In SSTV: the band's SSTV frequency, on the band's sideband.
     if (sstvActive) {
       tuneSstvTo(SSTV_FREQUENCIES[band.name] ?? band.hz, band.name);
@@ -1435,6 +1462,7 @@ for (const entry of MODE_CHIPS) {
       if (freeDvActive) exitFreeDvMode();
       if (jttyActive) exitJttyMode();
       if (oliviaActive) exitOliviaMode();
+      if (varaActive) exitVaraMode();
       if (hellActive) exitHellMode();
       if (sstvActive) exitSstvMode();
       if (faxActive) exitFaxMode();
@@ -1468,6 +1496,7 @@ for (const entry of MODE_CHIPS) {
       if (wsprActive) exitWsprMode();
       if (jttyActive) exitJttyMode();
       if (oliviaActive) exitOliviaMode();
+      if (varaActive) exitVaraMode();
       if (hellActive) exitHellMode();
       if (sstvActive) exitSstvMode();
       if (faxActive) exitFaxMode();
@@ -1488,12 +1517,13 @@ for (const entry of MODE_CHIPS) {
       if (faxActive) exitFaxMode();
       if (easypalActive) exitEasypalMode();
       // First click selects RTTY; after that the button cycles RTTY ->
-      // JTTY -> Olivia -> Feld-Hell -> RTTY ... until a non-TTY mode is
-      // picked (which resets it to "TTY").
+      // JTTY -> Olivia -> VARA -> Feld-Hell -> RTTY ... until a non-TTY
+      // mode is picked (which resets it to "TTY").
       const now = ttyMode();
       if (now === 'RTTY') enterJttyMode();
       else if (now === 'JTTY') switchJttyToOlivia();
-      else if (now === 'OLIVIA') switchOliviaToHell();
+      else if (now === 'OLIVIA') switchOliviaToVara();
+      else if (now === 'VARA') switchVaraToHell();
       else selectRttyMode();
     });
   } else if (entry === 'CW') {
@@ -1509,6 +1539,7 @@ for (const entry of MODE_CHIPS) {
       if (freeDvActive) exitFreeDvMode();
       if (jttyActive) exitJttyMode();
       if (oliviaActive) exitOliviaMode();
+      if (varaActive) exitVaraMode();
       if (hellActive) exitHellMode();
       if (sstvActive) exitSstvMode();
       if (faxActive) exitFaxMode();
@@ -1545,6 +1576,7 @@ for (const entry of MODE_CHIPS) {
       if (freeDvActive) exitFreeDvMode();
       if (jttyActive) exitJttyMode();
       if (oliviaActive) exitOliviaMode();
+      if (varaActive) exitVaraMode();
       if (hellActive) exitHellMode();
       if (sstvActive) exitSstvMode();
       if (faxActive) exitFaxMode();
@@ -1562,7 +1594,7 @@ for (const entry of MODE_CHIPS) {
 
 /** True while one of the app-level modes layered on LSB/USB is selected. */
 function appModeActive() {
-  return ft8Active || wsprActive || freeDvActive || jttyActive || oliviaActive || hellActive || sstvActive || faxActive || easypalActive;
+  return ft8Active || wsprActive || freeDvActive || jttyActive || oliviaActive || varaActive || hellActive || sstvActive || faxActive || easypalActive;
 }
 
 /** Leaves whichever app-level mode is selected (picking SSB or SSTV). */
@@ -1572,6 +1604,7 @@ function exitAppModes() {
   if (freeDvActive) exitFreeDvMode();
   if (jttyActive) exitJttyMode();
   if (oliviaActive) exitOliviaMode();
+  if (varaActive) exitVaraMode();
   if (hellActive) exitHellMode();
   if (sstvActive) exitSstvMode();
   if (faxActive) exitFaxMode();
@@ -1597,6 +1630,7 @@ function applyAppModes(s) {
   if (!s.freeDvActive) exitFreeDvMode({ local: true });
   if (!s.jttyActive) exitJttyMode({ local: true });
   if (!s.oliviaActive) exitOliviaMode({ local: true });
+  if (!s.varaActive) exitVaraMode({ local: true });
   if (!s.hellActive) exitHellMode({ local: true });
   if (!s.sstvActive) exitSstvMode({ local: true });
   if (!s.faxActive) exitFaxMode({ local: true });
@@ -1607,6 +1641,7 @@ function applyAppModes(s) {
   if (s.freeDvActive) reflectFreeDvActiveFromServer();
   if (s.jttyActive) reflectJttyActiveFromServer();
   if (s.oliviaActive) reflectOliviaActiveFromServer(s.oliviaCentreHz);
+  if (s.varaActive) reflectVaraActiveFromServer();
   if (s.hellActive) reflectHellActiveFromServer(s.hellToneHz);
   if (s.sstvActive) reflectSstvActiveFromServer();
   if (s.faxActive) reflectFaxActiveFromServer();
@@ -1633,7 +1668,7 @@ link.addEventListener('app-modes', (event) => applyAppModes(event.detail));
  * page carries on and re-arms it.
  */
 function syncAppModesOnConnect(data) {
-  const serverAny = data.ft8Active || data.wsprActive || data.freeDvActive || data.jttyActive || data.oliviaActive || data.hellActive || data.sstvActive || data.faxActive || data.easypalActive;
+  const serverAny = data.ft8Active || data.wsprActive || data.freeDvActive || data.jttyActive || data.oliviaActive || data.varaActive || data.hellActive || data.sstvActive || data.faxActive || data.easypalActive;
   const radio = data.mode?.mode;
   const fits = sstvActive || freeDvActive ? radio === 'LSB' || radio === 'USB' : radio === 'USB';
   if (!serverAny && appModeActive() && fits) {
@@ -1642,6 +1677,7 @@ function syncAppModesOnConnect(data) {
     if (freeDvActive) link.request('setFreeDvActive', { active: true }).catch(() => {});
     if (jttyActive) link.request('setJttyActive', { active: true, txHz: ttyFreqByMode.JTTY }).catch(() => {});
     if (oliviaActive) link.request('setOliviaActive', { active: true, centreHz: ttyFreqByMode.OLIVIA }).catch(() => {});
+    if (varaActive) link.request('setVaraActive', { active: true }).catch(() => {});
     if (hellActive) link.request('setHellActive', { active: true, toneHz: ttyFreqByMode.HELL }).catch(() => {});
     if (sstvActive) link.request('setSstvActive', { active: true }).catch(() => {});
     if (faxActive) link.request('setFaxActive', { active: true }).catch(() => {});
@@ -1697,6 +1733,10 @@ function updateModeButtons(mode) {
     if (mode === 'USB') oliviaUsbSeen = true;
     else if (oliviaUsbSeen) leaveOlivia();
   }
+  if (varaActive) {
+    if (mode === 'USB') varaUsbSeen = true;
+    else if (varaUsbSeen) leaveVara();
+  }
   if (hellActive) {
     if (mode === 'USB') hellUsbSeen = true;
     else if (hellUsbSeen) leaveHell();
@@ -1706,7 +1746,7 @@ function updateModeButtons(mode) {
   updateTtyUi();
 }
 
-// --- TTY mode (RTTY / JTTY / Olivia / Feld-Hell) ---
+// --- TTY mode (RTTY / JTTY / Olivia / VARA / Feld-Hell) ---
 
 /**
  * Which TTY mode is currently in effect: 'JTTY' (app-level, on USB + DATA
@@ -1717,6 +1757,7 @@ function updateModeButtons(mode) {
 function ttyMode() {
   if (jttyActive) return 'JTTY';
   if (oliviaActive) return 'OLIVIA';
+  if (varaActive) return 'VARA';
   if (hellActive) return 'HELL';
   if (currentMode === 'RTTY' && !ft8Active && !wsprActive && !freeDvActive) return 'RTTY';
   return null;
@@ -1731,11 +1772,12 @@ function selectRttyMode() {
       // after the mode change so the radio shows it as the mark frequency.
       const bandName = currentFreqHz != null ? bandNameForFrequency(currentFreqHz) : null;
       if (bandName) tuneRttyToBand(bandName);
-      // Leaving JTTY, Olivia or Feld-Hell turns DATA MODE back off (see
-      // leaveJtty() / leaveOlivia() / leaveHell()); done after the mode
+      // Leaving JTTY, Olivia, VARA or Feld-Hell turns DATA MODE back off (see
+      // leaveJtty() / leaveOlivia() / leaveVara() / leaveHell()); done after the mode
       // change is confirmed so the chip never flickers via "TTY".
       leaveJtty();
       leaveOlivia();
+      leaveVara();
       leaveHell();
       updateModeButtons('RTTY');
     })
@@ -1899,14 +1941,88 @@ function exitOliviaMode(opts) {
 }
 
 /**
- * TTY chip click while in Olivia: on to Feld-Hell. Both run on USB with
- * DATA MODE on, so the radio's mode is left alone; the receivers swap and
- * the radio moves to the band's Feld-Hell frequency.
+ * TTY chip click while in Olivia: on to VARA. Both run on USB with DATA
+ * MODE on, so the radio's mode is left alone; the receiver stops and the
+ * modem starts.
  */
-function switchOliviaToHell() {
+function switchOliviaToVara() {
   oliviaActive = false;
   oliviaUsbSeen = false;
   link.request('setOliviaActive', { active: false }).catch(() => {});
+  enterVaraMode({ radioReady: true });
+}
+
+/**
+ * Enters VARA chat: USB + DATA MODE (unless already there, coming from
+ * Olivia), the band's VarAC calling frequency, and the server's VARA modem
+ * started (it listens for calls, and keys PTT itself; see
+ * server/vara-bridge.js).
+ */
+function enterVaraMode({ radioReady = false } = {}) {
+  varaActive = true;
+  varaUsbSeen = radioReady && currentMode === 'USB';
+  const bandName = currentFreqHz != null ? bandNameForFrequency(currentFreqHz) : null;
+  if (bandName) tuneVaraToBand(bandName);
+  if (!radioReady) {
+    link
+      .request('setMode', { mode: 'USB' })
+      .then(() => updateModeButtons('USB'))
+      .catch((err) => showError(`Couldn't set USB for VARA: ${err.message}`));
+    link
+      .request('setDataMode', { on: true })
+      .catch((err) => showError(`Couldn't enable DATA MODE for VARA: ${err.message}`));
+  }
+  link.request('setVaraActive', { active: true }).catch((err) => showError(`Couldn't start VARA: ${err.message}`));
+  setRttyTickerVisible(false);
+  updateTtyUi();
+}
+
+/** Tunes to a band's VarAC calling frequency. */
+function tuneVaraToBand(bandName) {
+  const hz = VARA_FREQUENCIES[bandName];
+  if (hz == null) return;
+  link
+    .request('setFrequency', { value: hz })
+    .then(() => updateFrequencyDisplay(hz))
+    .catch((err) => showError(`Couldn't tune to ${bandName} VARA frequency: ${err.message}`));
+}
+
+/** Ends VARA locally and restores DATA MODE (not with `local`; see leaveJtty()). Returns false if VARA wasn't active. */
+function leaveVara({ local = false } = {}) {
+  if (!varaActive) return false;
+  varaActive = false;
+  varaUsbSeen = false;
+  if (local) return true;
+  link.request('setDataMode', { on: false }).catch((err) => showError(`Couldn't disable DATA MODE: ${err.message}`));
+  link.request('setVaraActive', { active: false }).catch(() => {});
+  return true;
+}
+
+/** VARA was already selected when this page connected: reflect it without re-sending radio changes. */
+function reflectVaraActiveFromServer() {
+  if (varaActive) return;
+  varaActive = true;
+  varaUsbSeen = false;
+  setRttyTickerVisible(false);
+  updateTtyUi();
+}
+
+/** Leaves VARA because the operator (or, with `local`, another browser) picked some other mode. */
+function exitVaraMode(opts) {
+  if (!leaveVara(opts)) return;
+  updateTtyUi();
+}
+
+/**
+ * TTY chip click while in VARA: on to Feld-Hell. Both run on USB with
+ * DATA MODE on, so the radio's mode is left alone; the modem stops (any
+ * QSO is dropped), the receiver starts and the radio moves to the band's
+ * Feld-Hell frequency.
+ */
+function switchVaraToHell() {
+  varaActive = false;
+  varaUsbSeen = false;
+  link.request('setVaraActive', { active: false }).catch(() => {});
   enterHellMode({ radioReady: true });
 }
 
@@ -2044,12 +2160,14 @@ const TTY_HINT = {
   JTTY: 'Type your text and press Send (or Enter). Received JTTY appears above; tap a line to transmit on its frequency. The radio is on USB with DATA MODE on.',
   OLIVIA:
     'Type your text and press Send (or Enter). Olivia 8/250 sends about 1.5 characters a second. Received text appears above; click the spectrum to set the centre frequency (the receiver searches 125 Hz either side). The radio is on USB with DATA MODE on.',
+  VARA:
+    'VARA chat, as VARA Chat and VarAC (basic QSOs). Call CQ, or enter a callsign and press Connect. Once connected, type a line and press Send (or Enter); the modem resends anything lost. The radio is on USB with DATA MODE on, and the server keys PTT itself while VARA is selected.',
   HELL:
     'Type your text and press Send (or Enter). Feld-Hell sends about 2.5 characters a second, drawn rather than coded. Received signals are painted in the scope as they arrive, and the text read from the picture appears below it (on weak signals, trust the picture). Click the spectrum on a signal to set the tone. The radio is on USB with DATA MODE on.',
 };
-const TTY_PLACEHOLDER = { RTTY: 'CQ CQ DE VK2IO K', JTTY: 'CQ VK2IO CQ', OLIVIA: 'CQ CQ CQ DE VK2IO VK2IO K', HELL: 'CQ CQ DE VK2IO VK2IO K' };
-const TTY_MAX_CHARS = { RTTY: 200, JTTY: 80, OLIVIA: 300, HELL: 400 }; // Olivia/Feld-Hell: match OLIVIA_MAX_CHARS/HELL_MAX_CHARS in audio/tty-bridge.js
-const TTY_CHIP_LABEL = { RTTY: 'RTTY', JTTY: 'JTTY', OLIVIA: 'Olivia', HELL: 'Feld-Hell' };
+const TTY_PLACEHOLDER = { RTTY: 'CQ CQ DE VK2IO K', JTTY: 'CQ VK2IO CQ', OLIVIA: 'CQ CQ CQ DE VK2IO VK2IO K', VARA: 'Connect first, then type here', HELL: 'CQ CQ DE VK2IO VK2IO K' };
+const TTY_MAX_CHARS = { RTTY: 200, JTTY: 80, OLIVIA: 300, VARA: 1000, HELL: 400 }; // Olivia/Feld-Hell: match OLIVIA_MAX_CHARS/HELL_MAX_CHARS in audio/tty-bridge.js; VARA: REQUEST.VARA's limit
+const TTY_CHIP_LABEL = { RTTY: 'RTTY', JTTY: 'JTTY', OLIVIA: 'Olivia', VARA: 'VARA', HELL: 'Feld-Hell' };
 const TTY_FREQ_LABEL = { JTTY: 'TX audio', OLIVIA: 'Centre', HELL: 'Tone' };
 const TTY_FREQ_RANGE = { JTTY: [200, 2800], OLIVIA: [OLIVIA_MIN_CENTRE_HZ, OLIVIA_MAX_CENTRE_HZ], HELL: [HELL_MIN_TONE_HZ, HELL_MAX_TONE_HZ] };
 const TTY_FREQ_ARIA = {
@@ -2060,7 +2178,7 @@ const TTY_FREQ_ARIA = {
 
 /** The CQ text the composer starts a TTY session with (empty if STATION_CALLSIGN isn't configured). */
 function ttyDefaultText(mode) {
-  if (!stationCallsign) return '';
+  if (!stationCallsign || mode === 'VARA') return ''; // VARA: CQ is a button, and the text box is for the QSO
   if (mode === 'JTTY') return `CQ ${stationCallsign} CQ`;
   if (mode === 'OLIVIA') return `CQ CQ CQ DE ${stationCallsign} ${stationCallsign} K`;
   return `CQ CQ DE ${stationCallsign} ${stationCallsign} K`;
@@ -2084,6 +2202,7 @@ function updateTtyUi() {
   ttyFreqLabelEl.hidden = !freqMode;
   jttyRxEl.hidden = mode !== 'JTTY';
   oliviaRxEl.hidden = mode !== 'OLIVIA';
+  varaRxEl.hidden = mode !== 'VARA';
   hellRxEl.hidden = mode !== 'HELL';
   // JTTY, Olivia and Feld-Hell show the 0-3 kHz audio spectrum (like FT8/FT4), so the RF span buttons don't apply.
   scopeSpansEl.hidden = ft8Active || wsprActive || freqMode || sstvActive || faxActive || easypalActive;
@@ -2122,10 +2241,13 @@ function updateTtyUi() {
   } else if (wsprActive) scopeDisplay.setQsoFreq(wsprStatus?.txHz ?? 1500);
   else if (!ft8Active) scopeDisplay.setQsoFreq(null);
 
-  // RTTY and JTTY only carry capitals, so the box shows text that way; Olivia
-  // and Feld-Hell send exactly what is typed (fldigi's Feld-Hell font draws
+  // RTTY and JTTY only carry capitals, so the box shows text that way; Olivia,
+  // VARA and Feld-Hell send exactly what is typed (fldigi's Feld-Hell font draws
   // most, not all, lower-case letters as capitals), so it must show the real case.
-  ttyInputEl.classList.toggle('tty-composer__input--as-typed', mode === 'OLIVIA' || mode === 'HELL');
+  ttyInputEl.classList.toggle('tty-composer__input--as-typed', mode === 'OLIVIA' || mode === 'VARA' || mode === 'HELL');
+  // VARA sends only within a QSO.
+  if (mode === 'VARA') ttySendBtn.disabled = varaStatus?.state !== 'connected';
+  else if (ttyShownMode === 'VARA') ttySendBtn.disabled = false;
   if (mode !== null) {
     pttBtn.hidden = true;
     pttHintEl.textContent = TTY_HINT[mode];
@@ -2231,6 +2353,15 @@ function sendTty() {
   }
   const text = ttyInputEl.value.trim();
   if (!text) return;
+  if (mode === 'VARA') {
+    link
+      .request('vara', { action: 'send', text })
+      .then(() => {
+        if (ttyInputEl.value.trim() === text) ttyInputEl.value = '';
+      })
+      .catch((err) => showError(`Couldn't send: ${err.message}`));
+    return;
+  }
   const request = { mode, text };
   if (mode === 'JTTY' || mode === 'OLIVIA' || mode === 'HELL') {
     const freqHz = Number(ttyFreqEl.value);
@@ -2304,7 +2435,7 @@ function appendRxText(box, text, { own = false } = {}) {
   const stick = box.scrollTop + box.clientHeight >= box.scrollHeight - 8;
   const clean = text.replace(/\r\n?/g, '\n');
   let last = box.lastElementChild;
-  if (!last || last.classList.contains('olivia-rx__own') !== own) {
+  if (!last || last.classList.contains('olivia-rx__own') !== own || last.classList.contains('vara-rx__note')) {
     if (own && box.textContent && !box.textContent.endsWith('\n')) box.appendChild(document.createTextNode('\n'));
     last = document.createElement('span');
     if (own) last.className = 'olivia-rx__own';
@@ -2348,6 +2479,116 @@ link.addEventListener('olivia-text', (event) => {
 });
 oliviaTuneBtn.addEventListener('click', () => {
   setOliviaCentre(ttyFreqByMode.OLIVIA + oliviaLastOffsetHz);
+});
+
+// --- VARA chat ---
+// The server runs the modem (server/vara-bridge.js); this page shows its
+// state (EVENT.VARA_STATUS, also in the connect snapshot), the
+// conversation (EVENT.VARA_TEXT) and the stations heard calling CQ, and
+// sends the operator's requests (REQUEST.VARA).
+
+/** A line from PiRO about the link ("Connected to VK3ABC"), set apart from the conversation. */
+function appendVaraNote(text) {
+  const stick = varaRxTextEl.scrollTop + varaRxTextEl.clientHeight >= varaRxTextEl.scrollHeight - 8;
+  if (varaRxTextEl.textContent && !varaRxTextEl.textContent.endsWith('\n')) varaRxTextEl.appendChild(document.createTextNode('\n'));
+  const note = document.createElement('span');
+  note.className = 'vara-rx__note';
+  note.textContent = text;
+  varaRxTextEl.appendChild(note);
+  if (stick) varaRxTextEl.scrollTop = varaRxTextEl.scrollHeight;
+}
+
+function appendVaraSegment({ text, own, note }) {
+  if (note) appendVaraNote(text);
+  else appendRxText(varaRxTextEl, text, { own: !!own });
+}
+
+link.addEventListener('vara-text', (event) => {
+  const u = event.detail;
+  if (!u) return;
+  if (u.replace) {
+    varaRxTextEl.replaceChildren();
+    for (const seg of u.segments || []) appendVaraSegment(seg);
+    return;
+  }
+  if (typeof u.text === 'string') appendVaraSegment(u);
+});
+
+/** Shows the modem's state: the status line, Connect/Disconnect, CQ, the heard list and the Send button. */
+function renderVaraStatus(v) {
+  varaStatus = v || null;
+  if (!v) {
+    varaStatusEl.textContent = 'not available (the server has no audio set up)';
+    varaConnectBtn.disabled = true;
+    varaCqBtn.disabled = true;
+    return;
+  }
+  const st = v.state;
+  let text;
+  if (!v.available) text = v.reason || 'VARA is not available on this server.';
+  else if (st === 'off') text = 'off';
+  else if (st === 'starting') text = 'starting…';
+  else if (st === 'calling') text = `calling ${v.peer}…`;
+  else if (st === 'disconnecting') text = `ending the QSO with ${v.peer}…`;
+  else if (st === 'connected') {
+    const bits = [`QSO with ${v.peer}`];
+    if (Number.isFinite(v.sn)) bits.push(`S/N ${v.sn.toFixed(1)} dB`);
+    if (v.bitrate) bits.push(`${v.bitrate} bps`);
+    if (v.buffer) bits.push(`${v.buffer} bytes to send`);
+    text = bits.join(' · ');
+  } else text = v.pending ? 'someone is calling…' : `listening (${v.bw} Hz)${v.busy ? ' · channel busy' : ''}`;
+  if (v.ptt) text += ' · transmitting';
+  varaStatusEl.textContent = text;
+  const inQso = st === 'calling' || st === 'connected' || st === 'disconnecting';
+  varaConnectBtn.textContent = st === 'calling' ? 'Stop' : inQso ? 'Disconnect' : 'Connect';
+  varaConnectBtn.classList.toggle('chip--active', inQso);
+  varaConnectBtn.disabled = !v.available || st === 'off' || st === 'starting';
+  varaCqBtn.disabled = !v.available || st !== 'listening';
+  if (inQso && v.peer && document.activeElement !== varaCallEl) varaCallEl.value = v.peer;
+  varaHeardEl.replaceChildren();
+  varaHeardEl.hidden = !v.heard?.length;
+  if (v.heard?.length) {
+    const label = document.createElement('span');
+    label.className = 'vara-rx__heard-label';
+    label.textContent = 'CQ heard:';
+    varaHeardEl.appendChild(label);
+    for (const h of v.heard) {
+      const b = document.createElement('button');
+      b.type = 'button';
+      b.className = 'chip vara-rx__heard-call';
+      b.textContent = h.call;
+      b.title = `${h.call} called CQ at ${utcClock(h.time)} UTC${h.bw ? ` (${h.bw} Hz)` : ''}. Tap to put the call in the box.`;
+      b.addEventListener('click', () => {
+        varaCallEl.value = h.call;
+      });
+      varaHeardEl.appendChild(b);
+    }
+  }
+  if (ttyMode() === 'VARA') ttySendBtn.disabled = st !== 'connected';
+}
+
+link.addEventListener('vara-status', (event) => renderVaraStatus(event.detail));
+
+varaConnectBtn.addEventListener('click', () => {
+  const st = varaStatus?.state;
+  if (st === 'calling' || st === 'connected' || st === 'disconnecting') {
+    link.request('vara', { action: 'disconnect' }).catch((err) => showError(`VARA: ${err.message}`));
+    return;
+  }
+  const call = varaCallEl.value.trim().toUpperCase();
+  if (!call) {
+    varaCallEl.focus();
+    return;
+  }
+  link.request('vara', { action: 'connect', call }).catch((err) => showError(`VARA: ${err.message}`));
+});
+varaCallEl.addEventListener('keydown', (event) => {
+  if (event.key !== 'Enter' || event.isComposing) return;
+  event.preventDefault();
+  if (!varaConnectBtn.disabled && varaStatus?.state === 'listening') varaConnectBtn.click();
+});
+varaCqBtn.addEventListener('click', () => {
+  link.request('vara', { action: 'cq' }).catch((err) => showError(`VARA: ${err.message}`));
 });
 
 // --- SSTV receive ---

@@ -1,0 +1,10 @@
+[package]
+name = "xara-ui-shim"
+version = "0.1.1"
+edition = "2024"
+license = "MIT"
+publish = false
+description = "The one type Xara's station code uses from xara-ui (telemetry::Link), without the web UI"
+
+[lib]
+path = "src/lib.rs"
