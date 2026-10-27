@@ -4,6 +4,7 @@ const path = require('path');
 const { Worker } = require('worker_threads');
 const { EVENT } = require('./protocol');
 const { ensureDataMode, watchDataMode } = require('../civ/data-mode-guard');
+const { CALLSIGN_RE: PSK_CALLSIGN_RE } = require('../audio/psk-reporter');
 
 const RATE = 48000; // Xara's (and VARA's) sample rate
 const BANDWIDTHS = [500, 2300, 2750];
@@ -14,6 +15,8 @@ const IDLE_MS = 10 * 60 * 1000; // a link with nothing sent or received this lon
 const MAX_BACKLOG_SEC = 1; // the modem must keep up with real time, or its timing fails
 const TRANSCRIPT_MAX_CHARS = 6000;
 const HEARD_MAX = 10;
+const SPOT_SN_MS = 2000; // the modem reports a frame's S/N just before the frame (a CQ, a connection)
+const SIGNAL_CENTRE_HZ = 1500; // VARA HF is centred on 1500 Hz audio: the spot frequency is dial + this
 const CALLSIGN_RE = /^[A-Z0-9]{1,3}[0-9][A-Z0-9]{0,4}(\/[A-Z0-9]{1,4})?(-[0-9]{1,2})?$/;
 
 /** The VARA settings from the environment (VARA_BW, VARA_AUDIO_LATENCY_MS). Bad values are reported and the default used. */
@@ -88,11 +91,12 @@ class VaraBridge {
    * @param {number} [opts.maxKeyMs=30000]
    * @param {number} [opts.idleMs=600000]
    * @param {() => object} [opts.createWorker] - injectable for testing
+   * @param {{addSpot: Function}} [opts.pskReporter] - where "PSK Spot" reports go (the FT8 bridge's PskReporterClient); none, no spots
    * @param {() => number} [opts.now]
    * @param {number} [opts.dataSettleMs]
    * @param {number} [opts.dataWatchMs]
    */
-  constructor({ controlServer, audioBridge, callsign, bw = 500, latencyMs = DEFAULT_LATENCY_MS, leadMs = DEFAULT_LEAD_MS, driveDb = -5, maxKeyMs = MAX_KEY_MS, idleMs = IDLE_MS, createWorker, now, dataSettleMs, dataWatchMs } = {}) {
+  constructor({ controlServer, audioBridge, callsign, bw = 500, latencyMs = DEFAULT_LATENCY_MS, leadMs = DEFAULT_LEAD_MS, driveDb = -5, maxKeyMs = MAX_KEY_MS, idleMs = IDLE_MS, createWorker, pskReporter, now, dataSettleMs, dataWatchMs } = {}) {
     if (!controlServer) throw new Error('VaraBridge requires opts.controlServer');
     if (!audioBridge) throw new Error('VaraBridge requires opts.audioBridge');
     this.controlServer = controlServer;
@@ -105,6 +109,7 @@ class VaraBridge {
     this.maxKeyMs = maxKeyMs;
     this.idleMs = idleMs;
     this.createWorker = createWorker ?? (() => new Worker(path.join(__dirname, '..', 'audio', 'vara-worker.js')));
+    this.pskReporter = pskReporter ?? null;
     this.now = now ?? Date.now;
     this.dataSettleMs = dataSettleMs;
     this.dataWatchMs = dataWatchMs;
@@ -128,6 +133,7 @@ class VaraBridge {
     this._transcript = []; // [{text, own?, note?}]
     this._transcriptChars = 0;
     this._warnedKey = false;
+    this._lastSn = null; // {sn, time}: the modem's latest S/N report
 
     controlServer.state.vara = this._freshState();
 
@@ -403,7 +409,9 @@ class VaraBridge {
       case 'CONNECTED': {
         const [caller, answerer, width] = rest;
         const peer = caller === this.callsign ? answerer : caller;
-        this._update({ state: 'connected', peer, linkBw: Number(width) || null, pending: false });
+        const sn = this._takeSn();
+        this._update({ state: 'connected', peer, linkBw: Number(width) || null, pending: false, ...(sn != null ? { sn } : {}) });
+        this._spot(peer, sn);
         this._addText(`Connected to ${peer}${Number(width) ? ` (${width} Hz)` : ''}\n`, { note: true });
         this._touch();
         break;
@@ -426,9 +434,13 @@ class VaraBridge {
       case 'BUSY':
         this._update({ busy: rest[0] === 'ON' });
         break;
-      case 'SN':
-        this._update({ sn: Number(rest[0]) });
+      case 'SN': {
+        const sn = Number(rest[0]);
+        this._lastSn = Number.isFinite(sn) ? { sn, time: this.now() } : null;
+        // Outside a QSO it is the S/N of a CQ or a call just heard, not of a link.
+        if (this.state.state === 'connected') this._update({ sn });
         break;
+      }
       case 'BITRATE': {
         // "BITRATE (level)  bps TX|RX"
         const bps = Number(rest.find((v) => /^\d+$/.test(v)));
@@ -441,7 +453,9 @@ class VaraBridge {
       case 'CQFRAME': {
         const [call, bw] = rest;
         if (!call) break;
-        const heard = [{ call, bw: Number(bw) || null, time: this.now() }, ...this.state.heard.filter((h) => h.call !== call)].slice(0, HEARD_MAX);
+        const sn = this._takeSn();
+        const heard = [{ call, bw: Number(bw) || null, sn, time: this.now() }, ...this.state.heard.filter((h) => h.call !== call)].slice(0, HEARD_MAX);
+        this._spot(call, sn);
         this.state.heard = heard;
         this.controlServer.broadcastJsonEvent(EVENT.VARA_STATUS, this.state);
         this._addText(`CQ from ${call}${Number(bw) ? ` (${bw} Hz)` : ''}\n`, { note: true });
@@ -450,6 +464,27 @@ class VaraBridge {
       default:
         break; // IAMALIVE, REGISTERED, LINK (UN)REGISTERED, ENCRYPTION DISABLED, VERSION ...
     }
+  }
+
+  /** The S/N the modem reported just now, for the frame that came with it (once), or null. */
+  _takeSn() {
+    const l = this._lastSn;
+    this._lastSn = null;
+    return l && this.now() - l.time <= SPOT_SN_MS ? l.sn : null;
+  }
+
+  /**
+   * "PSK Spot": reports a station heard (a CQ, or the station connected to)
+   * to pskreporter.info, as FT8 does, when the PSK Spot box is ticked. The
+   * frequency is the dial plus VARA's 1500 Hz centre. Needs the frame's S/N.
+   */
+  _spot(call, sn) {
+    if (!this.pskReporter || !this.controlServer.state.pskSpotEnabled || sn == null) return;
+    const base = String(call || '').replace(/-\d+$/, ''); // no SSID
+    if (!PSK_CALLSIGN_RE.test(base)) return;
+    const dialHz = this.controlServer.state.frequency;
+    if (!Number.isFinite(dialHz) || dialHz <= 0) return;
+    this.pskReporter.addSpot({ call: base, grid: null, freqHz: dialHz + SIGNAL_CENTRE_HZ, snr: sn, mode: 'VARA', timeSec: Math.floor(this.now() / 1000) });
   }
 
   async _key() {

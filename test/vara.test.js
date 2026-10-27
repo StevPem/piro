@@ -287,6 +287,28 @@ async function main() {
     check(w.terminated && w.commands().at(-1) === 'ABORT' && s.controlServer.state.vara.state === 'off', "'vara-active' false: ABORT and the worker ended");
   }
   {
+    // PSK Spot: stations heard (a CQ, the station connected to) go to PSK Reporter, with the S/N reported just before.
+    const w = new StubWorker();
+    const spots = [];
+    const s = station('VK3TR', { bridge: { createWorker: () => w, pskReporter: { addSpot: (x) => spots.push(x) } } });
+    s.controlServer.state.frequency = 14105000;
+    s.controlServer.state.pskSpotEnabled = true;
+    await s.bridge.activate();
+    w.emit('message', { type: 'lines', lines: ['SN 6.4', 'CQFRAME VK3ABC 500'] });
+    check(spots.length === 1 && spots[0].call === 'VK3ABC' && spots[0].freqHz === 14106500 && spots[0].snr === 6.4 && spots[0].mode === 'VARA', 'PSK Spot: a CQ heard is spotted at dial + 1500 Hz with its S/N, mode VARA');
+    check(s.controlServer.state.vara.heard[0].sn === 6.4 && s.controlServer.state.vara.sn === null, "the heard list keeps the CQ's S/N (the link S/N stays empty outside a QSO)");
+    w.emit('message', { type: 'lines', lines: ['CQFRAME VK3XYZ 500'] });
+    check(spots.length === 1, 'no spot without an S/N for the frame');
+    s.controlServer.state.pskSpotEnabled = false;
+    w.emit('message', { type: 'lines', lines: ['SN 3', 'CQFRAME VK4ZZZ 500'] });
+    check(spots.length === 1, 'no spots with PSK Spot off');
+    s.controlServer.state.pskSpotEnabled = true;
+    w.emit('message', { type: 'lines', lines: ['SN -2.5', 'CONNECTED VK2ABC-7 VK3TR 500'] });
+    check(spots.length === 2 && spots[1].call === 'VK2ABC' && spots[1].snr === -2.5, 'the station connected to is spotted (without its SSID)');
+    check(s.controlServer.state.vara.sn === -2.5, 'and its S/N shows as the link S/N');
+    await s.bridge.stop();
+  }
+  {
     // DATA mode can't be confirmed: receive, but never key.
     const w = new StubWorker();
     const s = station('VK3TR', { civ: new StubCiv({ dataModeWorks: false }), bridge: { createWorker: () => w } });

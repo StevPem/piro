@@ -512,6 +512,9 @@ const varaStatusEl = document.getElementById('vara-status');
 const varaCallEl = document.getElementById('vara-call');
 const varaConnectBtn = document.getElementById('vara-connect-btn');
 const varaCqBtn = document.getElementById('vara-cq-btn');
+const varaQsydBtn = document.getElementById('vara-qsyd-btn');
+const varaQsyuBtn = document.getElementById('vara-qsyu-btn');
+const VARA_QSY_STEP_HZ = 750; // VarAC's slot spacing
 const varaHeardEl = document.getElementById('vara-heard');
 const cwPaddleEl = document.getElementById('cw-paddle');
 const cwDotBtn = document.getElementById('cw-dot-btn');
@@ -1236,6 +1239,7 @@ function updateFrequencyDisplay(hz) {
   if (ft8Active) checkFt8BandChange(hz);
   if (wsprActive) checkWsprBandChange(hz);
   if (faxActive) renderFaxStations();
+  if (varaActive && varaStatus) renderVaraStatus(varaStatus); // the offset from the calling frequency
 }
 
 function beginFreqEdit() {
@@ -2211,6 +2215,9 @@ function updateTtyUi() {
   jttyRxEl.hidden = mode !== 'JTTY';
   oliviaRxEl.hidden = mode !== 'OLIVIA';
   varaRxEl.hidden = mode !== 'VARA';
+  // "PSK Spot" (the FT8 one, the same setting) also reports VARA stations heard.
+  const pskSpotToggle = document.querySelector('.psk-spot-toggle'); // made further down this file
+  if (pskSpotToggle) pskSpotToggle.hidden = !(ft8Active || mode === 'VARA');
   hellRxEl.hidden = mode !== 'HELL';
   // JTTY, Olivia and Feld-Hell show the 0-3 kHz audio spectrum (like FT8/FT4), so the RF span buttons don't apply.
   scopeSpansEl.hidden = ft8Active || wsprActive || freqMode || sstvActive || faxActive || easypalActive;
@@ -2530,6 +2537,8 @@ function renderVaraStatus(v) {
     varaStatusEl.textContent = 'not running on the server (needs audio set up; restart PiRO after updating)';
     varaConnectBtn.disabled = true;
     varaCqBtn.disabled = true;
+    varaQsydBtn.disabled = true;
+    varaQsyuBtn.disabled = true;
     return;
   }
   const st = v.state;
@@ -2546,6 +2555,13 @@ function renderVaraStatus(v) {
     if (v.buffer) bits.push(`${v.buffer} bytes to send`);
     text = bits.join(' · ');
   } else text = v.pending ? 'someone is calling…' : `listening (${v.bw} Hz)${v.busy ? ' · channel busy' : ''}`;
+  // Off the band's calling frequency (after QSYD/QSYU, say): by how much.
+  const band = currentFreqHz != null ? bandNameForFrequency(currentFreqHz) : null;
+  const cf = band ? VARA_FREQUENCIES[band] : null;
+  if (cf && currentFreqHz !== cf && Math.abs(currentFreqHz - cf) <= 10000) {
+    const d = (currentFreqHz - cf) / 1000;
+    text += ` · calling freq ${d > 0 ? '+' : '−'}${Math.round(Math.abs(d) * 1000) / 1000} kHz`;
+  }
   if (v.ptt) text += ' · transmitting';
   varaStatusEl.textContent = text;
   const inQso = st === 'calling' || st === 'connected' || st === 'disconnecting';
@@ -2553,6 +2569,8 @@ function renderVaraStatus(v) {
   varaConnectBtn.classList.toggle('chip--active', inQso);
   varaConnectBtn.disabled = !v.available || st === 'off' || st === 'starting';
   varaCqBtn.disabled = !v.available || st !== 'listening';
+  // QSY moves only this radio, so not during a QSO (the link would be lost).
+  varaQsydBtn.disabled = varaQsyuBtn.disabled = !v.available || st === 'off' || st === 'starting' || inQso;
   if (inQso && v.peer && document.activeElement !== varaCallEl) varaCallEl.value = v.peer;
   varaHeardEl.replaceChildren();
   varaHeardEl.hidden = !v.heard?.length;
@@ -2566,7 +2584,7 @@ function renderVaraStatus(v) {
       b.type = 'button';
       b.className = 'chip vara-rx__heard-call';
       b.textContent = h.call;
-      b.title = `${h.call} called CQ at ${utcClock(h.time)} UTC${h.bw ? ` (${h.bw} Hz)` : ''}. Tap to put the call in the box.`;
+      b.title = `${h.call} called CQ at ${utcClock(h.time)} UTC${h.bw ? ` (${h.bw} Hz)` : ''}${Number.isFinite(h.sn) ? `, S/N ${h.sn.toFixed(1)} dB` : ''}. Tap to put the call in the box.`;
       b.addEventListener('click', () => {
         varaCallEl.value = h.call;
       });
@@ -2599,6 +2617,18 @@ varaCallEl.addEventListener('keydown', (event) => {
 varaCqBtn.addEventListener('click', () => {
   link.request('vara', { action: 'cq' }).catch((err) => showError(`VARA: ${err.message}`));
 });
+
+/** QSYD / QSYU: moves the radio one VarAC slot (750 Hz) down or up. */
+function varaQsy(direction) {
+  if (currentFreqHz == null) return;
+  const hz = currentFreqHz + direction * VARA_QSY_STEP_HZ;
+  link
+    .request('setFrequency', { value: hz })
+    .then(() => updateFrequencyDisplay(hz))
+    .catch((err) => showError(`Couldn't QSY: ${err.message}`));
+}
+varaQsydBtn.addEventListener('click', () => varaQsy(-1));
+varaQsyuBtn.addEventListener('click', () => varaQsy(1));
 
 // --- SSTV receive ---
 // While a picture comes in, its lines are drawn into the canvas as they
@@ -4498,7 +4528,7 @@ function setFt8UiVisible(active) {
   const filterControl = FUNCTION_CONTROLS.find((c) => c.key === 'filter');
   if (filterControl && filterControl.buttonEl) filterControl.buttonEl.hidden = active;
 
-  pskSpotLabel.hidden = !active;
+  pskSpotLabel.hidden = !(active || varaActive);
 
   scopeSpansEl.hidden = active;
 

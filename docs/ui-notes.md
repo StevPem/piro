@@ -4482,3 +4482,31 @@ model for how to approach that.
   their ordinary quick-tune point.
 - Tests: manual-tty-ui.js (in VARA, the 160, 30, 17, 12, 10 and 20 m band
   chips go to these frequencies on USB). Service-worker cache v110.
+
+### VARA: QSYD, QSYU and PSK Spot (v111)
+
+- **QSYD / QSYU**, right of CQ: move the radio 750 Hz down or up (VarAC's
+  slot spacing) with `setFrequency`. Off the band's calling frequency the
+  status line adds "calling freq +1.5 kHz" (redrawn on every frequency
+  change). They are off during a QSO (calling, connected, disconnecting):
+  in VarAC they send a QSY request to the other station and both radios
+  move, but that request is VarAC's own, undocumented message, so here
+  they could move only this radio and the link would be lost. Outside a
+  QSO they reach a VarAC station waiting on a slot.
+- CQ, QSYD and QSYU are one group, so on a narrow phone they wrap together
+  onto a second line under the callsign box and Connect.
+- **PSK Spot:** the FT8 PSK Spot button (`state.pskSpotEnabled`) is also
+  shown in VARA. VaraBridge spots each station heard calling CQ and the
+  station connected to, through the FT8 bridge's PskReporterClient (one
+  sender, one 5-minute batch): mode "VARA", dial + 1500 Hz, the S/N the
+  modem reported just before the frame (xara sends `SN` right before
+  `CQFRAME` and `CONNECTED`; each S/N is used for one frame only, and a
+  frame without one isn't spotted). SSIDs are dropped. The heard list now
+  carries each CQ's S/N, and the link S/N shows only in a QSO (an S/N
+  outside one belongs to a CQ or a call). Not checked on pskreporter.info.
+- Tests: vara.test.js (spots for a CQ and a connection, none without an
+  S/N or with PSK Spot off, SSID dropped), manual-tty-ui.js (button
+  order, QSYU/QSYD and the offset shown, off in a QSO, PSK Spot shown and
+  working in VARA and hidden after). The UI test once failed its meter
+  check "tap: SWR … on receive" (an older timing check, not this change);
+  two reruns passed. Service-worker cache v111.

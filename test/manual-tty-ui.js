@@ -402,6 +402,31 @@ class Civ extends EventEmitter {
       await sleep(150);
       check(civ.freq === hz && civ.mode === 'USB' && server.state.varaActive, `in VARA, the ${band} band chip goes to ${hz / 1e6} MHz USB`);
     }
+    // QSYD / QSYU: one 750 Hz slot down or up; the status line says how far from the calling frequency.
+    await page.waitForFunction(() => !document.getElementById('vara-qsyu-btn').disabled, null, { timeout: 4000 });
+    {
+      const order = await page.locator('.vara-rx__controls input, .vara-rx__controls button').evaluateAll((els) => els.map((e) => e.id));
+      check(order.join(' ') === 'vara-call vara-connect-btn vara-cq-btn vara-qsyd-btn vara-qsyu-btn', 'QSYD and QSYU sit to the right of CQ');
+    }
+    await page.locator('#vara-qsyu-btn').click();
+    await page.waitForFunction(() => /calling freq \+0\.75 kHz$/.test(document.getElementById('vara-status').textContent), null, { timeout: 4000 }).catch(() => {});
+    check(civ.freq === 14105750 && /calling freq \+0\.75 kHz$/.test(await page.locator('#vara-status').textContent()), 'QSYU: up 750 Hz to 14.10575 MHz; status: ' + (await page.locator('#vara-status').textContent()));
+    await page.locator('#vara-qsyd-btn').click();
+    await sleep(150);
+    await page.locator('#vara-qsyd-btn').click();
+    await page.waitForFunction(() => /calling freq −0\.75 kHz$/.test(document.getElementById('vara-status').textContent), null, { timeout: 4000 }).catch(() => {});
+    check(civ.freq === 14104250 && /calling freq −0\.75 kHz$/.test(await page.locator('#vara-status').textContent()), 'QSYD twice: down to 14.10425 MHz, 0.75 kHz below the calling frequency');
+    await page.locator('#vara-qsyu-btn').click();
+    await page.waitForFunction(() => document.getElementById('vara-status').textContent === 'listening (500 Hz)', null, { timeout: 4000 }).catch(() => {});
+    check(civ.freq === 14105000 && (await page.locator('#vara-status').textContent()) === 'listening (500 Hz)', 'back on the calling frequency: no offset shown');
+    // PSK Spot (the FT8 setting) is offered in VARA too
+    check(await vis('.psk-spot-toggle'), 'the PSK Spot button is shown in VARA');
+    await page.locator('#psk-spot-checkbox').click();
+    await sleep(150);
+    check(server.state.pskSpotEnabled === false, 'PSK Spot can be turned off from VARA');
+    await page.locator('#psk-spot-checkbox').click();
+    await sleep(150);
+    check(server.state.pskSpotEnabled === true, 'and on again');
     check((await vis('#vara-rx')) && !(await vis('#olivia-rx')) && !(await vis('#tty-freq')), 'VARA: its panel shown (not Olivia\'s), no frequency box');
     check((await page.locator('#vara-status').textContent()) === 'listening (500 Hz)', 'status: listening (500 Hz)');
     check(await page.locator('#tty-send-btn').isDisabled(), 'Send is off until there is a QSO');
@@ -435,6 +460,7 @@ class Civ extends EventEmitter {
     check(civ.log.filter((e) => e[0] === 'setPtt').at(-1)[1] === false, 'PTT OFF releases it');
     check((await page.locator('#vara-status').textContent()) === 'QSO with K1ABC · S/N 7.5 dB · 245 bps', 'connected: ' + (await page.locator('#vara-status').textContent()));
     check(!(await page.locator('#tty-send-btn').isDisabled()) && (await page.locator('#vara-connect-btn').textContent()) === 'Disconnect', 'Send is on; Connect became Disconnect');
+    check((await page.locator('#vara-qsyd-btn').isDisabled()) && (await page.locator('#vara-qsyu-btn').isDisabled()), 'QSYD and QSYU are off during a QSO (they move only this radio)');
 
     // Text both ways
     w.emit('message', { type: 'data', data: Uint8Array.from(Buffer.from('VK2IO de K1ABC, good morning\r', 'latin1')).buffer });
@@ -476,6 +502,7 @@ class Civ extends EventEmitter {
     check(civ.mode === 'USB' && civ.dataMode === true && civ.log.filter((e) => e[0] === 'setMode' || e[0] === 'setDataMode').length === modeCalls, 'fifth click: Feld-Hell, radio left alone (USB, DATA MODE on)');
     check(server.state.varaActive === false && !vara.active && varaWorkers.at(-1).terminated && server.state.hellActive === true && hellRx.attached, 'VARA modem stopped, Feld-Hell receiver armed');
     check(!(await page.locator('#tty-send-btn').isDisabled()), 'Send is on again for Feld-Hell');
+    check(!(await vis('.psk-spot-toggle')), 'PSK Spot is hidden again outside FT8 and VARA');
     check(civ.log.at(-1)[0] === 'setFrequency' && civ.log.at(-1)[1] === 14062000, 'entering Feld-Hell on 20m puts a 1000 Hz tone on 14.063 MHz (dial 14.062)');
     check(!(await vis('#olivia-rx')) && !(await vis('#vara-rx')) && !(await vis('#jtty-rx')) && (await vis('#hell-rx')) && (await vis('#tty-freq')) && (await page.locator('#tty-freq').inputValue()) === '1000', 'Feld-Hell: its text panel (not Olivia\'s, VARA\'s or JTTY\'s), tone box at 1000 Hz');
     check(/^Tone/.test(await page.locator('#tty-freq-label').textContent()), 'the box is labelled "Tone"');

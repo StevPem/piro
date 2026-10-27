@@ -12,7 +12,7 @@ Hamlib, no separate audio server and no extra apps.
 Written by VK3TR. Licensed AGPL-3.0-only (see
 [Licence](#licence)).
 
-**Current build: v110.** This is the version the app shows next to its title.
+**Current build: v111.** This is the version the app shows next to its title.
 It is the `CACHE_NAME` number in `src/client/sw.js`, which goes up with every
 change to the web app.
 
@@ -889,13 +889,29 @@ before you call.
   users who are listening see it and can connect to you.
 - **Callsign** and **Connect** call a station. While calling, Connect
   reads **Stop**; in a QSO it reads **Disconnect**.
+- **QSYD** and **QSYU**, right of CQ, move the radio 750 Hz down or up
+  (one VarAC slot). Off the calling frequency, the status line says how far
+  ("calling freq +1.5 kHz"). They move only your radio, so they are off
+  during a QSO: VarAC's own QSY requests aren't supported, and moving alone
+  would lose the link. To change frequency in a QSO, agree one in the chat,
+  Disconnect, both QSY, and connect again. They are also how you reach a
+  VarAC station that called CQ and is waiting on a slot: QSY to the slot,
+  then Connect.
 - **CQ heard** lists the stations heard calling CQ, newest first. Tap one
-  to put its call in the callsign box.
+  to put its call in the callsign box. Its tooltip gives the S/N.
 - **The conversation**: received text in white, your own in amber, and
   PiRO's notes about the link ("Connected to VK3ABC (500 Hz)") in grey.
 
 In a QSO, type a line and press **Send** (or Enter). It is sent as one line,
 as VARA Chat sends it.
+
+**PSK Spot.** The FT8 **PSK Spot** button is shown in VARA too (the same
+setting). While it is ticked, stations heard are reported to
+[pskreporter.info](https://pskreporter.info/): each station heard calling
+CQ, and the station you connect to, with the S/N the modem measured, mode
+"VARA", at the dial frequency plus 1500 Hz (VARA's centre). Reports go out
+in a batch every 5 minutes, with FT8's. It needs `STATION_CALLSIGN`. Not
+yet checked on pskreporter.info's map.
 
 **Other stations can call you.** While VARA is selected the modem listens,
 answers a call by itself, and keys the radio. Leave VARA selected only while
@@ -2077,7 +2093,7 @@ shapes.
   snapshot's `vara` and the `vara-status` broadcast (`{available, reason,
   callsign, bw, state: 'off'|'starting'|'listening'|'calling'|'connected'|
   'disconnecting', peer, linkBw, pending, busy, ptt, sn, bitrate, buffer,
-  heard: [{call, bw, time}]}`). The conversation goes out as `vara-text`
+  heard: [{call, bw, sn, time}]}`). The conversation goes out as `vara-text`
   (`{text, own, note, time}`: received text, own text, or a note about the
   link); a page that connects is sent `{replace: true, segments}`, the
   conversation so far.
