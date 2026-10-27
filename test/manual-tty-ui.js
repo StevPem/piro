@@ -462,16 +462,22 @@ class Civ extends EventEmitter {
     check(!(await page.locator('#tty-send-btn').isDisabled()) && (await page.locator('#vara-connect-btn').textContent()) === 'Disconnect', 'Send is on; Connect became Disconnect');
     check((await page.locator('#vara-qsyd-btn').isDisabled()) && (await page.locator('#vara-qsyu-btn').isDisabled()), 'QSYD and QSYU are off during a QSO (they move only this radio)');
 
+    // VarAC: each side opens with "de CALL <R..>", in length-prefixed messages
+    const sentText = () => w.sent.filter((m) => m.type === 'send').map((m) => Buffer.from(m.data).toString('utf8'));
+    check(sentText()[0] === '15 de VK2IO <R+08>', 'on connecting, VarAC\'s opening report goes out: ' + JSON.stringify(sentText()[0]));
+    const varacMsg = (t) => { const b = Buffer.from(t, 'utf8'); return Buffer.concat([Buffer.from(`${b.length} `), b]); };
+    w.emit('message', { type: 'data', data: Uint8Array.from(Buffer.concat([varacMsg('de K1ABC <R-03>'), varacMsg('<NAME:Bob>')])).buffer });
+    await page.waitForFunction(() => /K1ABC reports your signal at -3 dB/.test(document.getElementById('vara-rx-text').textContent), null, { timeout: 4000 }).catch(() => {});
+    check(/K1ABC reports your signal at -3 dB\nK1ABC name Bob\n/.test(await page.locator('#vara-rx-text').textContent()), 'their opening report and name are shown in words, as notes');
     // Text both ways
-    w.emit('message', { type: 'data', data: Uint8Array.from(Buffer.from('VK2IO de K1ABC, good morning\r', 'latin1')).buffer });
+    w.emit('message', { type: 'data', data: Uint8Array.from(varacMsg('VK2IO de K1ABC, good morning')).buffer });
     await page.waitForFunction(() => document.getElementById('vara-rx-text').textContent.includes('VK2IO de K1ABC, good morning\n'), null, { timeout: 4000 });
     check(true, 'received text appears in the conversation');
     check(await bFollows(() => document.getElementById('vara-rx-text').textContent.includes('good morning')), 'and in the second browser');
     await page.locator('#tty-input').fill('Good morning, name Ian, QTH Sydney');
     await page.locator('#tty-input').press('Enter');
     await page.waitForFunction(() => document.getElementById('tty-input').value === '', null, { timeout: 4000 });
-    const sent = w.sent.filter((m) => m.type === 'send').map((m) => Buffer.from(m.data).toString('latin1'));
-    check(sent.length === 1 && sent[0] === 'Good morning, name Ian, QTH Sydney\r', 'Enter sends the line to the modem, ending in CR; the box is cleared');
+    check(sentText().length === 2 && sentText()[1] === '34 Good morning, name Ian, QTH Sydney', 'Enter sends the line as a VarAC message; the box is cleared');
     check((await page.locator('#vara-rx-text .olivia-rx__own').last().textContent()).includes('Good morning, name Ian'), 'own line shown in the conversation, marked as own');
     if (process.env.VARA_SHOT) await page.locator('#vara-rx').screenshot({ path: process.env.VARA_SHOT });
 
@@ -487,10 +493,31 @@ class Civ extends EventEmitter {
 
     await page.locator('#vara-connect-btn').click();
     await sleep(100);
-    check(cmds().at(-1) === 'DISCONNECT', 'Disconnect: the modem ends the QSO');
+    check(sentText().at(-1) === '6 <DISC>' && cmds().at(-1) !== 'DISCONNECT', "Disconnect: VarAC's <DISC> goes first");
+    w.emit('message', { type: 'buffer', bytes: 8 });
+    w.emit('message', { type: 'buffer', bytes: 0 });
+    await sleep(50);
+    check(cmds().at(-1) === 'DISCONNECT', 'then, once it has gone, the modem ends the QSO');
     say('OK', 'DISCONNECTED');
     await page.waitForFunction(() => document.getElementById('vara-status').textContent === 'listening (500 Hz)', null, { timeout: 4000 });
     check(/Disconnected from K1ABC/.test(await page.locator('#vara-rx-text').textContent()) && (await page.locator('#tty-send-btn').isDisabled()), 'back to listening; noted; Send off');
+
+    // A VarAC CQ waiting on slot 11 (750 Hz up): tap it, Connect moves there and calls the plain callsign; back afterwards.
+    say('SN 3', 'CQFRAME F6JON-11 500');
+    await page.waitForFunction(() => document.querySelector('#vara-heard .vara-rx__heard-call')?.textContent === 'F6JON +750', null, { timeout: 4000 }).catch(() => {});
+    check((await page.locator('#vara-heard .vara-rx__heard-call').first().textContent()) === 'F6JON +750', 'a VarAC CQ is listed with its slot: "F6JON +750"');
+    check(/CQ from F6JON \(waiting \+750 Hz from the calling frequency \(slot 11\), 500 Hz\)/.test(await page.locator('#vara-rx-text').textContent()), 'and noted with its slot');
+    await page.locator('#vara-heard .vara-rx__heard-call').first().click();
+    check((await page.locator('#vara-call').inputValue()) === 'F6JON', 'tapping it puts the plain callsign in the box');
+    await page.locator('#vara-connect-btn').click();
+    await page.waitForFunction(() => document.getElementById('vara-connect-btn').textContent === 'Stop', null, { timeout: 4000 }).catch(() => {});
+    check(civ.freq === 14105750 && cmds().at(-1) === 'CONNECT VK2IO F6JON', 'Connect moves 750 Hz up to the slot, then calls F6JON');
+    say('OK', 'DISCONNECTED');
+    await page.waitForFunction(() => document.getElementById('vara-status').textContent === 'listening (500 Hz)', null, { timeout: 4000 }).catch(() => {});
+    check(civ.freq === 14105000 && /No answer from F6JON/.test(await page.locator('#vara-rx-text').textContent()), 'no answer: back to the calling frequency');
+    say('CQFRAME N1AMD-9 500');
+    await page.waitForFunction(() => [...document.querySelectorAll('#vara-heard .vara-rx__heard-call')].some((b) => b.textContent === 'N1AMD beacon'), null, { timeout: 4000 }).then(() => check(true, 'a -9 is listed as a beacon'), () => check(false, 'a -9 is listed as a beacon'));
+    if (process.env.VARA_HEARD_SHOT) await page.locator('#vara-rx').screenshot({ path: process.env.VARA_HEARD_SHOT });
   }
 
   // click 5 -> Feld-Hell
@@ -1078,7 +1105,8 @@ class Civ extends EventEmitter {
     const sTx = await hold(async () => [await title(), await value(), (await legend())[3]]);
     check(sTx[0] === 'S-meter' && sTx[1] === 'SWR 2.0' && sTx[2] === '2', `S-meter mode while transmitting shows SWR, as before (${sTx.join(', ')})`);
     await page.locator('#meter-mode').click();
-    await sleep(100);
+    // The release reaches this page as a PTT event; on a busy machine that can take more than the 300 ms above.
+    await page.waitForFunction(() => document.getElementById('meter-value').textContent === 'on transmit', null, { timeout: 3000 }).catch(() => {});
     check((await title()) === 'SWR' && (await legend()).filter(Boolean).join(' ') === '1.5 2 2.5 3 4 5' && (await value()) === 'on transmit', `tap: SWR, legend ${(await legend()).filter(Boolean).join(' ')}, "${await value()}" on receive`);
     const swrTx = await hold(async () => {
       if (process.env.METER_SWR_SHOT) await page.locator('.meter').screenshot({ path: process.env.METER_SWR_SHOT });

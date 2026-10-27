@@ -634,7 +634,10 @@ async function main() {
       const cfg = varaConfig(process.env);
       for (const w of cfg.warnings) console.warn(w);
       // PSK Spot reports share the FT8 bridge's PSK Reporter client (one sender, one 5-minute batch).
-      varaBridge = new VaraBridge({ controlServer, audioBridge, callsign: STATION_CALLSIGN || '', bw: cfg.bw, latencyMs: cfg.latencyMs, pskReporter: ft8Bridge.pskReporter });
+      // VARA_NAME and VARA_QTH (and STATION_GRID as the locator) go to the
+      // other station after the opening report, as VarAC's profile does.
+      const profile = { name: process.env.VARA_NAME, qth: process.env.VARA_QTH, loc: STATION_GRID };
+      varaBridge = new VaraBridge({ controlServer, audioBridge, callsign: STATION_CALLSIGN || '', bw: cfg.bw, latencyMs: cfg.latencyMs, pskReporter: ft8Bridge.pskReporter, profile });
       varaBridge.start();
       console.log(varaBridge.unavailable ? `VARA chat unavailable: ${varaBridge.unavailable}` : `VARA chat ready (${cfg.bw} Hz; runs while VARA is selected).`);
     }

@@ -1306,6 +1306,11 @@ button {
   font-family: var(--font-mono);
 }
 
+/* A VarAC CQ's slot offset ("+750"), or "beacon". */
+.vara-rx__heard-slot {
+  color: var(--text-muted);
+}
+
 /* PiRO's own lines about the link ("Connected to VK3ABC"). */
 .vara-rx__note {
   color: var(--text-muted);

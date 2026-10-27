@@ -638,6 +638,11 @@ let hellUsbSeen = false;
 let varaActive = false;
 let varaUsbSeen = false;
 let varaStatus = null; // the server's state.vara (EVENT.VARA_STATUS)
+// Answering a VarAC CQ: its caller waits on a slot (the CQ's callsign suffix) for about 2 minutes.
+const VARAC_SLOT_WAIT_MS = 120 * 1000;
+let varaAnswer = null; // {call, offsetHz, time}: the heard CQ last tapped
+let varaReturnHz = null; // where to go back to when a QSO started on a slot ends
+let varaShownState = null;
 const ttyFreqByMode = { JTTY: 1450, OLIVIA: OLIVIA_DEFAULT_CENTRE_HZ, HELL: HELL_DEFAULT_TONE_HZ };
 let ttyTxInFlight = false;
 let ttyShownMode = null; // which TTY mode updateTtyUi() last laid the composer out for
@@ -2577,24 +2582,59 @@ function renderVaraStatus(v) {
   if (v.heard?.length) {
     const label = document.createElement('span');
     label.className = 'vara-rx__heard-label';
-    label.textContent = 'CQ heard:';
+    label.textContent = 'Heard:';
     varaHeardEl.appendChild(label);
     for (const h of v.heard) {
       const b = document.createElement('button');
       b.type = 'button';
       b.className = 'chip vara-rx__heard-call';
       b.textContent = h.call;
-      b.title = `${h.call} called CQ at ${utcClock(h.time)} UTC${h.bw ? ` (${h.bw} Hz)` : ''}${Number.isFinite(h.sn) ? `, S/N ${h.sn.toFixed(1)} dB` : ''}. Tap to put the call in the box.`;
+      const tag = h.beacon ? 'beacon' : h.offsetHz ? `${h.offsetHz > 0 ? '+' : '−'}${Math.abs(h.offsetHz)}` : '';
+      if (tag) {
+        const t = document.createElement('span');
+        t.className = 'vara-rx__heard-slot';
+        t.textContent = ` ${tag}`;
+        b.appendChild(t);
+      }
+      const where = h.beacon ? 'sent a beacon' : h.offsetHz ? `called CQ, waiting ${h.offsetHz > 0 ? '+' : '−'}${Math.abs(h.offsetHz)} Hz from the calling frequency (slot ${h.slot})` : 'called CQ';
+      b.title = `${h.call} ${where} at ${utcClock(h.time)} UTC${h.bw ? ` (${h.bw} Hz)` : ''}${Number.isFinite(h.sn) ? `, S/N ${h.sn.toFixed(1)} dB` : ''}. Tap to put the call in the box${h.offsetHz && !h.beacon ? '; Connect then moves to the slot (for about 2 minutes after the CQ)' : ''}.`;
       b.addEventListener('click', () => {
         varaCallEl.value = h.call;
+        varaAnswer = h.offsetHz && !h.beacon ? { call: h.call, offsetHz: h.offsetHz, time: h.time } : null;
       });
       varaHeardEl.appendChild(b);
     }
   }
   if (ttyMode() === 'VARA') ttySendBtn.disabled = st !== 'connected';
+  // A QSO this page started on a slot has ended: back to where it was.
+  const wasBusy = varaShownState === 'calling' || varaShownState === 'connected' || varaShownState === 'disconnecting';
+  varaShownState = st;
+  if (wasBusy && st === 'listening' && varaReturnHz != null) {
+    const hz = varaReturnHz;
+    varaReturnHz = null;
+    link
+      .request('setFrequency', { value: hz })
+      .then(() => updateFrequencyDisplay(hz))
+      .catch((err) => showError(`Couldn't go back to ${formatMHzGrouped(hz)}: ${err.message}`));
+  }
 }
 
 link.addEventListener('vara-status', (event) => renderVaraStatus(event.detail));
+
+/**
+ * Where to call a station from: a VarAC CQ's slot while its caller is
+ * still waiting there (about 2 minutes), otherwise right here. Returns the
+ * frequency to move to, or null to stay.
+ */
+function varaAnswerFrequency(call) {
+  const a = varaAnswer;
+  if (!a || a.call !== call || currentFreqHz == null) return null;
+  const band = bandNameForFrequency(currentFreqHz);
+  const cf = band ? VARA_FREQUENCIES[band] : null;
+  if (!cf) return null;
+  const target = Date.now() - a.time <= VARAC_SLOT_WAIT_MS ? cf + a.offsetHz : cf;
+  return target === currentFreqHz ? null : target;
+}
 
 varaConnectBtn.addEventListener('click', () => {
   const st = varaStatus?.state;
@@ -2607,7 +2647,23 @@ varaConnectBtn.addEventListener('click', () => {
     varaCallEl.focus();
     return;
   }
-  link.request('vara', { action: 'connect', call }).catch((err) => showError(`VARA: ${err.message}`));
+  const connect = () => link.request('vara', { action: 'connect', call }).catch((err) => showError(`VARA: ${err.message}`));
+  const hz = varaAnswerFrequency(call);
+  varaAnswer = null;
+  if (hz == null) {
+    connect();
+    return;
+  }
+  // Answering a VarAC CQ: move to its slot (or back to the calling frequency once the caller has left it), then call.
+  const from = currentFreqHz;
+  link
+    .request('setFrequency', { value: hz })
+    .then(() => {
+      updateFrequencyDisplay(hz);
+      varaReturnHz = from;
+      return connect();
+    })
+    .catch((err) => showError(`Couldn't QSY to call ${call}: ${err.message}`));
 });
 varaCallEl.addEventListener('keydown', (event) => {
   if (event.key !== 'Enter' || event.isComposing) return;

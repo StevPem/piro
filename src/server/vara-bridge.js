@@ -5,6 +5,7 @@ const { Worker } = require('worker_threads');
 const { EVENT } = require('./protocol');
 const { ensureDataMode, watchDataMode } = require('../civ/data-mode-guard');
 const { CALLSIGN_RE: PSK_CALLSIGN_RE } = require('../audio/psk-reporter');
+const varac = require('./varac');
 
 const RATE = 48000; // Xara's (and VARA's) sample rate
 const BANDWIDTHS = [500, 2300, 2750];
@@ -15,6 +16,7 @@ const IDLE_MS = 10 * 60 * 1000; // a link with nothing sent or received this lon
 const MAX_BACKLOG_SEC = 1; // the modem must keep up with real time, or its timing fails
 const TRANSCRIPT_MAX_CHARS = 6000;
 const HEARD_MAX = 10;
+const DISC_DRAIN_MS = 20 * 1000; // after sending <DISC>: the longest to wait for it to go before DISCONNECT
 const SPOT_SN_MS = 2000; // the modem reports a frame's S/N just before the frame (a CQ, a connection)
 const SIGNAL_CENTRE_HZ = 1500; // VARA HF is centred on 1500 Hz audio: the spot frequency is dial + this
 const CALLSIGN_RE = /^[A-Z0-9]{1,3}[0-9][A-Z0-9]{0,4}(\/[A-Z0-9]{1,4})?(-[0-9]{1,2})?$/;
@@ -42,7 +44,7 @@ function cleanText(text) {
   return text.replace(/\r\n?/g, '\n').replace(/[\x00-\x07\x0b-\x1f\x7f]/g, '');
 }
 
-/** Text typed in a browser as VARA Chat sends it: Latin-1, one line ending in CR. */
+/** Text typed in a browser as plain VARA text (a station that doesn't use VarAC's framing): Latin-1, one line ending in CR. */
 function encodeText(text) {
   const line = String(text).replace(/[\r\n]+/g, ' ');
   const bytes = Buffer.alloc(line.length + 1);
@@ -91,12 +93,13 @@ class VaraBridge {
    * @param {number} [opts.maxKeyMs=30000]
    * @param {number} [opts.idleMs=600000]
    * @param {() => object} [opts.createWorker] - injectable for testing
+   * @param {{name?: string, qth?: string, loc?: string}} [opts.profile] - sent after the opening report, as VarAC does (<NAME:..>, <QTH:..>, <LOC:..>)
    * @param {{addSpot: Function}} [opts.pskReporter] - where "PSK Spot" reports go (the FT8 bridge's PskReporterClient); none, no spots
    * @param {() => number} [opts.now]
    * @param {number} [opts.dataSettleMs]
    * @param {number} [opts.dataWatchMs]
    */
-  constructor({ controlServer, audioBridge, callsign, bw = 500, latencyMs = DEFAULT_LATENCY_MS, leadMs = DEFAULT_LEAD_MS, driveDb = -5, maxKeyMs = MAX_KEY_MS, idleMs = IDLE_MS, createWorker, pskReporter, now, dataSettleMs, dataWatchMs } = {}) {
+  constructor({ controlServer, audioBridge, callsign, bw = 500, latencyMs = DEFAULT_LATENCY_MS, leadMs = DEFAULT_LEAD_MS, driveDb = -5, maxKeyMs = MAX_KEY_MS, idleMs = IDLE_MS, createWorker, pskReporter, profile, now, dataSettleMs, dataWatchMs } = {}) {
     if (!controlServer) throw new Error('VaraBridge requires opts.controlServer');
     if (!audioBridge) throw new Error('VaraBridge requires opts.audioBridge');
     this.controlServer = controlServer;
@@ -110,6 +113,12 @@ class VaraBridge {
     this.idleMs = idleMs;
     this.createWorker = createWorker ?? (() => new Worker(path.join(__dirname, '..', 'audio', 'vara-worker.js')));
     this.pskReporter = pskReporter ?? null;
+    // Tag values can't hold <, > or line breaks.
+    this.profile = Object.fromEntries(
+      Object.entries(profile || {})
+        .map(([k, v]) => [k, String(v ?? '').replace(/[<>\r\n]/g, ' ').trim()])
+        .filter(([, v]) => v)
+    );
     this.now = now ?? Date.now;
     this.dataSettleMs = dataSettleMs;
     this.dataWatchMs = dataWatchMs;
@@ -134,6 +143,7 @@ class VaraBridge {
     this._transcriptChars = 0;
     this._warnedKey = false;
     this._lastSn = null; // {sn, time}: the modem's latest S/N report
+    this._link = null; // the QSO now: {parser, openingSent, disc: {at, timer}|null}
 
     controlServer.state.vara = this._freshState();
 
@@ -162,7 +172,7 @@ class VaraBridge {
       sn: null,
       bitrate: null,
       buffer: 0,
-      heard: [], // CQ frames heard: [{call, bw, time}], newest first
+      heard: [], // CQ frames heard, newest first: [{call, raw, slot, offsetHz, beacon, bw, sn, time}] (see varac.decodeCqCall())
     };
   }
 
@@ -278,6 +288,7 @@ class VaraBridge {
       w.terminate();
     }
     this._awaiting = [];
+    this._endLink();
     clearTimeout(this._idleTimer);
     this._idleTimer = null;
     await this._unkey();
@@ -315,10 +326,8 @@ class VaraBridge {
       this._update({ state: 'calling', peer: to });
       this._addText(`Calling ${to}\n`, { note: true });
     } else if (action === 'disconnect') {
-      if (s.state === 'connected') {
-        this._command('DISCONNECT');
-        this._update({ state: 'disconnecting' });
-      } else if (s.state === 'calling' || s.state === 'disconnecting') {
+      if (s.state === 'connected') this._closeLink();
+      else if (s.state === 'calling' || s.state === 'disconnecting') {
         // Stop calling (or stop waiting for the other station to agree to end).
         this._command('ABORT');
       }
@@ -326,7 +335,7 @@ class VaraBridge {
       if (s.state !== 'connected') throw new Error('Connect to a station first.');
       const line = String(text ?? '').replace(/[\r\n]+/g, ' ').trim();
       if (!line) return;
-      this._worker.postMessage({ type: 'send', data: Uint8Array.from(encodeText(line)).buffer });
+      this._sendText(line);
       this._addText(`${line}\n`, { own: true });
       this._touch();
     } else {
@@ -373,11 +382,12 @@ class VaraBridge {
         for (const line of msg.lines) this._handleLine(line);
         break;
       case 'data':
-        this._addText(cleanText(Buffer.from(msg.data).toString('latin1')));
+        this._received(Buffer.from(msg.data));
         this._touch();
         break;
       case 'buffer':
         this._update({ buffer: msg.bytes });
+        this._drained();
         break;
       case 'error':
         this._error(`The modem reported: ${msg.error}`);
@@ -413,6 +423,9 @@ class VaraBridge {
         this._update({ state: 'connected', peer, linkBw: Number(width) || null, pending: false, ...(sn != null ? { sn } : {}) });
         this._spot(peer, sn);
         this._addText(`Connected to ${peer}${Number(width) ? ` (${width} Hz)` : ''}\n`, { note: true });
+        this._endLink();
+        this._link = { parser: new varac.MessageParser(), openingSent: false, disc: null };
+        if (sn != null) this._sendOpening(sn);
         this._touch();
         break;
       }
@@ -421,6 +434,7 @@ class VaraBridge {
         const msg = s.state === 'calling' ? `No answer from ${s.peer}` : s.peer ? `Disconnected from ${s.peer}` : 'Disconnected';
         this._update({ state: 'listening', peer: null, linkBw: null, pending: false, sn: null, bitrate: null, buffer: 0 });
         this._addText(`${msg}\n`, { note: true });
+        this._endLink();
         clearTimeout(this._idleTimer);
         this._idleTimer = null;
         break;
@@ -438,7 +452,11 @@ class VaraBridge {
         const sn = Number(rest[0]);
         this._lastSn = Number.isFinite(sn) ? { sn, time: this.now() } : null;
         // Outside a QSO it is the S/N of a CQ or a call just heard, not of a link.
-        if (this.state.state === 'connected') this._update({ sn });
+        if (this.state.state === 'connected') {
+          this._update({ sn });
+          // VarAC opens with the S/N it hears the other station at: the first one, if it wasn't known at CONNECTED.
+          if (this._link && !this._link.openingSent && Number.isFinite(sn)) this._sendOpening(sn);
+        }
         break;
       }
       case 'BITRATE': {
@@ -449,16 +467,22 @@ class VaraBridge {
       }
       case 'BUFFER':
         this._update({ buffer: Number(rest[0]) || 0 });
+        this._drained();
         break;
       case 'CQFRAME': {
-        const [call, bw] = rest;
-        if (!call) break;
+        const [raw, bw] = rest;
+        if (!raw) break;
         const sn = this._takeSn();
-        const heard = [{ call, bw: Number(bw) || null, sn, time: this.now() }, ...this.state.heard.filter((h) => h.call !== call)].slice(0, HEARD_MAX);
-        this._spot(call, sn);
-        this.state.heard = heard;
+        // VarAC's CQ names the slot its caller waits on as the callsign's suffix; -9 is a beacon.
+        const cq = varac.decodeCqCall(raw);
+        const entry = { call: cq.call, raw: raw.toUpperCase(), slot: cq.slot, offsetHz: cq.offsetHz, beacon: cq.beacon, bw: Number(bw) || null, sn, time: this.now() };
+        this.state.heard = [entry, ...this.state.heard.filter((h) => h.call !== cq.call)].slice(0, HEARD_MAX);
+        this._spot(cq.call, sn);
         this.controlServer.broadcastJsonEvent(EVENT.VARA_STATUS, this.state);
-        this._addText(`CQ from ${call}${Number(bw) ? ` (${bw} Hz)` : ''}\n`, { note: true });
+        const where = cq.beacon ? 'on the calling frequency' : cq.slot ? `waiting ${cq.offsetHz > 0 ? '+' : '−'}${Math.abs(cq.offsetHz)} Hz from the calling frequency (slot ${cq.slot})` : '';
+        const bwText = Number(bw) ? `${bw} Hz` : '';
+        const detail = [where, bwText].filter(Boolean).join(', ');
+        this._addText(`${cq.beacon ? 'Beacon' : 'CQ'} from ${cq.call}${detail ? ` (${detail})` : ''}\n`, { note: true });
         break;
       }
       default:
@@ -524,6 +548,76 @@ class VaraBridge {
     }
   }
 
+  /** Sends one line in the QSO: as a VarAC message, or as plain text (CR) to a station that doesn't frame its messages. */
+  _sendText(line) {
+    const link = this._link;
+    const data = link?.parser.plain ? encodeText(line) : varac.frameMessage(line);
+    this._worker?.postMessage({ type: 'send', data: Uint8Array.from(data).buffer });
+  }
+
+  /** VarAC's opening: "de CALL <R+05>" (the S/N we hear them at), then the profile tags, if any. */
+  _sendOpening(sn) {
+    const link = this._link;
+    if (!link || link.openingSent || !this._worker) return;
+    link.openingSent = true;
+    this._sendText(varac.openingMessage(this.callsign, sn));
+    const p = this.profile;
+    const tags = [p.name && `<NAME:${p.name}>`, p.qth && `<QTH:${p.qth}>`, p.loc && `<LOC:${p.loc}>`].filter(Boolean);
+    if (tags.length) this._sendText(tags.join('\r\n'));
+  }
+
+  /** Bytes from the other station: VarAC messages (put into words), or plain text. */
+  _received(bytes) {
+    const link = this._link;
+    if (!link) {
+      this._addText(cleanText(bytes.toString('latin1')));
+      return;
+    }
+    const { messages, plain } = link.parser.feed(bytes);
+    for (const m of messages) {
+      const r = varac.renderMessage(m, this.state.peer);
+      if (r.text) this._addText(r.text, { note: r.note });
+    }
+    if (plain) this._addText(cleanText(plain));
+  }
+
+  /**
+   * Ends the QSO politely: VarAC's <DISC> first (not to a plain-text
+   * station), then DISCONNECT once it has gone (or after DISC_DRAIN_MS).
+   */
+  _closeLink() {
+    const link = this._link;
+    this._update({ state: 'disconnecting' });
+    if (!link || link.parser.plain || link.disc) {
+      if (!link?.disc) this._command('DISCONNECT');
+      return;
+    }
+    this._sendText('<DISC>');
+    link.disc = { at: this.now(), timer: setTimeout(() => this._finishClose(), DISC_DRAIN_MS) };
+    link.disc.timer.unref?.();
+  }
+
+  /** The send buffer changed: once <DISC> has been queued and then gone, DISCONNECT. */
+  _drained() {
+    const disc = this._link?.disc;
+    if (!disc || disc.done) return;
+    if (this.state.buffer > 0) disc.queued = true;
+    else if (disc.queued) this._finishClose();
+  }
+
+  _finishClose() {
+    const disc = this._link?.disc;
+    if (!disc || disc.done) return;
+    disc.done = true;
+    clearTimeout(disc.timer);
+    this._command('DISCONNECT');
+  }
+
+  _endLink() {
+    if (this._link?.disc) clearTimeout(this._link.disc.timer);
+    this._link = null;
+  }
+
   /** Something was sent or received: restart the idle clock. */
   _touch() {
     clearTimeout(this._idleTimer);
@@ -532,8 +626,7 @@ class VaraBridge {
       this._idleTimer = null;
       if (this.state.state !== 'connected') return;
       this._addText(`Nothing sent or received for ${Math.round(this.idleMs / 60000)} minutes; disconnecting.\n`, { note: true });
-      this._command('DISCONNECT');
-      this._update({ state: 'disconnecting' });
+      this._closeLink();
     }, this.idleMs);
     this._idleTimer.unref?.();
   }
