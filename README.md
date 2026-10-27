@@ -12,7 +12,7 @@ Hamlib, no separate audio server and no extra apps.
 Written by VK3TR. Licensed AGPL-3.0-only (see
 [Licence](#licence)).
 
-**Current build: v108.** This is the version the app shows next to its title.
+**Current build: v109.** This is the version the app shows next to its title.
 It is the `CACHE_NAME` number in `src/client/sw.js`, which goes up with every
 change to the web app.
 
@@ -1517,8 +1517,13 @@ one hard refresh (Ctrl+Shift+R, or Cmd+Shift+R on a Mac).
   fails, the timing may be off. Try `VARA_AUDIO_LATENCY_MS` at 300 or 800.
   Check the transmit audio level the same way as for the other digital
   modes: no ALC.
-- **The VARA panel says it isn't available.** It needs `STATION_CALLSIGN`,
-  audio set up (`AUDIO_RX_DEVICE`) and a sample rate of 48000.
+- **The VARA panel says "not running on the server".** The server has no
+  VARA: either audio isn't set up (`AUDIO_RX_DEVICE`), or PiRO was updated
+  but not restarted, so the old server is serving the new page (the build
+  number beside the title is the server's). Restart it:
+  `sudo systemctl restart piro`.
+- **The VARA panel says why it can't run.** It needs `STATION_CALLSIGN` and
+  a sample rate of 48000.
 - **EasyPal shows the mode and S/N but no picture.** A plain (not
   Reed-Solomon) file needs every segment: one lost segment and it never
   completes. Ask the sender to use an `.rs` setting, or to send again. A file

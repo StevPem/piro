@@ -1972,7 +1972,10 @@ function enterVaraMode({ radioReady = false } = {}) {
       .request('setDataMode', { on: true })
       .catch((err) => showError(`Couldn't enable DATA MODE for VARA: ${err.message}`));
   }
-  link.request('setVaraActive', { active: true }).catch((err) => showError(`Couldn't start VARA: ${err.message}`));
+  link.request('setVaraActive', { active: true }).catch((err) => {
+    showError(`Couldn't start VARA: ${err.message}`);
+    varaStatusEl.textContent = `couldn't start: ${err.message}`;
+  });
   setRttyTickerVisible(false);
   updateTtyUi();
 }
@@ -2518,7 +2521,8 @@ link.addEventListener('vara-text', (event) => {
 function renderVaraStatus(v) {
   varaStatus = v || null;
   if (!v) {
-    varaStatusEl.textContent = 'not available (the server has no audio set up)';
+    // No VARA on the server: no audio set up, or a server older than this page.
+    varaStatusEl.textContent = 'not running on the server (needs audio set up; restart PiRO after updating)';
     varaConnectBtn.disabled = true;
     varaCqBtn.disabled = true;
     return;

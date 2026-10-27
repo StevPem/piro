@@ -4451,3 +4451,24 @@ model for how to approach that.
   and a third browser following, VARA → Feld-Hell stops the modem).
   Not tested on air, and not yet tested against VARA, VARA Chat or VarAC.
   Service-worker cache v108.
+
+### VARA panel: "no audio set up" when there was (v109)
+
+- **Real bug:** selecting VARA could show "not available (the server has
+  no audio set up)" on a server with audio. The panel showed that whenever
+  the connect snapshot had no VARA state, and there were two other ways to
+  get there:
+  - the server was updated but not restarted, so the old server (without
+    VARA) served the new page;
+  - the page connected while the server was still starting: it listens
+    before the audio and the feature bridges are set up, so an early
+    snapshot has no VARA state. Nothing sent it later unless VARA started,
+    and without `STATION_CALLSIGN` it never did, so the wrong message
+    stayed.
+- Fix: VaraBridge broadcasts its state when it starts, and again when it
+  can't start (so the panel shows the real reason). The message for no
+  VARA state now reads "not running on the server (needs audio set up;
+  restart PiRO after updating)". If `setVaraActive` fails, its reason is
+  shown in the status line as well as in the error bar.
+- Tests: vara.test.js (state broadcast on start, and on a refused start),
+  manual-tty-ui.js. Service-worker cache v109.
