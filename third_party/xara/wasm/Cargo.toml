@@ -1,0 +1,19 @@
+[package]
+name = "xara-wasm"
+version = "0.1.1"
+edition = "2024"
+license = "MIT"
+publish = false
+description = "Xara's VARA HF modem as a WebAssembly library for PiRO: audio samples in and out, VARA commands and data through memory"
+
+[lib]
+crate-type = ["cdylib"]
+path = "src/lib.rs"
+
+[dependencies]
+xara-phy = { path = "../xara-phy" }
+xara-arq = { path = "../xara-arq" }
+xara-host = { path = "../xara-host" }
+# Xara's station code names one type from its web UI crate (telemetry::Link);
+# the UI itself needs sockets and files, so a stand-in provides just that type.
+xara_ui = { package = "xara-ui-shim", path = "ui-shim" }

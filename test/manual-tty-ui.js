@@ -20,6 +20,7 @@ const { BandConditions } = require(PKG + '/src/server/band-conditions');
 const { FaxDecoderBridge } = require(PKG + '/src/server/fax-decoder-bridge');
 const { EasypalDecoderBridge } = require(PKG + '/src/server/easypal-decoder-bridge');
 const { EasypalTxBridge } = require(PKG + '/src/server/easypal-tx-bridge');
+const { VaraBridge } = require(PKG + '/src/server/vara-bridge');
 const easypalFx = require('./fixtures/easypal-audio');
 const { encodeFax, FAX_WIDTH } = require(PKG + '/src/audio/fax-tx');
 const { EVENT } = require(PKG + '/src/server/protocol');
@@ -95,6 +96,20 @@ class Civ extends EventEmitter {
   easypalRx.start();
   const easypalTx = new EasypalTxBridge({ controlServer: server, audioBridge, callsign: 'VK2IO', seconds: 30, pttReleaseMarginMs: 20 });
   easypalTx.start();
+  // VARA chat, with stand-in modems the test drives (the real one is tested in vara.test.js)
+  const varaWorkers = [];
+  const vara = new VaraBridge({
+    controlServer: server,
+    audioBridge,
+    callsign: 'VK2IO',
+    dataSettleMs: 0,
+    createWorker: () => {
+      const w = Object.assign(new EventEmitter(), { sent: [], terminated: false, postMessage(m) { this.sent.push(m); }, terminate() { this.terminated = true; } });
+      varaWorkers.push(w);
+      return w;
+    },
+  });
+  vara.start();
   // "Current conditions", with wspr.live answered by hand
   const conditions = new BandConditions({ controlServer: server, grid: 'QF56', query: async () => [[1409, 'K1ABC', 16500, ['VK2IO']], [704, 'VK3TR', 700, ['VK2IO']]] });
   conditions.start();
@@ -373,16 +388,91 @@ class Civ extends EventEmitter {
     check(civ.log.filter((e) => e[0] === 'setPtt').at(-1)[1] === false && oliviaRx.attached, 'Stop releases PTT and the receiver resumes');
   }
 
-  // click 4 -> Feld-Hell
+  // click 4 -> VARA
   {
     const modeCalls = civ.log.filter((e) => e[0] === 'setMode' || e[0] === 'setDataMode').length;
     await page.locator('#modes .chip', { hasText: /^Olivia$/ }).click();
+    await page.waitForFunction(() => [...document.querySelectorAll('#modes .chip')].some((c) => c.textContent === 'VARA'));
+    await page.waitForFunction(() => /^listening/.test(document.getElementById('vara-status').textContent), null, { timeout: 4000 });
+    check(civ.mode === 'USB' && civ.dataMode === true && civ.log.filter((e) => e[0] === 'setMode' || e[0] === 'setDataMode').length === modeCalls, 'fourth click: VARA, radio left alone (USB, DATA MODE on)');
+    check(server.state.oliviaActive === false && !oliviaRx.attached && server.state.varaActive === true && vara.active, 'Olivia receiver disarmed, VARA modem started');
+    check(civ.log.some((e) => e[0] === 'setFrequency' && e[1] === 14105000), 'entering VARA on 20m tunes to the 14.105 MHz VarAC calling frequency');
+    check((await vis('#vara-rx')) && !(await vis('#olivia-rx')) && !(await vis('#tty-freq')), 'VARA: its panel shown (not Olivia\'s), no frequency box');
+    check((await page.locator('#vara-status').textContent()) === 'listening (500 Hz)', 'status: listening (500 Hz)');
+    check(await page.locator('#tty-send-btn').isDisabled(), 'Send is off until there is a QSO');
+    check((await page.locator('#ptt-hint').textContent()).includes('VarAC'), 'hint text describes VARA');
+    check((await page.locator('#tty-input').evaluate((e) => getComputedStyle(e).textTransform)) === 'none', 'VARA: the text box shows the real case');
+    const w = varaWorkers.at(-1);
+    const cmds = () => w.sent.filter((m) => m.type === 'command').map((m) => m.line);
+    check(cmds().join('|') === 'MYCALL VK2IO|BW500|CHAT ON|P2P SESSION|COMPRESSION TEXT|LISTEN ON', 'the modem is set up as VARA Chat, listening: ' + cmds().join(', '));
+    const say = (...lines) => w.emit('message', { type: 'lines', lines });
+    say('OK', 'OK', 'OK', 'OK', 'OK', 'OK');
+    check(
+      await bFollows(() => [...document.querySelectorAll('#modes .chip')].some((c) => c.textContent === 'VARA') && !document.getElementById('vara-rx').hidden && document.getElementById('vara-status').textContent === 'listening (500 Hz)'),
+      'the second browser is in VARA too'
+    );
+
+    // A station calls CQ: it is listed; tap it, then Connect.
+    say('CQFRAME K1ABC 500');
+    await page.waitForFunction(() => document.querySelector('#vara-heard .vara-rx__heard-call')?.textContent === 'K1ABC', null, { timeout: 4000 });
+    check(/CQ from K1ABC \(500 Hz\)/.test(await page.locator('#vara-rx-text').textContent()), 'a CQ heard is listed, and noted in the conversation');
+    await page.locator('#vara-heard .vara-rx__heard-call').click();
+    check((await page.locator('#vara-call').inputValue()) === 'K1ABC', 'tapping a heard call puts it in the callsign box');
+    await page.locator('#vara-connect-btn').click();
+    await page.waitForFunction(() => document.getElementById('vara-connect-btn').textContent === 'Stop', null, { timeout: 4000 });
+    check(cmds().at(-1) === 'CONNECT VK2IO K1ABC' && (await page.locator('#vara-status').textContent()) === 'calling K1ABC…', 'Connect: the modem calls K1ABC; the button becomes Stop');
+    say('OK', 'PTT ON');
+    await sleep(100);
+    check(civ.log.filter((e) => e[0] === 'setPtt').at(-1)[1] === true, "the modem's PTT ON keys the radio");
+    check(await page.waitForFunction(() => /transmitting$/.test(document.getElementById('vara-status').textContent), null, { timeout: 3000 }).then(() => true, () => false), 'the status line says it is transmitting');
+    say('PTT OFF', 'CONNECTED VK2IO K1ABC 500', 'SN 7.5', 'BITRATE (3)  245 bps RX');
+    await page.waitForFunction(() => /^QSO with K1ABC/.test(document.getElementById('vara-status').textContent), null, { timeout: 4000 });
+    check(civ.log.filter((e) => e[0] === 'setPtt').at(-1)[1] === false, 'PTT OFF releases it');
+    check((await page.locator('#vara-status').textContent()) === 'QSO with K1ABC · S/N 7.5 dB · 245 bps', 'connected: ' + (await page.locator('#vara-status').textContent()));
+    check(!(await page.locator('#tty-send-btn').isDisabled()) && (await page.locator('#vara-connect-btn').textContent()) === 'Disconnect', 'Send is on; Connect became Disconnect');
+
+    // Text both ways
+    w.emit('message', { type: 'data', data: Uint8Array.from(Buffer.from('VK2IO de K1ABC, good morning\r', 'latin1')).buffer });
+    await page.waitForFunction(() => document.getElementById('vara-rx-text').textContent.includes('VK2IO de K1ABC, good morning\n'), null, { timeout: 4000 });
+    check(true, 'received text appears in the conversation');
+    check(await bFollows(() => document.getElementById('vara-rx-text').textContent.includes('good morning')), 'and in the second browser');
+    await page.locator('#tty-input').fill('Good morning, name Ian, QTH Sydney');
+    await page.locator('#tty-input').press('Enter');
+    await page.waitForFunction(() => document.getElementById('tty-input').value === '', null, { timeout: 4000 });
+    const sent = w.sent.filter((m) => m.type === 'send').map((m) => Buffer.from(m.data).toString('latin1'));
+    check(sent.length === 1 && sent[0] === 'Good morning, name Ian, QTH Sydney\r', 'Enter sends the line to the modem, ending in CR; the box is cleared');
+    check((await page.locator('#vara-rx-text .olivia-rx__own').last().textContent()).includes('Good morning, name Ian'), 'own line shown in the conversation, marked as own');
+    if (process.env.VARA_SHOT) await page.locator('#vara-rx').screenshot({ path: process.env.VARA_SHOT });
+
+    // A browser that connects now gets the conversation so far
+    {
+      const pageC = await browser.newPage({ viewport: { width: 430, height: 1100 } });
+      await pageC.goto(`http://localhost:${port}/`);
+      const ok = await pageC.waitForFunction(() => { const t = document.getElementById('vara-rx-text').textContent; return t.includes('good morning') && t.includes('name Ian') && !document.getElementById('vara-rx').hidden; }, null, { timeout: 6000 }).then(() => true, () => false);
+      check(ok, 'a browser that connects mid-QSO is shown VARA with the conversation so far');
+      await pageC.close();
+      await sleep(200);
+    }
+
+    await page.locator('#vara-connect-btn').click();
+    await sleep(100);
+    check(cmds().at(-1) === 'DISCONNECT', 'Disconnect: the modem ends the QSO');
+    say('OK', 'DISCONNECTED');
+    await page.waitForFunction(() => document.getElementById('vara-status').textContent === 'listening (500 Hz)', null, { timeout: 4000 });
+    check(/Disconnected from K1ABC/.test(await page.locator('#vara-rx-text').textContent()) && (await page.locator('#tty-send-btn').isDisabled()), 'back to listening; noted; Send off');
+  }
+
+  // click 5 -> Feld-Hell
+  {
+    const modeCalls = civ.log.filter((e) => e[0] === 'setMode' || e[0] === 'setDataMode').length;
+    await page.locator('#modes .chip', { hasText: /^VARA$/ }).click();
     await page.waitForFunction(() => [...document.querySelectorAll('#modes .chip')].some((c) => c.textContent === 'Feld-Hell'));
     await sleep(150);
-    check(civ.mode === 'USB' && civ.dataMode === true && civ.log.filter((e) => e[0] === 'setMode' || e[0] === 'setDataMode').length === modeCalls, 'fourth click: Feld-Hell, radio left alone (USB, DATA MODE on)');
-    check(server.state.oliviaActive === false && !oliviaRx.attached && server.state.hellActive === true && hellRx.attached, 'Olivia receiver disarmed, Feld-Hell receiver armed');
+    check(civ.mode === 'USB' && civ.dataMode === true && civ.log.filter((e) => e[0] === 'setMode' || e[0] === 'setDataMode').length === modeCalls, 'fifth click: Feld-Hell, radio left alone (USB, DATA MODE on)');
+    check(server.state.varaActive === false && !vara.active && varaWorkers.at(-1).terminated && server.state.hellActive === true && hellRx.attached, 'VARA modem stopped, Feld-Hell receiver armed');
+    check(!(await page.locator('#tty-send-btn').isDisabled()), 'Send is on again for Feld-Hell');
     check(civ.log.at(-1)[0] === 'setFrequency' && civ.log.at(-1)[1] === 14062000, 'entering Feld-Hell on 20m puts a 1000 Hz tone on 14.063 MHz (dial 14.062)');
-    check(!(await vis('#olivia-rx')) && !(await vis('#jtty-rx')) && (await vis('#hell-rx')) && (await vis('#tty-freq')) && (await page.locator('#tty-freq').inputValue()) === '1000', 'Feld-Hell: its text panel (not Olivia\'s or JTTY\'s), tone box at 1000 Hz');
+    check(!(await vis('#olivia-rx')) && !(await vis('#vara-rx')) && !(await vis('#jtty-rx')) && (await vis('#hell-rx')) && (await vis('#tty-freq')) && (await page.locator('#tty-freq').inputValue()) === '1000', 'Feld-Hell: its text panel (not Olivia\'s, VARA\'s or JTTY\'s), tone box at 1000 Hz');
     check(/^Tone/.test(await page.locator('#tty-freq-label').textContent()), 'the box is labelled "Tone"');
     check((await page.locator('#ptt-hint').textContent()).includes('Feld-Hell'), 'hint text describes Feld-Hell');
     check((await page.locator('#tty-input').evaluate((e) => getComputedStyle(e).textTransform)) === 'none', 'Feld-Hell: the text box shows the real case');

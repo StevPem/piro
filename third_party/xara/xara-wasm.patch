@@ -1,0 +1,13 @@
+diff --git a/crates/xara-host/src/lib.rs b/crates/xara-host/src/lib.rs
+index 98c7a37..4370326 100644
+--- a/crates/xara-host/src/lib.rs
++++ b/crates/xara-host/src/lib.rs
+@@ -1,5 +1,8 @@
+ pub mod command;
++#[cfg(not(target_arch = "wasm32"))]
+ pub mod kiss;
+ pub mod response;
++#[cfg(not(target_arch = "wasm32"))]
+ pub mod server;
++#[cfg(not(target_arch = "wasm32"))]
+ pub mod writer;

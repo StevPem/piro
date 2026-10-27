@@ -174,6 +174,11 @@ class ControlServer extends EventEmitter {
       // Same reasons as jttyActive.
       hellActive: false,
       hellToneHz: 1000,
+      // Whether the client has VARA chat selected (REQUEST.SET_VARA_ACTIVE /
+      // server/vara-bridge.js), and the modem's state (state.vara, kept by
+      // VaraBridge; null when it isn't set up).
+      varaActive: false,
+      vara: null,
       // Whether the client has SSTV selected (see REQUEST.SET_SSTV_ACTIVE /
       // server/sstv-decoder-bridge.js). Same reasons as jttyActive.
       sstvActive: false,
@@ -382,6 +387,7 @@ class ControlServer extends EventEmitter {
       oliviaCentreHz: s.oliviaCentreHz,
       hellActive: s.hellActive,
       hellToneHz: s.hellToneHz,
+      varaActive: s.varaActive,
       sstvActive: s.sstvActive,
       wsprActive: s.wsprActive,
       faxActive: s.faxActive,
@@ -412,6 +418,12 @@ class ControlServer extends EventEmitter {
     if (toneHz !== undefined) this.state.hellToneHz = toneHz;
     // Handled by HellDecoderBridge (internal-only event, same pattern as 'olivia-active').
     this.emit('hell-active', { active, toneHz: this.state.hellToneHz });
+  }
+
+  _setVaraActive(active) {
+    this.state.varaActive = active;
+    // Handled by VaraBridge (internal-only event).
+    this.emit('vara-active', active);
   }
 
   _setWsprActive(active) {
@@ -453,6 +465,8 @@ class ControlServer extends EventEmitter {
     if (this.state.jttyActive) this._setJttyActive(false);
     if (this.state.oliviaActive) this._setOliviaActive(false);
     if (this.state.hellActive) this._setHellActive(false);
+    // VARA too: it transmits on its own (answering calls, acknowledging).
+    if (this.state.varaActive) this._setVaraActive(false);
     if (this.state.sstvActive) this._setSstvActive(false);
     if (this.state.faxActive) this._setFaxActive(false);
     if (this.state.easypalActive) this._setEasypalActive(false);
@@ -622,6 +636,29 @@ class ControlServer extends EventEmitter {
           this._setHellActive(msg.active, toneHz);
           ws.send(makeResult(id, { active: msg.active, toneHz: this.state.hellToneHz }));
           this._broadcastAppModes(ws);
+          break;
+        }
+        case REQUEST.SET_VARA_ACTIVE: {
+          if (typeof msg.active !== 'boolean') {
+            throw new Error('"active" must be a boolean');
+          }
+          if (msg.active && !this.listenerCount('vara-active')) throw new Error('VARA is not set up on this server (it needs audio).');
+          this._setVaraActive(msg.active);
+          ws.send(makeResult(id, { active: msg.active }));
+          this._broadcastAppModes(ws);
+          break;
+        }
+        case REQUEST.VARA: {
+          if (!['cq', 'connect', 'disconnect', 'send'].includes(msg.action)) {
+            throw new Error('"action" must be "cq", "connect", "disconnect" or "send"');
+          }
+          if (msg.call !== undefined && typeof msg.call !== 'string') throw new Error('"call" must be a string');
+          if (msg.text !== undefined && typeof msg.text !== 'string') throw new Error('"text" must be a string');
+          if (typeof msg.text === 'string' && msg.text.length > 1000) throw new Error('"text" is too long (1000 characters at most)');
+          if (!this.listenerCount('vara')) throw new Error('VARA is not set up on this server (it needs audio).');
+          // Handled by VaraBridge#request, which throws if it can't be done.
+          this.emit('vara', { action: msg.action, call: msg.call, text: msg.text });
+          ws.send(makeResult(id, {}));
           break;
         }
         case REQUEST.SET_SSTV_ACTIVE: {
