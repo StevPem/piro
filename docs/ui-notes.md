@@ -4510,3 +4510,47 @@ model for how to approach that.
   working in VARA and hidden after). The UI test once failed its meter
   check "tap: SWR … on receive" (an older timing check, not this change);
   two reruns passed. Service-worker cache v111.
+
+### VARA: VarAC messages, slots and goodbye (v112)
+
+- **Why:** hfmodem (W9SSJ, AGPL-3.0, https://github.com/sstjohn/hfmodem)
+  documents VarAC's formats from on-air recordings. They showed PiRO's VARA
+  chat could not talk to VarAC: VarAC frames every message as its UTF-8
+  length, a space and the text, and PiRO sent bare Latin-1 lines ending in
+  CR. A VarAC station would have read PiRO's text as a bad length.
+- **New `src/server/varac.js`** (ported from hfmodem's `contact/varac.py`;
+  see `third_party/hfmodem/README.md`): CQ suffix → slot, message framing
+  and parsing, the opening report, tags put into words.
+- **Messages:** VaraBridge now sends each line as a VarAC message, and
+  splits what arrives into messages (across modem frames). On connecting it
+  sends the opening report, `de CALL <R+NN>` with the S/N it hears the
+  other station at (the S/N reported with CONNECTED, or the next one), then
+  `<NAME:…>`, `<QTH:…>` and `<LOC:…>` from `VARA_NAME`, `VARA_QTH` and
+  `STATION_GRID`. Received tags become notes ("F6JON reports your signal
+  at -12 dB", "F6JON name Jean"). A station whose first bytes aren't a
+  length is shown as plain text, and answered in plain text.
+- **Disconnect** (and the idle limit) sends `<DISC>` first, then
+  DISCONNECT once the send buffer has risen and fallen back to 0 (or after
+  20 s).
+- **Slots:** a CQ's suffix is decoded: the Heard list shows "F6JON +750"
+  (or "N1AMD beacon" for -9), the note says where the caller waits, and
+  the PSK spot uses the plain callsign. Tapping a slot CQ and pressing
+  Connect moves the radio to the slot (calling frequency + offset) and
+  calls the plain callsign; within 2 minutes of the CQ, otherwise from the
+  calling frequency. When that QSO ends (or gets no answer) the page that
+  started it moves the radio back.
+- "CQ heard:" is now "Heard:" (beacons are listed too).
+- **Test fix:** manual-tty-ui.js's meter check "tap: SWR … on receive"
+  failed now and then: it read the meter 400 ms after releasing PTT, and
+  on a busy machine the release had not reached the page yet. It now waits
+  for the release (up to 3 s).
+- Tests: vara.test.js (suffix decoding, framing, the parser across chunks
+  and with UTF-8, plain-text fall-back, rendering; the bridge's opening
+  report and profile, received messages split across frames, own lines
+  framed, `<DISC>` then DISCONNECT, plain-text stations; two real modems:
+  each shows the other's opening report, and A's `<DISC>` reaches B),
+  manual-tty-ui.js (opening report sent and shown, framed text both ways,
+  `<DISC>` then DISCONNECT, a slot CQ listed as "F6JON +750", Connect moves
+  to 14.10575 and calls F6JON, back to 14.105 after "No answer", a beacon
+  listed). Not tested on air, and not yet with VarAC. Service-worker cache
+  v112.

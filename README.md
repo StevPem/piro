@@ -12,7 +12,7 @@ Hamlib, no separate audio server and no extra apps.
 Written by VK3TR. Licensed AGPL-3.0-only (see
 [Licence](#licence)).
 
-**Current build: v111.** This is the version the app shows next to its title.
+**Current build: v112.** This is the version the app shows next to its title.
 It is the `CACHE_NAME` number in `src/client/sw.js`, which goes up with every
 change to the web app.
 
@@ -885,8 +885,9 @@ before you call.
 - **Status**, at the top right: "listening (500 Hz)", "calling VK3ABC…",
   or in a QSO the other station, the link's S/N, its speed and any text
   still to send. It also shows "transmitting" and "channel busy".
-- **CQ** sends a short CQ frame with your callsign. VARA Chat and VarAC
-  users who are listening see it and can connect to you.
+- **CQ** sends a short CQ frame with your callsign, on the calling
+  frequency. VARA Chat and VarAC users who are listening see it and can
+  connect to you there. (It names no slot, as a VarAC CQ does; see below.)
 - **Callsign** and **Connect** call a station. While calling, Connect
   reads **Stop**; in a QSO it reads **Disconnect**.
 - **QSYD** and **QSYU**, right of CQ, move the radio 750 Hz down or up
@@ -894,16 +895,43 @@ before you call.
   ("calling freq +1.5 kHz"). They move only your radio, so they are off
   during a QSO: VarAC's own QSY requests aren't supported, and moving alone
   would lose the link. To change frequency in a QSO, agree one in the chat,
-  Disconnect, both QSY, and connect again. They are also how you reach a
-  VarAC station that called CQ and is waiting on a slot: QSY to the slot,
-  then Connect.
-- **CQ heard** lists the stations heard calling CQ, newest first. Tap one
-  to put its call in the callsign box. Its tooltip gives the S/N.
+  Disconnect, both QSY, and connect again.
+- **Heard** lists the stations heard calling CQ, and VarAC beacons,
+  newest first. A VarAC CQ shows its slot ("F6JON +750"), a beacon reads
+  "beacon". Tap one to put its callsign in the box; its tooltip gives the
+  S/N and the time.
 - **The conversation**: received text in white, your own in amber, and
   PiRO's notes about the link ("Connected to VK3ABC (500 Hz)") in grey.
 
-In a QSO, type a line and press **Send** (or Enter). It is sent as one line,
-as VARA Chat sends it.
+In a QSO, type a line and press **Send** (or Enter).
+
+**Answering a VarAC CQ.** VarAC sends its CQ on the calling frequency,
+then waits for an answer about 2 minutes on a "slot": 750 to 3750 Hz above
+or below. The slot is the CQ callsign's suffix: F6JON-11 is F6JON waiting
+750 Hz up, -12 1500 Hz up and so on to -15; -1 to -5 are 750 to 3750 Hz
+down; -9 is a beacon, not a CQ. PiRO reads this for you. Tap the CQ in
+Heard, then **Connect**: PiRO moves to the slot and calls the plain
+callsign (F6JON). When the QSO ends, or no one answers, it goes back to
+where it was. After the 2 minutes the caller has left the slot, so Connect
+then calls from the calling frequency instead.
+
+**Talking to VarAC.** VarAC sends each message as its length, a space,
+then the text in UTF-8, and puts tags in the text. PiRO does the same:
+- On connecting, each side sends an opening report: "de VK2IO <R+05>", the
+  S/N it hears the other at. PiRO sends yours, and shows theirs as "F6JON
+  reports your signal at +5 dB".
+- `VARA_NAME`, `VARA_QTH` and `STATION_GRID` (if set) follow it, as
+  VarAC's name, QTH and locator.
+- Tags the other station sends are put into words (name, QTH, locator,
+  "is closing the QSO"); tags PiRO doesn't know are shown as they are.
+- **Disconnect** first sends VarAC's goodbye (`<DISC>`), then ends the
+  link once it has gone.
+- A station that sends plain text instead (VARA Chat, probably) is shown
+  as it comes, and from then on PiRO answers it in plain text too.
+
+These formats come from [hfmodem](https://hfmodem.ssj.lol/) by Saul St
+John, W9SSJ, which worked them out from recordings of VarAC on air. See
+[`third_party/hfmodem/README.md`](third_party/hfmodem/README.md).
 
 **PSK Spot.** The FT8 **PSK Spot** button is shown in VARA too (the same
 setting). While it is ticked, stations heard are reported to
@@ -916,7 +944,8 @@ yet checked on pskreporter.info's map.
 **Other stations can call you.** While VARA is selected the modem listens,
 answers a call by itself, and keys the radio. Leave VARA selected only while
 you are there. Picking another mode, or the last browser leaving, ends VARA;
-a QSO still open is dropped without a goodbye, so press Disconnect first.
+a QSO still open is dropped without a goodbye (no `<DISC>`), so press
+Disconnect first.
 
 **Speed.** The modem runs unregistered, as VARA HF does without a licence
 key. At 500 Hz a short line takes about 10 to 15 seconds to arrive.
@@ -927,9 +956,8 @@ key. At 500 Hz a short line takes about 10 to 15 seconds to arrive.
 * A QSO with nothing sent or received for 10 minutes is disconnected.
 * The usual PTT watchdog (ten minutes) still applies.
 * VARA needs `STATION_CALLSIGN`, and audio at 48 kHz (the default).
-* Only basic QSOs. VarAC's own features (its beacons, slots, file
-  transfer, and the tags it adds) are not supported. A plain VarAC QSO is
-  text over a VARA link, the same as VARA Chat, and should work.
+* Basic QSOs only. Not yet: calling CQ on a slot as VarAC does, VarAC's
+  QSY handshake during a QSO, sending beacons, VMail, file transfer.
 
 **Bandwidth.** `VARA_BW` sets it: 500 Hz (the default, used on the VarAC
 calling frequencies), 2300 or 2750 Hz. Both stations must use the same.
@@ -940,8 +968,9 @@ default, the usual sound-card buffer) tells it. If calls never connect,
 see [Troubleshooting](#troubleshooting).
 
 PiRO's VARA has only been tested against itself (two modems through a
-simulated channel). It has not been tested with VARA itself, VARA Chat or
-VarAC, and it has not been tested on air. Xara's author reports testing
+simulated channel), and its VarAC messages against hfmodem's description
+of them. It has not been tested with VARA itself, VARA Chat or VarAC, and
+it has not been tested on air. Xara's author reports testing
 Xara against VARA HF 4.9.0. See
 [`third_party/xara/README.md`](third_party/xara/README.md).
 
@@ -1406,6 +1435,7 @@ All settings are environment variables. For the systemd service they go in
 | `JTTY_RX_QUALITY` | `economy` | JTTY decoder effort. `economy` uses about 40% of `full`'s CPU and decoded nearly as many weak signals in testing. `light` is in between, `full` matches WSJT-X's search exactly, and `auto` runs `full` but drops to `economy` when the Pi falls behind. |
 | `OLIVIA_FREQ_HZ` | `1500` | Olivia's default audio centre frequency, in Hz, for sending and receiving, until it is changed in the UI. The signal is 250 Hz wide; the receiver searches 125 Hz either side. |
 | `VARA_BW` | `500` | VARA bandwidth in Hz: `500`, `2300` or `2750`. See [VARA chat](#vara-chat). |
+| `VARA_NAME`, `VARA_QTH` | none | Your name and QTH, sent to the other station after the opening report, as VarAC's profile (`<NAME:…>`, `<QTH:…>`). `STATION_GRID` goes with them as the locator. |
 | `VARA_AUDIO_LATENCY_MS` | `500` | How far VARA's transmit audio lags what is written to the sound card, in ms (0 to 2000). The modem holds PTT that much longer and times its replies to suit. |
 | `OLIVIA_SQUELCH` | on | `off` turns off PiRO's filtering of junk characters and decodes exactly as fldigi does with its squelch off. See [Olivia](#rtty-jtty-olivia-and-feld-hell). |
 | `SSTV_SAVE_DIR` | none | If set, every received SSTV picture is also saved in this folder as a PNG (`YYYYMMDD-HHMMSSz-<mode>.png`, UTC). |
@@ -1689,7 +1719,8 @@ src/
               static-server.js, audio-bridge.js and audio-codecs.js,
               scope-bridge.js, one *-bridge.js per feature,
               radio-setup.js (NR, notch and filter for fax and EasyPal),
-              band-conditions.js, wsprnet.js, freedv-reporter.js, png.js
+              band-conditions.js, wsprnet.js, freedv-reporter.js, png.js,
+              varac.js (VarAC's messages and CQ slots)
   audio/      ALSA (alsa.js, mixer.js), Opus (opus-codec.js), PCM framing,
               resampling (resample.js, decimator.js), FFT (fft.js),
               noise reduction (rnnoise-filter.js, hamnoise-filter.js),
@@ -2093,7 +2124,8 @@ shapes.
   snapshot's `vara` and the `vara-status` broadcast (`{available, reason,
   callsign, bw, state: 'off'|'starting'|'listening'|'calling'|'connected'|
   'disconnecting', peer, linkBw, pending, busy, ptt, sn, bitrate, buffer,
-  heard: [{call, bw, sn, time}]}`). The conversation goes out as `vara-text`
+  heard: [{call, raw, slot, offsetHz, beacon, bw, sn, time}]}`; `call` without
+  a VarAC slot suffix, `raw` as heard). The conversation goes out as `vara-text`
   (`{text, own, note, time}`: received text, own text, or a note about the
   link); a page that connects is sent `{replace: true, segments}`, the
   conversation so far.
@@ -2541,6 +2573,7 @@ checked against the original, and the original's licence notice:
 | SSTV receive | slowrx (Oona Räisänen) | [`third_party/sstv/`](third_party/sstv/README.md) |
 | WSPR | wsprd and wsprsim (WSJT-X) | [`third_party/wsjtx-wsprd/`](third_party/wsjtx-wsprd/README.md) |
 | EasyPal | QSSTV (and Dream) | [`third_party/qsstv-drm/`](third_party/qsstv-drm/README.md) |
+| VarAC messages and CQ slots | hfmodem (W9SSJ) | [`third_party/hfmodem/`](third_party/hfmodem/README.md) |
 | VARA HF modem | Xara (x0rro), compiled to WebAssembly, not ported | [`third_party/xara/`](third_party/xara/README.md) |
 | RNNoise (patched demo) | xiph/rnnoise | [`third_party/rnnoise/`](third_party/rnnoise/README.md) |
 
@@ -2563,6 +2596,7 @@ Several of the cooler features in this app are built on the work of others:
 - SSTV receiver = Ported to JS from slowrx by Oona Räisänen (OH2EIQ), https://github.com/windytan/slowrx
 - EasyPal (HamDRM) receiver and transmitter = Ported to JS from QSSTV by Johan Maes (ON4QZ) and M. Bos (PA0MBO), https://github.com/ON4QZ/QSSTV, whose transmitter builds on Dream by Volker Fischer (TU Darmstadt)
 - WSPR support = Ported to JS from wsprd and wsprsim (K1JT, K9AN) in WSJT-X, https://wsjtx.github.io/wsjtx/index.html
+- VarAC messages and slots = Ported to JS from hfmodem by Saul St John (W9SSJ), https://github.com/sstjohn/hfmodem
 - VARA chat = Xara, an open-source VARA-compatible modem by x0rro (MIT), compiled to WebAssembly, https://github.com/x0rro/xara. VARA is by Jose Alberto Nieto Ros (EA5HVK).
 
 ## Licence

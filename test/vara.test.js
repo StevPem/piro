@@ -9,6 +9,7 @@ const { EventEmitter } = require('events');
 const { XaraModem, BLOCK } = require('../src/audio/xara/xara');
 const { VaraBridge, varaConfig, encodeText, cleanText } = require('../src/server/vara-bridge');
 const { EVENT } = require('../src/server/protocol');
+const varac = require('../src/server/varac');
 
 let failures = 0;
 function check(cond, msg) {
@@ -148,6 +149,27 @@ async function main() {
     check(bad.bw === 500 && bad.latencyMs === 500 && bad.warnings.length === 2, 'varaConfig reports bad values and uses the defaults');
   }
 
+  // --- VarAC's formats (server/varac.js, from hfmodem) ---
+  {
+    const d = (c) => varac.decodeCqCall(c);
+    check(d('F6JON-11').offsetHz === 750 && d('F6JON-15').offsetHz === 3750 && d('F6JON-1').offsetHz === -750 && d('F6JON-5').offsetHz === -3750, 'CQ suffixes: -1..-5 are 750-3750 Hz down, -11..-15 up');
+    check(d('N1AMD-9').beacon && d('N1AMD-9').call === 'N1AMD', '-9 is a beacon');
+    check(d('VK3ABC-7').call === 'VK3ABC-7' && d('VK3ABC-7').slot === null && d('VK3ABC').slot === null, 'any other suffix is a real SSID, kept; no suffix, no slot');
+    check(varac.frameMessage('héllo').toString('latin1') === '6 h\xc3\xa9llo', 'a message is its UTF-8 length, a space, the text');
+    check(varac.openingMessage('VK3TR', 7.6) === 'de VK3TR <R+08>' && varac.openingMessage('VK3TR', -120) === 'de VK3TR <R-99>', 'opening report: "de CALL <R+08>", -99..+99');
+    const p = new varac.MessageParser();
+    const a = p.feed(Buffer.from('5 hel'));
+    const b = p.feed(Buffer.from('lo3 abc'));
+    check(a.messages.length === 0 && b.messages.join('|') === 'hello|abc', 'messages are put back together across chunks');
+    const q = new varac.MessageParser();
+    check(q.feed(Buffer.from('Hello\r')).plain === 'Hello\r' && q.feed(Buffer.from('12 more')).plain === '12 more', 'a stream that is not framed is plain text from then on');
+    const r = varac.renderMessage('de F6JON <R-05>', 'F6JON');
+    check(r.note && r.text === 'F6JON reports your signal at -5 dB\n', 'the opening report reads as a note');
+    const t = varac.renderMessage('Name here <NAME:Jean> ok', 'F6JON');
+    check(!t.note && t.text === 'Name here  ok\n(name Jean)\n', 'tags inside text are put into words after it');
+    check(varac.renderMessage('<FOO:bar>', 'X').text === '<FOO:bar>\n', 'unknown tags are shown as they are');
+  }
+
   // --- The modem itself ---
   {
     check(throws(() => new XaraModem({ call: 'VK3TR', bw: 1000 }), /bandwidth/), 'XaraModem refuses a bandwidth VARA does not have');
@@ -248,6 +270,8 @@ async function main() {
   const down = await until(() => a.controlServer.state.vara.state === 'listening' && b.controlServer.state.vara.state === 'listening', 60);
   check(down, 'both are back to listening');
   check(/Disconnected from VK3ABC/.test(a.controlServer.text()) && /Disconnected from VK3TR/.test(b.controlServer.text()), 'both note the disconnection');
+  check(/VK3TR reports your signal at \d+ dB/.test(b.controlServer.text()) && /VK3ABC reports your signal at \d+ dB/.test(a.controlServer.text()), 'each sent VarAC\'s opening report, and the other shows it');
+  check(/VK3TR is closing the QSO/.test(b.controlServer.text()), "A's <DISC> reached B before the link closed");
   check(a.controlServer.state.ptt === false && b.controlServer.state.ptt === false, 'neither is left transmitting');
   console.log(`  (${simSec.toFixed(1)} s of simulated audio)`);
 
@@ -274,7 +298,11 @@ async function main() {
     w.emit('message', { type: 'lines', lines: ['CONNECTED VK3ABC VK3TR 500'] });
     check(s.controlServer.state.vara.state === 'connected' && s.controlServer.state.vara.peer === 'VK3ABC', 'an incoming call: connected, with the caller as peer');
     await sleep(100);
-    check(w.commands().at(-1) === 'DISCONNECT' && /Nothing sent or received/.test(s.controlServer.text()), 'an idle link is disconnected');
+    const sends = () => w.sent.filter((m) => m.type === 'send').map((m) => Buffer.from(m.data).toString('utf8'));
+    check(sends().at(-1) === '6 <DISC>' && w.commands().at(-1) === 'ABORT' && /Nothing sent or received/.test(s.controlServer.text()), "an idle link is closed: VarAC's <DISC> goes first");
+    w.emit('message', { type: 'buffer', bytes: 8 });
+    w.emit('message', { type: 'buffer', bytes: 0 });
+    check(w.commands().at(-1) === 'DISCONNECT', 'then DISCONNECT, once it has gone');
     w.emit('message', { type: 'lines', lines: ['OK', 'OK', 'DISCONNECTED'] }); // for the ABORT and DISCONNECT
     s.bridge.request({ action: 'connect', call: 'VK3XYZ' });
     w.emit('message', { type: 'lines', lines: ['WRONG'] });
@@ -285,6 +313,52 @@ async function main() {
     s.controlServer.emit('vara-active', false);
     await sleep(5);
     check(w.terminated && w.commands().at(-1) === 'ABORT' && s.controlServer.state.vara.state === 'off', "'vara-active' false: ABORT and the worker ended");
+  }
+  {
+    // VarAC: framed messages, the opening report and profile, plain-text stations, slot CQs.
+    const w = new StubWorker();
+    const spots = [];
+    const s = station('VK3TR', { bridge: { createWorker: () => w, pskReporter: { addSpot: (x) => spots.push(x) }, profile: { name: 'Steve', qth: 'Melbourne <home>', loc: 'QF22' } } });
+    s.controlServer.state.frequency = 14105000;
+    s.controlServer.state.pskSpotEnabled = true;
+    await s.bridge.activate();
+    const sends = () => w.sent.filter((m) => m.type === 'send').map((m) => Buffer.from(m.data).toString('latin1'));
+    const say = (...lines) => w.emit('message', { type: 'lines', lines });
+    const data = (text) => w.emit('message', { type: 'data', data: Uint8Array.from(Buffer.from(text, 'utf8')).buffer });
+
+    say('SN 4.2', 'CQFRAME F6JON-11 500');
+    const h = s.controlServer.state.vara.heard[0];
+    check(h.call === 'F6JON' && h.raw === 'F6JON-11' && h.slot === 11 && h.offsetHz === 750 && !h.beacon && h.sn === 4.2, 'a VarAC CQ "F6JON-11": F6JON, waiting on slot 11, 750 Hz up');
+    check(/CQ from F6JON \(waiting \+750 Hz from the calling frequency \(slot 11\), 500 Hz\)/.test(s.controlServer.text()), 'noted with its slot');
+    check(spots[0]?.call === 'F6JON', 'spotted without the slot suffix');
+    say('CQFRAME K1ABC-3 500', 'CQFRAME N1AMD-9 500');
+    check(s.controlServer.state.vara.heard[1].offsetHz === -2250 && s.controlServer.state.vara.heard[0].beacon === true && s.controlServer.state.vara.heard[0].call === 'N1AMD', '-3 is 2250 Hz down; -9 is a beacon');
+
+    say('SN -3.4', 'CONNECTED VK3TR F6JON 500');
+    check(sends()[0] === '15 de VK3TR <R-03>', 'on connecting, the opening report goes as a VarAC message: "15 de VK3TR <R-03>"');
+    check(sends()[1] === '47 <NAME:Steve>\r\n<QTH:Melbourne  home>\r\n<LOC:QF22>', 'then the profile tags (with < and > taken out of values)');
+    data('15 de F6JON <R');
+    data('-12>18 Bonjour, Steve. ');
+    data('73');
+    const text = s.controlServer.text();
+    check(/F6JON reports your signal at -12 dB\n/.test(text) && /Bonjour, Steve\. 73\n/.test(text), 'their messages arrive whole, across modem frames; the report is put into words: ' + JSON.stringify(text.slice(-60)));
+    data('10 <NAME:Jé>');
+    check(/F6JON name Jé\n/.test(s.controlServer.text()), 'lengths count UTF-8 bytes');
+    s.bridge.request({ action: 'send', text: 'Merci, 73 de VK3TR' });
+    check(sends().at(-1) === '18 Merci, 73 de VK3TR', 'own lines go as VarAC messages');
+    data('6 <DISC>');
+    check(/F6JON is closing the QSO/.test(s.controlServer.text()), 'their <DISC> is noted');
+    say('DISCONNECTED');
+
+    // A station sending plain text (VARA Chat): shown as it comes, and answered the same way.
+    say('SN 1', 'CONNECTED VK3ABC VK3TR 500');
+    data('Hello there\r');
+    check(/Hello there\n/.test(s.controlServer.text()), 'unframed text from the other station is shown as plain text');
+    s.bridge.request({ action: 'send', text: 'Hi' });
+    check(sends().at(-1) === 'Hi\r', 'and replies to it go as plain text, ending in CR');
+    s.bridge.request({ action: 'disconnect' });
+    check(w.commands().at(-1) === 'DISCONNECT' && !sends().includes('6 <DISC>'), 'no <DISC> to a plain-text station: straight to DISCONNECT');
+    await s.bridge.stop();
   }
   {
     // PSK Spot: stations heard (a CQ, the station connected to) go to PSK Reporter, with the S/N reported just before.
