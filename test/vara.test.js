@@ -166,8 +166,11 @@ async function main() {
   {
     const s = station('', { bridge: { callsign: '' } });
     check(s.controlServer.state.vara.available === false && /STATION_CALLSIGN/.test(s.controlServer.state.vara.reason), 'no callsign: VARA unavailable, and the snapshot says why');
+    const started = s.controlServer.events.filter((e) => e.type === EVENT.VARA_STATUS);
+    check(started.length === 1 && started[0].data.available === false, 'starting the bridge broadcasts its state (for a browser that connected before it existed)');
     await s.bridge.activate();
     check(!s.bridge.active && /STATION_CALLSIGN/.test(s.controlServer.errors()[0] || ''), 'activating it anyway reports why');
+    check(s.controlServer.events.filter((e) => e.type === EVENT.VARA_STATUS).length === 2, 'and broadcasts the state again, so the panel shows the reason');
     check(throws(() => s.bridge.request({ action: 'cq' }), /STATION_CALLSIGN/), 'and requests fail with the reason');
     const r = station('VK3TR', { rate: 8000 });
     check(/48000 Hz/.test(r.controlServer.state.vara.reason), 'audio not at 48 kHz: VARA unavailable');

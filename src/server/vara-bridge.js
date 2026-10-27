@@ -164,6 +164,9 @@ class VaraBridge {
     this.controlServer.on('vara-active', this._onActive);
     this.controlServer.on('vara', this._onRequest);
     this.controlServer.on('client-connected', this._onClientJoined);
+    // A browser that connected while the server was still starting has a
+    // snapshot without this state: send it now.
+    this.controlServer.broadcastJsonEvent(EVENT.VARA_STATUS, this.state);
     if (this.controlServer.state.varaActive) this.activate().catch(() => {});
   }
 
@@ -215,6 +218,7 @@ class VaraBridge {
     if (this._active) return;
     if (this.unavailable) {
       this._error(this.unavailable);
+      this.controlServer.broadcastJsonEvent(EVENT.VARA_STATUS, this.state); // the panel shows the reason too
       return;
     }
     this._active = true;
