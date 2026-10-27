@@ -397,6 +397,11 @@ class Civ extends EventEmitter {
     check(civ.mode === 'USB' && civ.dataMode === true && civ.log.filter((e) => e[0] === 'setMode' || e[0] === 'setDataMode').length === modeCalls, 'fourth click: VARA, radio left alone (USB, DATA MODE on)');
     check(server.state.oliviaActive === false && !oliviaRx.attached && server.state.varaActive === true && vara.active, 'Olivia receiver disarmed, VARA modem started');
     check(civ.log.some((e) => e[0] === 'setFrequency' && e[1] === 14105000), 'entering VARA on 20m tunes to the 14.105 MHz VarAC calling frequency');
+    for (const [band, hz] of [['160m', 1995000], ['30m', 10133000], ['17m', 18107000], ['12m', 24927000], ['10m', 28105000], ['20m', 14105000]]) {
+      await page.locator('#bands .chip', { hasText: new RegExp(`^${band}$`) }).click();
+      await sleep(150);
+      check(civ.freq === hz && civ.mode === 'USB' && server.state.varaActive, `in VARA, the ${band} band chip goes to ${hz / 1e6} MHz USB`);
+    }
     check((await vis('#vara-rx')) && !(await vis('#olivia-rx')) && !(await vis('#tty-freq')), 'VARA: its panel shown (not Olivia\'s), no frequency box');
     check((await page.locator('#vara-status').textContent()) === 'listening (500 Hz)', 'status: listening (500 Hz)');
     check(await page.locator('#tty-send-btn').isDisabled(), 'Send is off until there is a QSO');

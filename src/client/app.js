@@ -262,12 +262,17 @@ const HELL_FREQUENCIES = {
 const HELL_DEFAULT_TONE_HZ = 1000;
 
 // VARA chat: the VarAC calling frequencies (USB dial), where VarAC and VARA
-// Chat users call CQ at 500 Hz bandwidth. Other bands have no agreed
-// frequency, so their chips keep their ordinary quick-tune point.
+// Chat users call CQ at 500 Hz bandwidth. Every band chip has one.
 const VARA_FREQUENCIES = {
+  '160m': 1995000,
   '80m': 3595000,
   '40m': 7105000,
+  '30m': 10133000,
   '20m': 14105000,
+  '17m': 18107000,
+  '15m': 21105000,
+  '12m': 24927000,
+  '10m': 28105000,
   '6m': 50330000,
 };
 const HELL_MIN_TONE_HZ = 300; // same limits as the server (audio/hell-rx.js)
