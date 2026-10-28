@@ -4657,3 +4657,22 @@ model for how to approach that.
   opening report with `<S:VEAB>`, the N4SDN, R9SFG and DH7LK beacons,
   OE5RPP's broadcast to ALL, `<Q:75>` and `<Q:-375>`). Service-worker
   cache v116.
+
+### VARA: PSK Spot reports as mode VARAC; first on-air QSO (v117)
+
+- **First QSO on air** (28 October 2026, reported by the operator):
+  PiRO called ZL2TNB (VarAC) on 14.105 and connected; ZL2TNB answered
+  `<AWQ>`; PiRO asked to QSY by itself and both moved to 14.10575
+  (`<QSYR>` came back); ZL2TNB reported PiRO at +10 dB; chat text was
+  exchanged; on Disconnect PiRO went back to 14.105. So transmitting,
+  the VarAC message format and the QSY handshake now work against real
+  VarAC at least once. ZL2TNB's `<S:…>` tag had a letter PiRO doesn't
+  know ("C"); it is shown as it is.
+- **PSK Spot question:** only ZL2TNB seemed to be reported. PiRO does
+  spot every station heard (CQ frames, beacons, and the station connected
+  to; checked again by feeding VaraBridge the modem's lines), but as mode
+  "VARA". VarAC's own reports use "VARAC" (VarAC manual V13.2.7,
+  "Upload data to PSKReporter": all stations you spotted, mode VARAC), so
+  on a map filtered to VARAC only other stations' reports appear (such
+  as ZL2TNB's of you). PiRO now reports "VARAC" too.
+- Tests: vara.test.js (the spot's mode). Service-worker cache v117.

@@ -12,7 +12,7 @@ Hamlib, no separate audio server and no extra apps.
 Written by VK3TR. Licensed AGPL-3.0-only (see
 [Licence](#licence)).
 
-**Current build: v116.** This is the version the app shows next to its title.
+**Current build: v117.** This is the version the app shows next to its title.
 It is the `CACHE_NAME` number in `src/client/sw.js`, which goes up with every
 change to the web app.
 
@@ -958,12 +958,14 @@ John, W9SSJ, which worked them out from recordings of VarAC on air. See
 [`third_party/hfmodem/README.md`](third_party/hfmodem/README.md).
 
 **PSK Spot.** The FT8 **PSK Spot** button is shown in VARA too (the same
-setting). While it is ticked, stations heard are reported to
-[pskreporter.info](https://pskreporter.info/): each station heard calling
-CQ, and the station you connect to, with the S/N the modem measured, mode
-"VARA", at the dial frequency plus 1500 Hz (VARA's centre). Reports go out
-in a batch every 5 minutes, with FT8's. It needs `STATION_CALLSIGN`. Not
-yet checked on pskreporter.info's map.
+setting). While it is ticked, every station heard is reported to
+[pskreporter.info](https://pskreporter.info/): each CQ and beacon, and the
+station you connect to, with the S/N the modem measured, at the dial
+frequency plus 1500 Hz (VARA's centre). The mode is "VARAC", the name
+VarAC's own reports use, so on the map they appear with VarAC users'
+(choose VARAC in the mode list). Reports go out in a batch every 5
+minutes, with FT8's. It needs `STATION_CALLSIGN`. (Before v117 the mode
+was "VARA", so those reports are listed apart from VarAC's.)
 
 **Other stations can call you.** While VARA is selected the modem listens,
 answers a call by itself, and keys the radio. Leave VARA selected only while
@@ -998,9 +1000,12 @@ traffic: recordings of 14.105 and 7.105 MHz from public KiwiSDRs (October
 stations, VMail notices, a broadcast to ALL, CQ frames). The same
 recordings show VarAC's sequence on the calling frequency (`<Q>` or
 `<AWQ>`, then `<Q:n>`, `<QSYR>` and the reports on the slot), which is
-what PiRO does. Transmitting has only been tested between two PiRO
-stations through a simulated channel: it has not been tested with VARA
-itself, VARA Chat or VarAC, and it has not been tested on air. Xara's author reports testing
+what PiRO does. On air (28 October 2026), PiRO called ZL2TNB, running
+VarAC, on 14.105: it connected, ZL2TNB answered `<AWQ>`, PiRO moved the
+QSO to 14.10575 by itself, both sent reports (ZL2TNB heard PiRO at
++10 dB), chat text was exchanged, and PiRO went back to 14.105 after.
+Beyond that one QSO, transmitting has only been tested between two PiRO
+stations through a simulated channel; not yet with VARA Chat. Xara's author reports testing
 Xara against VARA HF 4.9.0. See
 [`third_party/xara/README.md`](third_party/xara/README.md).
 
