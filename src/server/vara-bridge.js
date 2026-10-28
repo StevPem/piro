@@ -17,6 +17,11 @@ const MAX_BACKLOG_SEC = 1; // the modem must keep up with real time, or its timi
 const TRANSCRIPT_MAX_CHARS = 6000;
 const HEARD_MAX = 10;
 const DISC_DRAIN_MS = 20 * 1000; // after sending <DISC>: the longest to wait for it to go before DISCONNECT
+// VarAC's QSY handshake (hfmodem, contact/varac.py): how long each step may take.
+const QSY_ACK_MS = 8 * 1000; // after a request arrives: for our modem's acknowledgement to go out
+const QSY_SEND_MS = 45 * 1000; // after sending a request: for it to be delivered
+const QSY_STEP_MS = 60 * 1000; // on the new frequency: for <TL>, <QSYR> or the opening report
+const QSY_MAX_HZ = 4000; // a VarAC slot is at most 3750 Hz from the calling frequency
 const SPOT_SN_MS = 2000; // the modem reports a frame's S/N just before the frame (a CQ, a connection)
 const SIGNAL_CENTRE_HZ = 1500; // VARA HF is centred on 1500 Hz audio: the spot frequency is dial + this
 const CALLSIGN_RE = /^[A-Z0-9]{1,3}[0-9][A-Z0-9]{0,4}(\/[A-Z0-9]{1,4})?(-[0-9]{1,2})?$/;
@@ -37,6 +42,11 @@ function varaConfig(env = process.env) {
     else warnings.push(`VARA_AUDIO_LATENCY_MS="${env.VARA_AUDIO_LATENCY_MS}" must be 0 to 2000; using ${DEFAULT_LATENCY_MS}.`);
   }
   return { bw, latencyMs, warnings };
+}
+
+/** 14105750 -> "14.10575" */
+function mhzText(hz) {
+  return (hz / 1e6).toFixed(6).replace(/0+$/, '').replace(/\.$/, '');
 }
 
 /** Text from the link as the transcript shows it: CR as a line break, other control characters dropped. */
@@ -172,6 +182,8 @@ class VaraBridge {
       sn: null,
       bitrate: null,
       buffer: 0,
+      qsyReady: false, // the other station has said it is ready to QSY (<Q> or <AWQ>)
+      qsy: null, // a QSY under way: {role: 'requester'|'receiver', target, phase}
       heard: [], // CQ frames heard, newest first: [{call, raw, slot, offsetHz, beacon, bw, sn, time}] (see varac.decodeCqCall())
     };
   }
@@ -307,10 +319,10 @@ class VaraBridge {
   }
 
   /**
-   * A browser's VARA request: {action: 'cq'|'connect'|'disconnect'|'send', call?, text?}.
+   * A browser's VARA request: {action: 'cq'|'connect'|'disconnect'|'send'|'qsy', call?, text?, offsetHz?}.
    * Throws if it can't be done (ws-server.js sends the message back to that browser).
    */
-  request({ action, call, text } = {}) {
+  request({ action, call, text, offsetHz } = {}) {
     if (!this._active || !this._worker) throw new Error(this.unavailable || 'VARA is not running.');
     const s = this.state;
     if (action === 'cq') {
@@ -338,6 +350,17 @@ class VaraBridge {
       this._sendText(line);
       this._addText(`${line}\n`, { own: true });
       this._touch();
+    } else if (action === 'qsy') {
+      // VarAC's QSY in a QSO: ask the other station to move with us (QSYD/QSYU).
+      const link = this._link;
+      if (s.state !== 'connected' || !link) throw new Error('QSY in a QSO needs a QSO.');
+      if (link.parser.plain) throw new Error(`${s.peer} doesn't use VarAC's messages, so it can't be asked to QSY. Agree a frequency in the chat instead.`);
+      if (link.qsy) throw new Error('A QSY is already under way.');
+      if (!link.ready) throw new Error(`${s.peer} hasn't said it is ready to QSY yet.`);
+      const dial = this.controlServer.state.frequency;
+      const off = Number(offsetHz);
+      if (!Number.isFinite(dial) || !Number.isFinite(off) || !off || Math.abs(off) > QSY_MAX_HZ) throw new Error('No frequency to QSY to.');
+      this._requestQsy(dial + off);
     } else {
       throw new Error(`Unknown VARA request "${action}".`);
     }
@@ -414,7 +437,13 @@ class VaraBridge {
       }
       case 'PTT':
         if (rest[0] === 'ON') this._key().catch(() => {});
-        else this._unkey().catch(() => {});
+        else {
+          this._unkey().catch(() => {});
+          if (this._link?.qsy?.phase === 'ack') this._qsyMove();
+        }
+        break;
+      case 'KISS':
+        this._kiss(Number(rest[0]), Buffer.from(rest[1] || '', 'hex'));
         break;
       case 'CONNECTED': {
         const [caller, answerer, width] = rest;
@@ -424,8 +453,15 @@ class VaraBridge {
         this._spot(peer, sn);
         this._addText(`Connected to ${peer}${Number(width) ? ` (${width} Hz)` : ''}\n`, { note: true });
         this._endLink();
-        this._link = { parser: new varac.MessageParser(), openingSent: false, disc: null };
-        if (sn != null) this._sendOpening(sn);
+        // VarAC keeps the opening report off the calling frequency: there the
+        // answering station only says it is ready to QSY (<Q>), and the reports
+        // follow once both have moved (hfmodem, REL V11.4).
+        const onCf = varac.CALLING_HZ.includes(this.controlServer.state.frequency);
+        // homeHz: where to go back to if a QSY moves this QSO off the calling frequency.
+        this._link = { parser: new varac.MessageParser(), openingSent: false, disc: null, onCf, ready: false, qsy: null, homeHz: onCf ? this.controlServer.state.frequency : null, moved: false };
+        if (onCf) {
+          if (caller !== this.callsign) this._sendText('<Q>');
+        } else if (sn != null) this._sendOpening(sn);
         this._touch();
         break;
       }
@@ -434,7 +470,14 @@ class VaraBridge {
         const msg = s.state === 'calling' ? `No answer from ${s.peer}` : s.peer ? `Disconnected from ${s.peer}` : 'Disconnected';
         this._update({ state: 'listening', peer: null, linkBw: null, pending: false, sn: null, bitrate: null, buffer: 0 });
         this._addText(`${msg}\n`, { note: true });
+        // A QSO moved off the calling frequency by a QSY: back to it, as VarAC does.
+        const home = this._link?.moved ? this._link.homeHz : null;
         this._endLink();
+        if (home && this.controlServer.state.frequency !== home) {
+          this._tune(home)
+            .then(() => this._addText(`Back on the calling frequency (${mhzText(home)} MHz)\n`, { note: true }))
+            .catch((err) => this._error(`Couldn't go back to the calling frequency: ${err.message}`));
+        }
         clearTimeout(this._idleTimer);
         this._idleTimer = null;
         break;
@@ -455,7 +498,7 @@ class VaraBridge {
         if (this.state.state === 'connected') {
           this._update({ sn });
           // VarAC opens with the S/N it hears the other station at: the first one, if it wasn't known at CONNECTED.
-          if (this._link && !this._link.openingSent && Number.isFinite(sn)) this._sendOpening(sn);
+          if (this._link && !this._link.onCf && !this._link.qsy && !this._link.openingSent && Number.isFinite(sn)) this._sendOpening(sn);
         }
         break;
       }
@@ -577,6 +620,7 @@ class VaraBridge {
     for (const m of messages) {
       const r = varac.renderMessage(m, this.state.peer);
       if (r.text) this._addText(r.text, { note: r.note });
+      if (this._link === link) this._varacControl(m);
     }
     if (plain) this._addText(cleanText(plain));
   }
@@ -599,6 +643,11 @@ class VaraBridge {
 
   /** The send buffer changed: once <DISC> has been queued and then gone, DISCONNECT. */
   _drained() {
+    const q = this._link?.qsy;
+    if (q?.phase === 'sending') {
+      if (this.state.buffer > 0) q.queued = true;
+      else if (q.queued) this._qsyMove();
+    }
     const disc = this._link?.disc;
     if (!disc || disc.done) return;
     if (this.state.buffer > 0) disc.queued = true;
@@ -615,7 +664,140 @@ class VaraBridge {
 
   _endLink() {
     if (this._link?.disc) clearTimeout(this._link.disc.timer);
+    if (this._link?.qsy) clearTimeout(this._link.qsy.timer);
     this._link = null;
+    if (this.state.qsy || this.state.qsyReady) this._update({ qsy: null, qsyReady: false });
+  }
+
+  /** VarAC's control messages in the QSO: readiness to QSY, a QSY request, and the steps of the QSY handshake. */
+  _varacControl(m) {
+    const link = this._link;
+    const q = link.qsy;
+    if (q?.phase === 'tl' && /<TL>/.test(m)) {
+      this._sendText('<QSYR>');
+      this._qsyPhase('opening');
+      return;
+    }
+    if (q?.phase === 'qsyr' && /<QSYR>/.test(m)) {
+      this._qsyDone();
+      return;
+    }
+    if (q?.phase === 'opening' && varac.isOpening(m)) {
+      this._qsyDone();
+      return;
+    }
+    if (/<(Q|AWQ)>/.test(m) && !link.ready) {
+      link.ready = true;
+      this._update({ qsyReady: true });
+      if (link.onCf && !q) this._addText(`${this.state.peer} is ready to QSY off the calling frequency (QSYD/QSYU)\n`, { note: true });
+    }
+    const dial = this.controlServer.state.frequency;
+    const target = varac.qsyTarget(m, dial);
+    if (target != null && !q) {
+      if (!Number.isFinite(dial) || target === dial || Math.abs(target - dial) > QSY_MAX_HZ) {
+        this._addText(`Not following: ${mhzText(target)} MHz is not a nearby slot\n`, { note: true });
+        return;
+      }
+      // Our modem acknowledges the request first; move once it has (hfmodem: answer_qsy_steps()).
+      link.qsy = { role: 'receiver', target, phase: null, timer: null };
+      this._addText(`Moving to ${mhzText(target)} MHz with ${this.state.peer}\n`, { note: true });
+      this._qsyPhase('ack', QSY_ACK_MS, () => (this._keyed ? this._qsyFail('our modem was still transmitting') : this._qsyMove()));
+    }
+  }
+
+  /** QSYD/QSYU in a QSO: send VarAC's <QSYF>, move once it has been delivered, then <TL> and wait for <QSYR>. */
+  _requestQsy(target) {
+    const link = this._link;
+    link.qsy = { role: 'requester', target, phase: null, timer: null, queued: false };
+    this._sendText(varac.qsyRequest(target));
+    this._addText(`Asking ${this.state.peer} to QSY to ${mhzText(target)} MHz\n`, { note: true });
+    this._qsyPhase('sending', QSY_SEND_MS, () => this._qsyFail(`${this.state.peer} didn't receive the request`));
+  }
+
+  _qsyPhase(phase, ms = QSY_STEP_MS, onTimeout) {
+    const q = this._link?.qsy;
+    if (!q) return;
+    clearTimeout(q.timer);
+    q.phase = phase;
+    const what = { ack: `waiting for our acknowledgement`, sending: `sending the request`, tl: `waiting for ${this.state.peer}`, qsyr: `waiting for ${this.state.peer}`, opening: `waiting for ${this.state.peer}'s report` }[phase];
+    q.timer = setTimeout(onTimeout || (() => this._qsyFail(`${what} timed out`)), ms);
+    q.timer.unref?.();
+    this._update({ qsy: { role: q.role, target: q.target, phase } });
+  }
+
+  /** Both sides' move: retune, then the requester says it has arrived (<TL>). */
+  async _qsyMove() {
+    const link = this._link;
+    const q = link?.qsy;
+    if (!q || (q.phase !== 'ack' && q.phase !== 'sending') || q.moving) return;
+    q.moving = true;
+    clearTimeout(q.timer);
+    try {
+      await this._tune(q.target);
+    } catch (err) {
+      this._qsyFail(`couldn't retune: ${err.message}`);
+      return;
+    }
+    if (this._link !== link) return;
+    link.moved = true;
+    link.onCf = varac.CALLING_HZ.includes(q.target);
+    link.openingSent = false;
+    if (q.role === 'requester') {
+      this._sendText('<TL>');
+      this._qsyPhase('qsyr');
+    } else this._qsyPhase('tl');
+  }
+
+  /** The handshake is complete: our opening report on the new frequency. */
+  _qsyDone() {
+    const link = this._link;
+    const q = link?.qsy;
+    if (!q) return;
+    clearTimeout(q.timer);
+    link.qsy = null;
+    this._update({ qsy: null });
+    this._addText(`QSY done: on ${mhzText(q.target)} MHz with ${this.state.peer}\n`, { note: true });
+    this._sendOpening(this.state.sn ?? 0);
+  }
+
+  _qsyFail(why) {
+    const link = this._link;
+    const q = link?.qsy;
+    if (!q) return;
+    clearTimeout(q.timer);
+    link.qsy = null;
+    this._update({ qsy: null });
+    this._addText(`QSY to ${mhzText(q.target)} MHz didn't complete: ${why}\n`, { note: true });
+  }
+
+  /** Retunes the radio (the server's own change: the browsers are told). */
+  async _tune(hz) {
+    const civ = this.controlServer.civ;
+    if (civ) await civ.setFrequency(hz);
+    this.controlServer.state.frequency = hz;
+    this.controlServer.broadcastJsonEvent(EVENT.FREQUENCY, { value: hz });
+    this.controlServer.emit?.('frequency', hz);
+  }
+
+  /** A KISS broadcast heard on air: VarAC's beacon (command 2) or an addressed notice such as "VMail waiting" (AX.25 UI, command 1). */
+  _kiss(command, bytes) {
+    const sn = this._takeSn();
+    if (command === 2) {
+      const b = varac.decodeBeacon(bytes.toString('latin1'));
+      if (!b) return;
+      const entry = { call: b.call, raw: b.call, slot: null, offsetHz: 0, beacon: true, grid: b.grid, services: b.services, bw: null, sn, time: this.now() };
+      this.state.heard = [entry, ...this.state.heard.filter((h) => h.call !== b.call)].slice(0, HEARD_MAX);
+      this._spot(b.call, sn);
+      this.controlServer.broadcastJsonEvent(EVENT.VARA_STATUS, this.state);
+      this._addText(`Beacon from ${b.call} (${[b.grid, b.services.length ? `offers ${b.services.join(', ')}` : ''].filter(Boolean).join('; ')})\n`, { note: true });
+      return;
+    }
+    const ui = varac.decodeUi(bytes, command);
+    if (!ui) return;
+    if (/^<SMP>/.test(ui.info)) {
+      const forUs = ui.to.replace(/-\d+$/, '') === this.callsign;
+      this._addText(forUs ? `${ui.from} has VMail waiting for you (PiRO can't collect VMail yet)\n` : `${ui.from} has VMail waiting for ${ui.to}\n`, { note: true });
+    } else this._addText(`${ui.from} to ${ui.to}: ${cleanText(ui.info)}\n`, { note: true });
   }
 
   /** Something was sent or received: restart the idle clock. */

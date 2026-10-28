@@ -22,6 +22,14 @@
  */
 
 const SLOT_STEP_HZ = 750;
+/** VarAC's calling frequencies (USB dial), as the client's VARA_FREQUENCIES. */
+const CALLING_HZ = [1995000, 3595000, 7105000, 10133000, 14105000, 18107000, 21105000, 24927000, 28105000, 50330000];
+const SERVICE_BITS = [
+  [1, 'VMail'],
+  [2, 'email'],
+  [4, 'AI'],
+  [8, 'BBS'],
+];
 const BEACON_SUFFIX = 9;
 const MAX_MESSAGE = 1_000_000;
 
@@ -101,7 +109,7 @@ const TAG_TEXT = {
 };
 
 function mhz(hz) {
-  return (hz / 1e6).toFixed(4).replace(/0+$/, '').replace(/\.$/, '');
+  return (hz / 1e6).toFixed(6).replace(/0+$/, '').replace(/\.$/, '');
 }
 
 /** What one tag says, in words, or null to show it as it is. */
@@ -176,10 +184,93 @@ function cleanLines(text) {
   return text.replace(/\r\n?/g, '\n').replace(/[\x00-\x07\x0b-\x1f\x7f]/g, '').replace(/[ \t]+\n/g, '\n');
 }
 
+/**
+ * VarAC's "advanced beacon", sent as a KISS broadcast (command 2): 20
+ * characters, "2", a character not yet understood, a status letter ('@'
+ * plus service bits: 1 VMail, 2 email, 4 AI, 8 BBS), the 6-character
+ * locator and the callsign, space padded (hfmodem, BEACON_TEXT). The
+ * second character is a digit in hfmodem's recordings; one heard on
+ * 2026-10-28 (DH7LK) had a letter, so any is taken.
+ * @returns {{call, grid, services: string[]}|null}
+ */
+function decodeBeacon(text) {
+  const m = /^2[0-9A-Z]([@-O])([A-R]{2}[0-9]{2}[A-X]{2})([A-Z0-9/]{3,9}) *$/.exec(String(text));
+  if (!m) return null;
+  const bits = m[1].charCodeAt(0) - 64;
+  return { call: m[3], grid: m[2], services: SERVICE_BITS.filter(([b]) => bits & b).map(([, n]) => n) };
+}
+
+/** One AX.25 address, shifted: `len` callsign bytes then an SSID byte. "OH8XAT", or "OH8XAT-3". */
+function ax25Address(b, len) {
+  let call = '';
+  for (let i = 0; i < len; i++) call += String.fromCharCode(b[i] >> 1);
+  call = call.trim();
+  const ssid = (b[len] >> 1) & 0x0f;
+  return ssid ? `${call}-${ssid}` : call;
+}
+
+/**
+ * An AX.25 UI frame from a KISS broadcast, as VarAC sends its addressed
+ * notices: {to, from, info} or null. VARA's KISS command 1 ("long" AX.25,
+ * as on air on 2026-10-28) has 7-character callsigns (8-byte addresses);
+ * command 0 is ordinary AX.25 (6 characters, 7 bytes). "<SMP>" means the
+ * sender has VMail waiting for the station it is addressed to (hfmodem,
+ * docs/CONSOLE.md).
+ */
+function decodeUi(bytes, command = 1) {
+  const b = Buffer.from(bytes);
+  const len = command === 1 ? 7 : 6;
+  const step = len + 1;
+  if (b.length < 2 * step + 2) return null;
+  let end = step;
+  while (end + step <= b.length && !(b[end + len] & 1)) end += step; // digipeaters, if any
+  end += step;
+  if (end + 2 > b.length || b[end] !== 0x03) return null; // UI frames only
+  return { to: ax25Address(b.subarray(0, step), len), from: ax25Address(b.subarray(step, 2 * step), len), info: b.subarray(end + 2).toString('latin1') };
+}
+
+/**
+ * A QSY request in a message, as the frequency to move to: <QSYF> with a
+ * 12-digit frequency, <QF:Hz>, or <Q:n> (n tens of Hz from the dial now).
+ * Bare <Q> (and <AWQ>) only say the station is ready to QSY. Null if none.
+ */
+function qsyTarget(message, dialHz) {
+  const f = /<QSYF>(\d{1,12})<\/QSYF>/.exec(message);
+  if (f) return Number(f[1]);
+  const qf = /<QF:(\d+)>/.exec(message);
+  if (qf) return Number(qf[1]);
+  const q = /<Q:(-?\d+)>/.exec(message);
+  if (q && Number.isFinite(dialHz)) return dialHz + Number(q[1]) * 10;
+  return null;
+}
+
+/** The QSY request this station sends: VarAC's <QSYF>, a 12-digit frequency. */
+function qsyRequest(hz) {
+  return `<QSYF>${String(Math.round(hz)).padStart(12, '0')}</QSYF>`;
+}
+
+/** Whether a message is the other station's opening report ("de CALL <R+05>"). */
+function isOpening(message) {
+  return /^\s*de\s+[A-Z0-9/-]+\s+<R[+-]\d{2}>/i.test(message);
+}
+
 /** The opening report this station sends after connecting: "de CALL <R+05>". */
 function openingMessage(mycall, sn) {
   const r = Math.max(-99, Math.min(99, Math.round(sn)));
   return `de ${mycall} <R${r < 0 ? '-' : '+'}${String(Math.abs(r)).padStart(2, '0')}>`;
 }
 
-module.exports = { decodeCqCall, frameMessage, MessageParser, renderMessage, openingMessage, SLOT_STEP_HZ };
+module.exports = {
+  decodeCqCall,
+  decodeBeacon,
+  decodeUi,
+  frameMessage,
+  MessageParser,
+  renderMessage,
+  openingMessage,
+  qsyTarget,
+  qsyRequest,
+  isOpening,
+  SLOT_STEP_HZ,
+  CALLING_HZ,
+};

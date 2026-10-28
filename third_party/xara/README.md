@@ -24,7 +24,7 @@ independent implementation.
 | `xara-wasm.patch` | The only change to xara's own code: xara-host's TCP server, KISS server and writer use Unix sockets, so they are left out on WebAssembly |
 | `wasm/` | PiRO's wrapper crate (`xara-wasm`), added to xara's workspace by the build |
 | `wasm/src/lib.rs` | The exported functions (`xr_init`, `xr_process`, `xr_command`, `xr_send`, `xr_take`, ...) and the PTT lead delay |
-| `wasm/src/tnc.rs` | xara's `crates/xara/src/tnc.rs` (its VARA host interface) without sockets: commands and data come from memory, and the replies and received data are left in buffers. The handling of every VARA command is xara's own code. The KISS port, web UI telemetry and UI controls are left out |
+| `wasm/src/tnc.rs` | xara's `crates/xara/src/tnc.rs` (its VARA host interface) without sockets: commands and data come from memory, and the replies and received data are left in buffers. The handling of every VARA command is xara's own code. The web UI telemetry and UI controls are left out. KISS frames heard on air (VarAC's beacons and notices) are always listened for, and passed up as a line of PiRO's own, `KISS <command> <hex>`, instead of to a KISS port |
 | `wasm/ui-shim/` | A stand-in for the `xara-ui` crate, which needs sockets and files: just the one type (`telemetry::Link`) that xara's station code names |
 | `LICENSE` | xara's MIT licence |
 

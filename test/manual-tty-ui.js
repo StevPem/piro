@@ -460,12 +460,26 @@ class Civ extends EventEmitter {
     check(civ.log.filter((e) => e[0] === 'setPtt').at(-1)[1] === false, 'PTT OFF releases it');
     check((await page.locator('#vara-status').textContent()) === 'QSO with K1ABC · S/N 7.5 dB · 245 bps', 'connected: ' + (await page.locator('#vara-status').textContent()));
     check(!(await page.locator('#tty-send-btn').isDisabled()) && (await page.locator('#vara-connect-btn').textContent()) === 'Disconnect', 'Send is on; Connect became Disconnect');
-    check((await page.locator('#vara-qsyd-btn').isDisabled()) && (await page.locator('#vara-qsyu-btn').isDisabled()), 'QSYD and QSYU are off during a QSO (they move only this radio)');
+    check((await page.locator('#vara-qsyd-btn').isDisabled()) && (await page.locator('#vara-qsyu-btn').isDisabled()), 'QSYD and QSYU are off in a QSO until the other station says it is ready to QSY');
 
-    // VarAC: each side opens with "de CALL <R..>", in length-prefixed messages
+    // VarAC on the calling frequency: no reports there; the answerer says it is ready (<Q>), the caller asks to QSY.
     const sentText = () => w.sent.filter((m) => m.type === 'send').map((m) => Buffer.from(m.data).toString('utf8'));
-    check(sentText()[0] === '15 de VK2IO <R+08>', 'on connecting, VarAC\'s opening report goes out: ' + JSON.stringify(sentText()[0]));
     const varacMsg = (t) => { const b = Buffer.from(t, 'utf8'); return Buffer.concat([Buffer.from(`${b.length} `), b]); };
+    check(sentText().length === 0, 'calling on the calling frequency: nothing sent yet (no report there, as VarAC)');
+    w.emit('message', { type: 'data', data: Uint8Array.from(varacMsg('<Q>')).buffer });
+    await page.waitForFunction(() => /ready to QSY$/.test(document.getElementById('vara-status').textContent) && !document.getElementById('vara-qsyu-btn').disabled, null, { timeout: 4000 }).catch(() => {});
+    check(!(await page.locator('#vara-qsyu-btn').isDisabled()) && /K1ABC is ready to QSY off the calling frequency/.test(await page.locator('#vara-rx-text').textContent()), "K1ABC's <Q>: ready to QSY; QSYU and QSYD come on");
+    await page.locator('#vara-qsyu-btn').click();
+    await sleep(150);
+    check(sentText()[0] === '25 <QSYF>000014105750</QSYF>' && civ.freq === 14105000, 'QSYU in the QSO asks K1ABC to QSY to 14.10575 (and waits for it to be delivered)');
+    w.emit('message', { type: 'buffer', bytes: 25 });
+    w.emit('message', { type: 'buffer', bytes: 0 });
+    await sleep(150);
+    check(civ.freq === 14105750 && sentText()[1] === '4 <TL>', 'delivered: the radio moves, and <TL> says so');
+    check(await page.waitForFunction(() => /QSY to 14\.10575 MHz: waiting for K1ABC/.test(document.getElementById('vara-status').textContent), null, { timeout: 3000 }).then(() => true, () => false), 'the status line shows the QSY under way');
+    w.emit('message', { type: 'data', data: Uint8Array.from(varacMsg('<QSYR>')).buffer });
+    await sleep(150);
+    check(sentText()[2] === '15 de VK2IO <R+08>' && /QSY done: on 14\.10575 MHz with K1ABC/.test(await page.locator('#vara-rx-text').textContent()), "K1ABC's <QSYR>: done; the opening report goes out on the new frequency");
     w.emit('message', { type: 'data', data: Uint8Array.from(Buffer.concat([varacMsg('de K1ABC <R-03>'), varacMsg('<NAME:Bob>')])).buffer });
     await page.waitForFunction(() => /K1ABC reports your signal at -3 dB/.test(document.getElementById('vara-rx-text').textContent), null, { timeout: 4000 }).catch(() => {});
     check(/K1ABC reports your signal at -3 dB\nK1ABC name Bob\n/.test(await page.locator('#vara-rx-text').textContent()), 'their opening report and name are shown in words, as notes');
@@ -477,7 +491,7 @@ class Civ extends EventEmitter {
     await page.locator('#tty-input').fill('Good morning, name Ian, QTH Sydney');
     await page.locator('#tty-input').press('Enter');
     await page.waitForFunction(() => document.getElementById('tty-input').value === '', null, { timeout: 4000 });
-    check(sentText().length === 2 && sentText()[1] === '34 Good morning, name Ian, QTH Sydney', 'Enter sends the line as a VarAC message; the box is cleared');
+    check(sentText().at(-1) === '34 Good morning, name Ian, QTH Sydney', 'Enter sends the line as a VarAC message; the box is cleared');
     check((await page.locator('#vara-rx-text .olivia-rx__own').last().textContent()).includes('Good morning, name Ian'), 'own line shown in the conversation, marked as own');
     if (process.env.VARA_SHOT) await page.locator('#vara-rx').screenshot({ path: process.env.VARA_SHOT });
 
@@ -501,6 +515,7 @@ class Civ extends EventEmitter {
     say('OK', 'DISCONNECTED');
     await page.waitForFunction(() => document.getElementById('vara-status').textContent === 'listening (500 Hz)', null, { timeout: 4000 });
     check(/Disconnected from K1ABC/.test(await page.locator('#vara-rx-text').textContent()) && (await page.locator('#tty-send-btn').isDisabled()), 'back to listening; noted; Send off');
+    check(civ.freq === 14105000 && /Back on the calling frequency \(14\.105 MHz\)/.test(await page.locator('#vara-rx-text').textContent()), 'and back on the calling frequency, as VarAC does after a QSY');
 
     // A VarAC CQ waiting on slot 11 (750 Hz up): tap it, Connect moves there and calls the plain callsign; back afterwards.
     say('SN 3', 'CQFRAME F6JON-11 500');
@@ -517,6 +532,14 @@ class Civ extends EventEmitter {
     check(civ.freq === 14105000 && /No answer from F6JON/.test(await page.locator('#vara-rx-text').textContent()), 'no answer: back to the calling frequency');
     say('CQFRAME N1AMD-9 500');
     await page.waitForFunction(() => [...document.querySelectorAll('#vara-heard .vara-rx__heard-call')].some((b) => b.textContent === 'N1AMD beacon'), null, { timeout: 4000 }).then(() => check(true, 'a -9 is listed as a beacon'), () => check(false, 'a -9 is listed as a beacon'));
+    // VarAC's broadcasts (KISS frames, as recorded on air on 2026-10-28): OH8XAT's beacon, and its VMail notice to HB9FIH
+    say('SN 5.1', 'KISS 2 32314f4b50313052514f48385841542020202020', 'KISS 1 9084728c929040609e9070b082a8406103f03c534d503e');
+    const beaconOk = await page.waitForFunction(() => {
+      const b = [...document.querySelectorAll('#vara-heard .vara-rx__heard-call')].find((x) => x.textContent === 'OH8XAT beacon');
+      return b && /from KP10RQ \(offers VMail, email, AI, BBS\)/.test(b.title);
+    }, null, { timeout: 4000 }).then(() => true, () => false);
+    check(beaconOk, "OH8XAT's beacon is listed, its tooltip giving its locator and services");
+    check(/Beacon from OH8XAT \(KP10RQ; offers VMail, email, AI, BBS\)\nOH8XAT has VMail waiting for HB9FIH/.test(await page.locator('#vara-rx-text').textContent()), 'the beacon and the VMail notice are noted in the conversation');
     if (process.env.VARA_HEARD_SHOT) await page.locator('#vara-rx').screenshot({ path: process.env.VARA_HEARD_SHOT });
   }
 

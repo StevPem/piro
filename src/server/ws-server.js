@@ -649,15 +649,16 @@ class ControlServer extends EventEmitter {
           break;
         }
         case REQUEST.VARA: {
-          if (!['cq', 'connect', 'disconnect', 'send'].includes(msg.action)) {
-            throw new Error('"action" must be "cq", "connect", "disconnect" or "send"');
+          if (!['cq', 'connect', 'disconnect', 'send', 'qsy'].includes(msg.action)) {
+            throw new Error('"action" must be "cq", "connect", "disconnect", "send" or "qsy"');
           }
+          if (msg.offsetHz !== undefined && (typeof msg.offsetHz !== 'number' || !Number.isFinite(msg.offsetHz))) throw new Error('"offsetHz" must be a number (Hz)');
           if (msg.call !== undefined && typeof msg.call !== 'string') throw new Error('"call" must be a string');
           if (msg.text !== undefined && typeof msg.text !== 'string') throw new Error('"text" must be a string');
           if (typeof msg.text === 'string' && msg.text.length > 1000) throw new Error('"text" is too long (1000 characters at most)');
           if (!this.listenerCount('vara')) throw new Error('VARA is not set up on this server (it needs audio).');
           // Handled by VaraBridge#request, which throws if it can't be done.
-          this.emit('vara', { action: msg.action, call: msg.call, text: msg.text });
+          this.emit('vara', { action: msg.action, call: msg.call, text: msg.text, offsetHz: msg.offsetHz });
           ws.send(makeResult(id, {}));
           break;
         }

@@ -1220,6 +1220,12 @@ async function run() {
     c.send(JSON.stringify({ id: 'v5', type: 'vara', action: 'connect', call: 'VK3ABC' }));
     const conn = await nextMessage(c);
     check(conn.ok === true && reqs[0]?.action === 'connect' && reqs[0].call === 'VK3ABC', 'vara connect is passed to the bridge');
+    c.send(JSON.stringify({ id: 'v5b', type: 'vara', action: 'qsy', offsetHz: 750 }));
+    const qsy = await nextMessage(c);
+    check(qsy.ok === true && reqs.at(-1)?.action === 'qsy' && reqs.at(-1).offsetHz === 750, 'vara qsy is passed to the bridge with its offset');
+    c.send(JSON.stringify({ id: 'v5c', type: 'vara', action: 'qsy', offsetHz: 'up' }));
+    const badQsy = await nextMessage(c);
+    check(badQsy.type === 'error', 'vara qsy rejects an offset that is not a number');
     c.send(JSON.stringify({ id: 'v6', type: 'vara', action: 'send', text: '' }));
     const refused = await nextMessage(c);
     check(refused.type === 'error' && refused.error === 'Nothing to send.', "the bridge's refusal goes back to the browser");

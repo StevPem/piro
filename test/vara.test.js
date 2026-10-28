@@ -40,6 +40,9 @@ class StubCiv {
   async getDataMode() {
     return this.dataMode;
   }
+  async setFrequency(hz) {
+    this.freq = hz;
+  }
 }
 
 class StubControlServer extends EventEmitter {
@@ -273,6 +276,29 @@ async function main() {
   check(/VK3TR reports your signal at \d+ dB/.test(b.controlServer.text()) && /VK3ABC reports your signal at \d+ dB/.test(a.controlServer.text()), 'each sent VarAC\'s opening report, and the other shows it');
   check(/VK3TR is closing the QSO/.test(b.controlServer.text()), "A's <DISC> reached B before the link closed");
   check(a.controlServer.state.ptt === false && b.controlServer.state.ptt === false, 'neither is left transmitting');
+
+  // On the calling frequency, as VarAC does: the answerer says it is ready (<Q>),
+  // the caller asks to QSY 750 Hz up (<QSYF>), both move, <TL>, <QSYR>, then the reports.
+  a.controlServer.state.frequency = 14105000;
+  b.controlServer.state.frequency = 14105000;
+  const aText0 = a.controlServer.text().length;
+  const bText0 = b.controlServer.text().length;
+  a.bridge.request({ action: 'connect', call: 'VK3ABC' });
+  const relinked = await until(() => a.controlServer.state.vara.state === 'connected' && b.controlServer.state.vara.state === 'connected', 90);
+  check(relinked, 'connected again, on the calling frequency');
+  const ready = await until(() => a.controlServer.state.vara.qsyReady, 60);
+  check(ready && /VK3ABC is ready to QSY off the calling frequency/.test(a.controlServer.text().slice(aText0)), "on the calling frequency the answerer sends VarAC's <Q>, and the caller sees it is ready to QSY");
+  check(!/reports your signal/.test(a.controlServer.text().slice(aText0)) && !/reports your signal/.test(b.controlServer.text().slice(bText0)), 'no opening reports on the calling frequency');
+  a.bridge.request({ action: 'qsy', offsetHz: 750 });
+  check(a.controlServer.state.vara.qsy?.phase === 'sending' && a.controlServer.state.vara.qsy.target === 14105750, 'QSYU in the QSO: the request goes out');
+  const moved = await until(() => !a.controlServer.state.vara.qsy && !b.controlServer.state.vara.qsy && a.controlServer.state.frequency === 14105750 && b.controlServer.state.frequency === 14105750, 120);
+  check(moved, 'both stations move to 14.10575 MHz and finish the handshake: ' + JSON.stringify([a.controlServer.state.vara.qsy, b.controlServer.state.vara.qsy, a.controlServer.state.frequency, b.controlServer.state.frequency]));
+  check(/QSY done: on 14\.10575 MHz with VK3ABC/.test(a.controlServer.text()) && /QSY done: on 14\.10575 MHz with VK3TR/.test(b.controlServer.text()), 'both note it');
+  const reports = await until(() => /VK3ABC reports your signal/.test(a.controlServer.text().slice(aText0)) && /VK3TR reports your signal/.test(b.controlServer.text().slice(bText0)), 60);
+  check(reports, 'then each sends its opening report on the new frequency');
+  check(a.controlServer.state.vara.state === 'connected' && b.controlServer.state.vara.state === 'connected', 'still connected after the move');
+  a.bridge.request({ action: 'disconnect' });
+  await until(() => a.controlServer.state.vara.state === 'listening' && b.controlServer.state.vara.state === 'listening', 60);
   console.log(`  (${simSec.toFixed(1)} s of simulated audio)`);
 
   await a.bridge.stop();
@@ -334,8 +360,10 @@ async function main() {
     say('CQFRAME K1ABC-3 500', 'CQFRAME N1AMD-9 500');
     check(s.controlServer.state.vara.heard[1].offsetHz === -2250 && s.controlServer.state.vara.heard[0].beacon === true && s.controlServer.state.vara.heard[0].call === 'N1AMD', '-3 is 2250 Hz down; -9 is a beacon');
 
+    // Connected on a slot (answering F6JON's CQ there): the reports go at once.
+    s.controlServer.state.frequency = 14105750;
     say('SN -3.4', 'CONNECTED VK3TR F6JON 500');
-    check(sends()[0] === '15 de VK3TR <R-03>', 'on connecting, the opening report goes as a VarAC message: "15 de VK3TR <R-03>"');
+    check(sends()[0] === '15 de VK3TR <R-03>', 'connected on a slot: the opening report goes as a VarAC message: "15 de VK3TR <R-03>"');
     check(sends()[1] === '47 <NAME:Steve>\r\n<QTH:Melbourne  home>\r\n<LOC:QF22>', 'then the profile tags (with < and > taken out of values)');
     data('15 de F6JON <R');
     data('-12>18 Bonjour, Steve. ');
@@ -358,6 +386,51 @@ async function main() {
     check(sends().at(-1) === 'Hi\r', 'and replies to it go as plain text, ending in CR');
     s.bridge.request({ action: 'disconnect' });
     check(w.commands().at(-1) === 'DISCONNECT' && !sends().includes('6 <DISC>'), 'no <DISC> to a plain-text station: straight to DISCONNECT');
+    say('DISCONNECTED');
+
+    // Called on the calling frequency: say we are ready to QSY (<Q>), no reports; then follow their QSY.
+    s.controlServer.state.frequency = 14105000;
+    const n0 = sends().length;
+    say('SN 2', 'CONNECTED F6JON VK3TR 500');
+    check(sends().slice(n0).join('|') === '3 <Q>', 'answering on the calling frequency: only "3 <Q>" (no report there, as VarAC)');
+    check(throws(() => s.bridge.request({ action: 'qsy', offsetHz: 750 }), /hasn't said it is ready/), "QSYU in a QSO needs the other station's <Q> or <AWQ> first");
+    data('7 <Q:225>');
+    check(s.controlServer.state.vara.qsy?.phase === 'ack' && s.controlServer.state.vara.qsy.target === 14107250, '<Q:225>: a QSY 2250 Hz up; first our modem acknowledges it');
+    check(/Moving to 14\.10725 MHz with F6JON/.test(s.controlServer.text()), 'noted');
+    say('PTT ON', 'PTT OFF');
+    await sleep(20);
+    check(s.civ.freq === 14107250 && s.controlServer.state.frequency === 14107250 && s.controlServer.state.vara.qsy?.phase === 'tl', 'once the acknowledgement has gone: the radio moves, and waits for <TL>');
+    check(s.controlServer.events.some((e) => e.type === EVENT.FREQUENCY && e.data.value === 14107250), 'the browsers are told the new frequency');
+    data('4 <TL>');
+    check(sends().at(-1) === '6 <QSYR>' && s.controlServer.state.vara.qsy?.phase === 'opening', '<TL> (they have arrived): reply <QSYR>, then wait for their report');
+    data('15 de F6JON <R-08>');
+    check(!s.controlServer.state.vara.qsy && sends().at(-2) === '15 de VK3TR <R+02>' && /QSY done: on 14\.10725 MHz with F6JON/.test(s.controlServer.text()), 'their report: the QSY is done, and ours goes out on the new frequency');
+    say('DISCONNECTED');
+
+    // Asking to QSY: <QSYF>, move once delivered, <TL>, then their <QSYR>.
+    s.controlServer.state.frequency = 14105000;
+    say('SN 1', 'CONNECTED VK3TR F6JON 500');
+    data('3 <Q>');
+    check(s.controlServer.state.vara.qsyReady && /F6JON is ready to QSY off the calling frequency/.test(s.controlServer.text()), "calling on the calling frequency: their <Q> says they're ready");
+    s.bridge.request({ action: 'qsy', offsetHz: -750 });
+    check(sends().at(-1) === '25 <QSYF>000014104250</QSYF>' && s.controlServer.state.vara.qsy?.phase === 'sending', 'QSYD: "<QSYF>000014104250</QSYF>" goes out');
+    w.emit('message', { type: 'buffer', bytes: 25 });
+    w.emit('message', { type: 'buffer', bytes: 0 });
+    await sleep(20);
+    check(s.civ.freq === 14104250 && sends().at(-1) === '4 <TL>' && s.controlServer.state.vara.qsy?.phase === 'qsyr', 'delivered: move, and say so (<TL>)');
+    data('6 <QSYR>');
+    check(!s.controlServer.state.vara.qsy && sends().at(-2) === '15 de VK3TR <R+01>', 'their <QSYR>: done, and our report goes out');
+    say('DISCONNECTED');
+    await sleep(20);
+    check(s.civ.freq === 14105000 && /Back on the calling frequency \(14\.105 MHz\)/.test(s.controlServer.text()), 'when that QSO ends: back to the calling frequency');
+
+    // VarAC's broadcasts, heard as KISS frames: beacons and VMail notices (from KiwiSDR recordings, 2026-10-28).
+    say('SN 5.1', 'KISS 2 32314f4b50313052514f48385841542020202020');
+    const bh = s.controlServer.state.vara.heard[0];
+    check(bh.call === 'OH8XAT' && bh.beacon && bh.grid === 'KP10RQ' && bh.services.join(',') === 'VMail,email,AI,BBS' && bh.sn === 5.1, "OH8XAT's beacon: KP10RQ, VMail, email, AI, BBS");
+    check(/Beacon from OH8XAT \(KP10RQ; offers VMail, email, AI, BBS\)/.test(s.controlServer.text()), 'noted');
+    say('KISS 1 9084728c929040609e9070b082a8406103f03c534d503e');
+    check(/OH8XAT has VMail waiting for HB9FIH/.test(s.controlServer.text()), 'a VMail notice: "OH8XAT has VMail waiting for HB9FIH"');
     await s.bridge.stop();
   }
   {

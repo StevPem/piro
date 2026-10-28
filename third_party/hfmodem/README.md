@@ -22,17 +22,34 @@ the parts PiRO uses.
 | `MessageParser` | `MessageParser`, including the VMail length quirk (the closing `>` not counted). PiRO adds a fall-back: a stream that isn't framed is shown as plain text (VARA Chat) |
 | `openingMessage()` | the opening report in `opening_steps()`: `de CALL <R+05>`, the S/N clamped to ±99 |
 | `renderMessage()` | PiRO's own: puts the tags hfmodem lists (`TAGS`, `VALUE_TAGS`, `BARE_TAGS`, `<R±NN>`, `<QSYF>…</QSYF>`) into words |
+| `qsyTarget()`, `qsyRequest()`, `isOpening()` | `received_qsy_target()` (`<QSYF>` 12 digits, `<QF:Hz>`, `<Q:n>` in tens of Hz), `emit_tag('QSYF')`, the opening-report match |
+| `decodeBeacon()` | `BEACON_TEXT`, `services()`: the advanced beacon (KISS command 2) and its status letter |
+| `decodeUi()` | the addressed notices (`mail_collection.py`): an AX.25 UI frame, `<SMP>` meaning VMail waiting |
+| `CALLING_HZ` | `CALLING_HZ` (with PiRO's 160 m frequency) |
+
+`src/server/vara-bridge.js` follows hfmodem's QSY handshake:
+`request_qsy_steps()` (wait for `<Q>` or `<AWQ>`, send `<QSYF>`, move once
+it has been delivered, `<TL>`, wait for `<QSYR>`, opening report) and
+`answer_qsy_steps()` (our modem acknowledges, then move, wait for `<TL>`,
+`<QSYR>`, their report, ours). On the calling frequency the answering
+station sends only `<Q>`, and the reports wait for the slot (REL V11.4 in
+hfmodem's notes).
 
 PiRO also uses hfmodem's findings that VarAC waits on its slot about
 2 minutes after a CQ (`SLOT_WAIT_S`), that profile tags follow the opening
 report (`<NAME:…>`, `<QTH:…>`, `<LOC:…>`), and that `<DISC>` comes before
 the link is closed.
 
-Not ported yet: calling CQ on a slot, the QSY handshake in a QSO
-(`<QSYF>`, `<TL>`, `<QSYR>`), beacons, VMail, file transfer.
+Not ported yet: calling CQ on a slot, choosing a free slot, sending
+beacons, VMail, BBS and file transfer.
 
 ## How it was checked
 
 `test/vara.test.js` checks the formats against hfmodem's descriptions, and
-runs two PiRO stations through a simulated channel using them. Not yet
-tested with VarAC itself, and not tested on air.
+runs two PiRO stations through a simulated channel using them, including a
+QSY from the calling frequency to a slot. The beacon and VMail-notice
+decoders are checked with frames PiRO's modem decoded from KiwiSDR
+recordings of 14.105 MHz (2026-10-28): beacons from DL4QB, OH8XAT, OZ9EEE
+and DH7LK, and OH8XAT's VMail notice to HB9FIH. The same recordings showed
+`<AWQ>` and `<Q:225>` in use. Not yet tested with VarAC itself, and not
+tested on air.
