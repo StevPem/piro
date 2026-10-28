@@ -12,7 +12,7 @@ Hamlib, no separate audio server and no extra apps.
 Written by VK3TR. Licensed AGPL-3.0-only (see
 [Licence](#licence)).
 
-**Current build: v115.** This is the version the app shows next to its title.
+**Current build: v116.** This is the version the app shows next to its title.
 It is the `CACHE_NAME` number in `src/client/sw.js`, which goes up with every
 change to the web app.
 
@@ -992,10 +992,15 @@ must know how far its transmit audio lags. `VARA_AUDIO_LATENCY_MS` (500 by
 default, the usual sound-card buffer) tells it. If calls never connect,
 see [Troubleshooting](#troubleshooting).
 
-PiRO's VARA has only been tested against itself (two modems through a
-simulated channel), and its VarAC messages against hfmodem's description
-of them. It has not been tested with VARA itself, VARA Chat or VarAC, and
-it has not been tested on air. Xara's author reports testing
+**How far it has been tested.** Receiving is checked against real VarAC
+traffic: recordings of 14.105 and 7.105 MHz from public KiwiSDRs (October
+2026), which PiRO's modem decodes as VarAC sends it (beacons from 15
+stations, VMail notices, a broadcast to ALL, CQ frames). The same
+recordings show VarAC's sequence on the calling frequency (`<Q>` or
+`<AWQ>`, then `<Q:n>`, `<QSYR>` and the reports on the slot), which is
+what PiRO does. Transmitting has only been tested between two PiRO
+stations through a simulated channel: it has not been tested with VARA
+itself, VARA Chat or VarAC, and it has not been tested on air. Xara's author reports testing
 Xara against VARA HF 4.9.0. See
 [`third_party/xara/README.md`](third_party/xara/README.md).
 
