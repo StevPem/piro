@@ -550,9 +550,11 @@ class VaraBridge {
   }
 
   /**
-   * "PSK Spot": reports a station heard (a CQ, or the station connected to)
-   * to pskreporter.info, as FT8 does, when the PSK Spot box is ticked. The
-   * frequency is the dial plus VARA's 1500 Hz centre. Needs the frame's S/N.
+   * "PSK Spot": reports a station heard (a CQ or beacon, or the station
+   * connected to) to pskreporter.info, as FT8 does, when the PSK Spot box is
+   * ticked. Mode "VARAC", the name VarAC's own reports use (its manual,
+   * V13.2.7), so they appear together on the map. The frequency is the dial
+   * plus VARA's 1500 Hz centre. Needs the frame's S/N.
    */
   _spot(call, sn) {
     if (!this.pskReporter || !this.controlServer.state.pskSpotEnabled || sn == null) return;
@@ -560,7 +562,7 @@ class VaraBridge {
     if (!PSK_CALLSIGN_RE.test(base)) return;
     const dialHz = this.controlServer.state.frequency;
     if (!Number.isFinite(dialHz) || dialHz <= 0) return;
-    this.pskReporter.addSpot({ call: base, grid: null, freqHz: dialHz + SIGNAL_CENTRE_HZ, snr: sn, mode: 'VARA', timeSec: Math.floor(this.now() / 1000) });
+    this.pskReporter.addSpot({ call: base, grid: null, freqHz: dialHz + SIGNAL_CENTRE_HZ, snr: sn, mode: 'VARAC', timeSec: Math.floor(this.now() / 1000) });
   }
 
   async _key() {

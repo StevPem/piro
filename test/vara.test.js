@@ -450,7 +450,7 @@ async function main() {
     s.controlServer.state.pskSpotEnabled = true;
     await s.bridge.activate();
     w.emit('message', { type: 'lines', lines: ['SN 6.4', 'CQFRAME VK3ABC 500'] });
-    check(spots.length === 1 && spots[0].call === 'VK3ABC' && spots[0].freqHz === 14106500 && spots[0].snr === 6.4 && spots[0].mode === 'VARA', 'PSK Spot: a CQ heard is spotted at dial + 1500 Hz with its S/N, mode VARA');
+    check(spots.length === 1 && spots[0].call === 'VK3ABC' && spots[0].freqHz === 14106500 && spots[0].snr === 6.4 && spots[0].mode === 'VARAC', 'PSK Spot: a CQ heard is spotted at dial + 1500 Hz with its S/N, mode VARAC (as VarAC reports)');
     check(s.controlServer.state.vara.heard[0].sn === 6.4 && s.controlServer.state.vara.sn === null, "the heard list keeps the CQ's S/N (the link S/N stays empty outside a QSO)");
     w.emit('message', { type: 'lines', lines: ['CQFRAME VK3XYZ 500'] });
     check(spots.length === 1, 'no spot without an S/N for the frame');
