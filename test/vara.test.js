@@ -173,6 +173,14 @@ async function main() {
     const t = varac.renderMessage('Name here <NAME:Jean> ok', 'F6JON');
     check(!t.note && t.text === 'Name here  ok\n(name Jean)\n', 'tags inside text are put into words after it');
     check(varac.renderMessage('<FOO:bar>', 'X').text === '<FOO:bar>\n', 'unknown tags are shown as they are');
+    // Heard on air (KiwiSDR recordings of 14.105 MHz, 2026-10-28), as PiRO's modem decoded them.
+    const opening = varac.renderMessage('de DL4QB <R-16> <S:VEAB>', 'DL4QB');
+    check(varac.isOpening('de DL4QB <R-16> <S:VEAB>') && opening.note && opening.text === 'DL4QB reports your signal at -16 dB; offers VMail, email, AI, BBS\n', "on air: DL4QB's opening report on the slot, with its services");
+    const beacons = ['323043454d3930464e4e3453444e202020202020', '3230434c4f37314f535239534647202020202020', '324149494d363841504448374c4b202020202020'].map((h) => varac.decodeBeacon(Buffer.from(h, 'hex').toString('latin1')));
+    check(beacons.map((b) => `${b.call} ${b.grid} ${b.services.join('/')}`).join(', ') === 'N4SDN EM90FN VMail/email, R9SFG LO71OS VMail/email, DH7LK IM68AP VMail/BBS', 'on air: beacons from N4SDN, R9SFG and DH7LK');
+    const all = varac.decodeUi(Buffer.from('82989840404040609e8a6aa4a0a0406103f043757272656e742077656174686572206c697665206f6e20424253', 'hex'), 1);
+    check(all.from === 'OE5RPP' && all.to === 'ALL' && all.info === 'Current weather live on BBS', 'on air: OE5RPP to ALL, "Current weather live on BBS"');
+    check(varac.qsyTarget('<Q:75>', 14105000) === 14105750 && varac.qsyTarget('<Q:-375>', 14105000) === 14101250, 'on air: the QSY requests heard, <Q:75> and <Q:-375>');
   }
 
   // --- The modem itself ---

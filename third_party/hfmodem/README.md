@@ -50,6 +50,11 @@ runs two PiRO stations through a simulated channel using them, including a
 QSY from the calling frequency to a slot. The beacon and VMail-notice
 decoders are checked with frames PiRO's modem decoded from KiwiSDR
 recordings of 14.105 MHz (2026-10-28): beacons from DL4QB, OH8XAT, OZ9EEE
-and DH7LK, and OH8XAT's VMail notice to HB9FIH. The same recordings showed
-`<AWQ>` and `<Q:225>` in use. Not yet tested with VarAC itself, and not
-tested on air.
+and DH7LK, and OH8XAT's VMail notice to HB9FIH. Later recordings that day
+added N4SDN, K5CG and R9SFG's beacons, OE5RPP's broadcast to ALL, and a
+whole QSY: DL4QB, called on 14.105, sent `<Q>`; the caller's request
+followed; on the slot 750 Hz down DL4QB sent `<QSYR>` and then
+`de DL4QB <R-16> <S:VEAB>`. That is hfmodem's sequence, and PiRO's. The
+QSY requests heard were all `<Q:n>` (`<Q:225>`, `<Q:-375>`, `<Q:75>`),
+so PiRO sends that form. Not yet tested with VarAC itself, and not tested
+on air.

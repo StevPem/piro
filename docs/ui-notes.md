@@ -4638,3 +4638,22 @@ model for how to approach that.
   out; QSYU meanwhile is refused), manual-tty-ui.js (K1ABC's `<Q>` brings
   `<Q:75>` without a button; QSYD/QSYU off during it). Not tested on air.
   Service-worker cache v115.
+
+### VARA: what the on-air recordings confirmed (v116)
+
+- No change to how PiRO works. Nine recordings of 14.105, 14.104 and
+  7.105 MHz from public KiwiSDRs (2026-10-28) were run through PiRO's
+  modem and Xara's monitor. PiRO's modem decoded VarAC beacons from 15
+  stations, VMail notices, a broadcast to ALL, and CQ frames, as sent.
+- One recording (dial 14.104, holding the calling frequency and the slot
+  750 Hz down) caught a whole QSY: DL4QB, called on 14.105, sent `<Q>`;
+  the caller's request followed; on the slot DL4QB sent `<QSYR>` and then
+  `de DL4QB <R-16> <S:VEAB>`. That is the sequence PiRO follows (v113 to
+  v115), on either side.
+- README ("How far it has been tested") and third_party/hfmodem/README.md
+  now say this: receiving is checked against real VarAC traffic;
+  transmitting is still untested outside simulation.
+- Tests: vara.test.js checks the messages and frames heard (DL4QB's
+  opening report with `<S:VEAB>`, the N4SDN, R9SFG and DH7LK beacons,
+  OE5RPP's broadcast to ALL, `<Q:75>` and `<Q:-375>`). Service-worker
+  cache v116.
