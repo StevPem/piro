@@ -467,11 +467,10 @@ class Civ extends EventEmitter {
     const varacMsg = (t) => { const b = Buffer.from(t, 'utf8'); return Buffer.concat([Buffer.from(`${b.length} `), b]); };
     check(sentText().length === 0, 'calling on the calling frequency: nothing sent yet (no report there, as VarAC)');
     w.emit('message', { type: 'data', data: Uint8Array.from(varacMsg('<Q>')).buffer });
-    await page.waitForFunction(() => /ready to QSY$/.test(document.getElementById('vara-status').textContent) && !document.getElementById('vara-qsyu-btn').disabled, null, { timeout: 4000 }).catch(() => {});
-    check(!(await page.locator('#vara-qsyu-btn').isDisabled()) && /K1ABC is ready to QSY off the calling frequency/.test(await page.locator('#vara-rx-text').textContent()), "K1ABC's <Q>: ready to QSY; QSYU and QSYD come on");
-    await page.locator('#vara-qsyu-btn').click();
     await sleep(150);
-    check(sentText()[0] === '6 <Q:75>' && civ.freq === 14105000, 'QSYU in the QSO asks K1ABC to QSY +750 Hz with <Q:75> (and waits for it to be delivered)');
+    check(sentText()[0] === '6 <Q:75>' && civ.freq === 14105000, "K1ABC's <Q> (ready): PiRO, the caller, asks it to QSY +750 Hz by itself, as VarAC does (and waits for that to be delivered)");
+    check(/Asking K1ABC to QSY to 14\.10575 MHz \(off the calling frequency, as VarAC does\)/.test(await page.locator('#vara-rx-text').textContent()), 'noted in the conversation');
+    check((await page.locator('#vara-qsyu-btn').isDisabled()) && (await page.locator('#vara-qsyd-btn').isDisabled()), 'QSYD and QSYU are off while the QSY is under way');
     w.emit('message', { type: 'buffer', bytes: 25 });
     w.emit('message', { type: 'buffer', bytes: 0 });
     await sleep(150);

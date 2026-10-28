@@ -22,6 +22,10 @@ const QSY_ACK_MS = 8 * 1000; // after a request arrives: for our modem's acknowl
 const QSY_SEND_MS = 45 * 1000; // after sending a request: for it to be delivered
 const QSY_STEP_MS = 60 * 1000; // on the new frequency: for <TL>, <QSYR> or the opening report
 const QSY_MAX_HZ = 4000; // a VarAC slot is at most 3750 Hz from the calling frequency
+// Calling on the calling frequency, PiRO moves the QSO to a slot itself, as stock VarAC
+// does: the first of these not used by a CQ heard there in the last SLOT_RECENT_MS.
+const SLOT_ORDER_HZ = [750, -750, 1500, -1500, 2250, -2250, 3000, -3000, 3750, -3750];
+const SLOT_RECENT_MS = 15 * 60 * 1000;
 const SPOT_SN_MS = 2000; // the modem reports a frame's S/N just before the frame (a CQ, a connection)
 const SIGNAL_CENTRE_HZ = 1500; // VARA HF is centred on 1500 Hz audio: the spot frequency is dial + this
 const CALLSIGN_RE = /^[A-Z0-9]{1,3}[0-9][A-Z0-9]{0,4}(\/[A-Z0-9]{1,4})?(-[0-9]{1,2})?$/;
@@ -154,6 +158,7 @@ class VaraBridge {
     this._warnedKey = false;
     this._lastSn = null; // {sn, time}: the modem's latest S/N report
     this._link = null; // the QSO now: {parser, openingSent, disc: {at, timer}|null}
+    this._slotsHeard = []; // slots VarAC CQs were heard waiting on: [{cfHz, offsetHz, time}]
 
     controlServer.state.vara = this._freshState();
 
@@ -458,7 +463,7 @@ class VaraBridge {
         // follow once both have moved (hfmodem, REL V11.4).
         const onCf = varac.CALLING_HZ.includes(this.controlServer.state.frequency);
         // homeHz: where to go back to if a QSY moves this QSO off the calling frequency.
-        this._link = { parser: new varac.MessageParser(), openingSent: false, disc: null, onCf, ready: false, qsy: null, homeHz: onCf ? this.controlServer.state.frequency : null, moved: false };
+        this._link = { parser: new varac.MessageParser(), openingSent: false, disc: null, onCf, ready: false, qsy: null, homeHz: onCf ? this.controlServer.state.frequency : null, moved: false, caller: caller === this.callsign, autoQsy: false };
         if (onCf) {
           if (caller !== this.callsign) this._sendText('<Q>');
         } else if (sn != null) this._sendOpening(sn);
@@ -519,6 +524,10 @@ class VaraBridge {
         // VarAC's CQ names the slot its caller waits on as the callsign's suffix; -9 is a beacon.
         const cq = varac.decodeCqCall(raw);
         const entry = { call: cq.call, raw: raw.toUpperCase(), slot: cq.slot, offsetHz: cq.offsetHz, beacon: cq.beacon, bw: Number(bw) || null, sn, time: this.now() };
+        if (cq.slot && !cq.beacon) {
+          const now = this.now();
+          this._slotsHeard = [...this._slotsHeard.filter((h) => now - h.time < SLOT_RECENT_MS), { cfHz: this.controlServer.state.frequency, offsetHz: cq.offsetHz, time: now }];
+        }
         this.state.heard = [entry, ...this.state.heard.filter((h) => h.call !== cq.call)].slice(0, HEARD_MAX);
         this._spot(cq.call, sn);
         this.controlServer.broadcastJsonEvent(EVENT.VARA_STATUS, this.state);
@@ -689,7 +698,16 @@ class VaraBridge {
     if (/<(Q|AWQ)>/.test(m) && !link.ready) {
       link.ready = true;
       this._update({ qsyReady: true });
-      if (link.onCf && !q) this._addText(`${this.state.peer} is ready to QSY off the calling frequency (QSYD/QSYU)\n`, { note: true });
+      if (link.onCf && !q) {
+        // Our call, on the calling frequency: move the QSO to a slot now, as stock VarAC does.
+        const offset = link.caller && !link.autoQsy && !link.parser.plain ? this._freeSlotOffset() : null;
+        if (offset != null) {
+          link.autoQsy = true;
+          this._requestQsy(this.controlServer.state.frequency + offset, { auto: true });
+          return;
+        }
+        this._addText(`${this.state.peer} is ready to QSY off the calling frequency (QSYD/QSYU)\n`, { note: true });
+      }
     }
     const dial = this.controlServer.state.frequency;
     const target = varac.qsyTarget(m, dial);
@@ -706,12 +724,20 @@ class VaraBridge {
   }
 
   /** QSYD/QSYU in a QSO: send VarAC's <Q:n>, move once it has been delivered, then <TL> and wait for <QSYR>. */
-  _requestQsy(target) {
+  _requestQsy(target, { auto = false } = {}) {
     const link = this._link;
     link.qsy = { role: 'requester', target, phase: null, timer: null, queued: false };
     this._sendText(varac.qsyRequest(target - this.controlServer.state.frequency));
-    this._addText(`Asking ${this.state.peer} to QSY to ${mhzText(target)} MHz\n`, { note: true });
+    this._addText(`Asking ${this.state.peer} to QSY to ${mhzText(target)} MHz${auto ? ' (off the calling frequency, as VarAC does)' : ''}\n`, { note: true });
     this._qsyPhase('sending', QSY_SEND_MS, () => this._qsyFail(`${this.state.peer} didn't receive the request`));
+  }
+
+  /** The first slot (offset from this calling frequency) no CQ was heard waiting on lately, or null. */
+  _freeSlotOffset() {
+    const cf = this.controlServer.state.frequency;
+    const now = this.now();
+    const taken = new Set(this._slotsHeard.filter((h) => h.cfHz === cf && now - h.time < SLOT_RECENT_MS).map((h) => h.offsetHz));
+    return SLOT_ORDER_HZ.find((o) => !taken.has(o)) ?? null;
   }
 
   _qsyPhase(phase, ms = QSY_STEP_MS, onTimeout) {

@@ -289,10 +289,8 @@ async function main() {
   const relinked = await until(() => a.controlServer.state.vara.state === 'connected' && b.controlServer.state.vara.state === 'connected', 90);
   check(relinked, 'connected again, on the calling frequency');
   const ready = await until(() => a.controlServer.state.vara.qsyReady, 60);
-  check(ready && /VK3ABC is ready to QSY off the calling frequency/.test(a.controlServer.text().slice(aText0)), "on the calling frequency the answerer sends VarAC's <Q>, and the caller sees it is ready to QSY");
-  check(!/reports your signal/.test(a.controlServer.text().slice(aText0)) && !/reports your signal/.test(b.controlServer.text().slice(bText0)), 'no opening reports on the calling frequency');
-  a.bridge.request({ action: 'qsy', offsetHz: 750 });
-  check(a.controlServer.state.vara.qsy?.phase === 'sending' && a.controlServer.state.vara.qsy.target === 14105750, 'QSYU in the QSO: the request goes out');
+  check(ready && !/reports your signal/.test(a.controlServer.text().slice(aText0)) && !/reports your signal/.test(b.controlServer.text().slice(bText0)), "on the calling frequency the answerer sends VarAC's <Q>, and no opening reports");
+  check(a.controlServer.state.vara.qsy?.target === 14105750 && /Asking VK3ABC to QSY to 14\.10575 MHz \(off the calling frequency, as VarAC does\)/.test(a.controlServer.text().slice(aText0)), 'the caller then asks to QSY by itself, to the first free slot (+750 Hz), as VarAC does');
   const moved = await until(() => !a.controlServer.state.vara.qsy && !b.controlServer.state.vara.qsy && a.controlServer.state.frequency === 14105750 && b.controlServer.state.frequency === 14105750, 120);
   check(moved, 'both stations move to 14.10575 MHz and finish the handshake: ' + JSON.stringify([a.controlServer.state.vara.qsy, b.controlServer.state.vara.qsy, a.controlServer.state.frequency, b.controlServer.state.frequency]));
   check(/QSY done: on 14\.10575 MHz with VK3ABC/.test(a.controlServer.text()) && /QSY done: on 14\.10575 MHz with VK3TR/.test(b.controlServer.text()), 'both note it');
@@ -409,13 +407,13 @@ async function main() {
     check(!s.controlServer.state.vara.qsy && sends().at(-2) === '15 de VK3TR <R+02>' && /QSY done: on 14\.10725 MHz with F6JON/.test(s.controlServer.text()), 'their report: the QSY is done, and ours goes out on the new frequency');
     say('DISCONNECTED');
 
-    // Asking to QSY: <Q:-75>, move once delivered, <TL>, then their <QSYR>.
+    // Our call on the calling frequency: their <Q>, and PiRO asks to QSY by itself (<Q:-75>), move once delivered, <TL>, then their <QSYR>.
     s.controlServer.state.frequency = 14105000;
     say('SN 1', 'CONNECTED VK3TR F6JON 500');
     data('3 <Q>');
-    check(s.controlServer.state.vara.qsyReady && /F6JON is ready to QSY off the calling frequency/.test(s.controlServer.text()), "calling on the calling frequency: their <Q> says they're ready");
-    s.bridge.request({ action: 'qsy', offsetHz: -750 });
-    check(sends().at(-1) === '7 <Q:-75>' && s.controlServer.state.vara.qsy?.phase === 'sending' && s.controlServer.state.vara.qsy.target === 14104250, 'QSYD: "<Q:-75>" (750 Hz down, as stock VarAC sends it) goes out');
+    check(s.controlServer.state.vara.qsyReady && sends().at(-1) === '7 <Q:-75>' && s.controlServer.state.vara.qsy?.phase === 'sending' && s.controlServer.state.vara.qsy.target === 14104250,
+      'calling on the calling frequency: their <Q>, and PiRO asks to QSY at once with <Q:-75> (+750 Hz is taken: F6JON-11 called CQ there)');
+    check(throws(() => s.bridge.request({ action: 'qsy', offsetHz: 750 }), /already under way/), 'QSYU meanwhile: refused, a QSY is under way');
     w.emit('message', { type: 'buffer', bytes: 25 });
     w.emit('message', { type: 'buffer', bytes: 0 });
     await sleep(20);

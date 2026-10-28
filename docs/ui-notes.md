@@ -4615,3 +4615,26 @@ model for how to approach that.
 - Tests: vara.test.js (`<Q:n>` built and followed; two real modems still
   move together; QSYD sends `<Q:-75>`), manual-tty-ui.js (QSYU sends
   `<Q:75>`). Not tested on air. Service-worker cache v114.
+
+### VARA: moving off the calling frequency by itself (v115)
+
+- When PiRO made the call, on a calling frequency, it now asks the other
+  station to QSY as soon as that station says it is ready (`<Q>` or
+  `<AWQ>`), as stock VarAC does. In a KiwiSDR recording (2026-10-28)
+  N4RTD's VarAC sent `<Q:75>` 14 s after the answering station's `<AWQ>`,
+  with nothing from its operator in between. Before, PiRO only noted
+  "ready to QSY" and waited for QSYD/QSYU.
+- The slot: the first of +750, −750, +1500, −1500 … ±3750 Hz that no
+  VarAC CQ heard on this calling frequency in the last 15 minutes named
+  (as hfmodem's `free_slot()`, without its slot monitor). The request is
+  the same handshake as QSYD/QSYU (`<Q:n>`, move once delivered, `<TL>`,
+  `<QSYR>`, reports); the note says "(off the calling frequency, as
+  VarAC does)".
+- Not when PiRO was called (the caller moves the QSO), nor with a station
+  sending plain text, nor a second time in one QSO. QSYD/QSYU still work
+  once a QSY has finished or failed.
+- Tests: vara.test.js (two real modems: the caller asks by itself, both
+  move to +750 Hz; stub: with +750 taken by a heard CQ, `<Q:-75>` goes
+  out; QSYU meanwhile is refused), manual-tty-ui.js (K1ABC's `<Q>` brings
+  `<Q:75>` without a button; QSYD/QSYU off during it). Not tested on air.
+  Service-worker cache v115.

@@ -12,7 +12,7 @@ Hamlib, no separate audio server and no extra apps.
 Written by VK3TR. Licensed AGPL-3.0-only (see
 [Licence](#licence)).
 
-**Current build: v114.** This is the version the app shows next to its title.
+**Current build: v115.** This is the version the app shows next to its title.
 It is the `CACHE_NAME` number in `src/client/sw.js`, which goes up with every
 change to the web app.
 
@@ -894,7 +894,8 @@ before you call.
   slot). Off the calling frequency, the status line says how far
   ("calling freq +1.5 kHz"). Outside a QSO they move your radio. In a QSO
   they ask the other station to move with you, as VarAC's QSY does (see
-  below); they come on once the other station has said it is ready to QSY.
+  below); they come on once the other station has said it is ready to QSY,
+  and are off while a QSY is under way.
 - **Heard** lists the stations heard calling CQ, and VarAC beacons,
   newest first. A VarAC CQ shows its slot ("F6JON +750"), a beacon reads
   "beacon". Tap one to put its callsign in the box; its tooltip gives the
@@ -929,8 +930,11 @@ then the text in UTF-8, and puts tags in the text. PiRO does the same:
 - **On the calling frequency** VarAC sends no reports. The station that
   was called says it is ready to QSY (`<Q>`, or `<AWQ>` if its operator
   is away), and the caller asks to move the QSO to a slot. PiRO does the
-  same: called there, it sends `<Q>`; calling, it shows "ready to QSY"
-  when the other station is, and QSYD/QSYU then ask it to move.
+  same: called there, it sends `<Q>`. Calling there, once the other
+  station is ready, it asks it to move by itself, as VarAC does: to the
+  first slot (+750, −750, +1500, −1500 Hz … ±3750) that no VarAC CQ has
+  been heard waiting on in the last 15 minutes. Once a QSY has finished
+  (or failed), QSYD/QSYU ask for another.
 - **QSY in a QSO** is VarAC's handshake. PiRO follows a request from the
   other station (`<QSYF>` with a frequency, or `<Q:225>`, i.e. +2250 Hz):
   once its modem has acknowledged it, the radio moves, waits for `<TL>`
