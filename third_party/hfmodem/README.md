@@ -22,13 +22,13 @@ the parts PiRO uses.
 | `MessageParser` | `MessageParser`, including the VMail length quirk (the closing `>` not counted). PiRO adds a fall-back: a stream that isn't framed is shown as plain text (VARA Chat) |
 | `openingMessage()` | the opening report in `opening_steps()`: `de CALL <R+05>`, the S/N clamped to ±99 |
 | `renderMessage()` | PiRO's own: puts the tags hfmodem lists (`TAGS`, `VALUE_TAGS`, `BARE_TAGS`, `<R±NN>`, `<QSYF>…</QSYF>`) into words |
-| `qsyTarget()`, `qsyRequest()`, `isOpening()` | `received_qsy_target()` (`<QSYF>` 12 digits, `<QF:Hz>`, `<Q:n>` in tens of Hz), `emit_tag('QSYF')`, the opening-report match |
+| `qsyTarget()`, `qsyRequest()`, `isOpening()` | `received_qsy_target()` (`<QSYF>` 12 digits, `<QF:Hz>`, `<Q:n>` in tens of Hz), the opening-report match. PiRO sends `<Q:n>`, not hfmodem's `<QSYF>`: every QSY request heard from stock VarAC on air (KiwiSDR, 2026-10-28) was `<Q:n>` |
 | `decodeBeacon()` | `BEACON_TEXT`, `services()`: the advanced beacon (KISS command 2) and its status letter |
 | `decodeUi()` | the addressed notices (`mail_collection.py`): an AX.25 UI frame, `<SMP>` meaning VMail waiting |
 | `CALLING_HZ` | `CALLING_HZ` (with PiRO's 160 m frequency) |
 
 `src/server/vara-bridge.js` follows hfmodem's QSY handshake:
-`request_qsy_steps()` (wait for `<Q>` or `<AWQ>`, send `<QSYF>`, move once
+`request_qsy_steps()` (wait for `<Q>` or `<AWQ>`, send the request, move once
 it has been delivered, `<TL>`, wait for `<QSYR>`, opening report) and
 `answer_qsy_steps()` (our modem acknowledges, then move, wait for `<TL>`,
 `<QSYR>`, their report, ours). On the calling frequency the answering

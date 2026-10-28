@@ -244,9 +244,15 @@ function qsyTarget(message, dialHz) {
   return null;
 }
 
-/** The QSY request this station sends: VarAC's <QSYF>, a 12-digit frequency. */
-function qsyRequest(hz) {
-  return `<QSYF>${String(Math.round(hz)).padStart(12, '0')}</QSYF>`;
+/**
+ * The QSY request this station sends: <Q:n>, n the move in tens of Hz
+ * (<Q:75> is 750 Hz up). This is what stock VarAC sends: every QSY request
+ * heard on air in KiwiSDR recordings on 2026-10-28 was this form (<Q:75>,
+ * <Q:225>, <Q:-375>). hfmodem sends <QSYF> instead, which only newer VarAC
+ * versions are known to read; PiRO still follows either.
+ */
+function qsyRequest(offsetHz) {
+  return `<Q:${Math.round(offsetHz / 10)}>`;
 }
 
 /** Whether a message is the other station's opening report ("de CALL <R+05>"). */

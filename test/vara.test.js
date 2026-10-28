@@ -159,6 +159,8 @@ async function main() {
     check(d('N1AMD-9').beacon && d('N1AMD-9').call === 'N1AMD', '-9 is a beacon');
     check(d('VK3ABC-7').call === 'VK3ABC-7' && d('VK3ABC-7').slot === null && d('VK3ABC').slot === null, 'any other suffix is a real SSID, kept; no suffix, no slot');
     check(varac.frameMessage('héllo').toString('latin1') === '6 h\xc3\xa9llo', 'a message is its UTF-8 length, a space, the text');
+    check(varac.qsyRequest(750) === '<Q:75>' && varac.qsyRequest(-3750) === '<Q:-375>' && varac.qsyRequest(2250) === '<Q:225>', 'QSY request as stock VarAC sends it: <Q:n>, n in tens of Hz');
+    check(varac.qsyTarget('<Q:-375>', 14105000) === 14101250 && varac.qsyTarget('<QSYF>000014105750</QSYF>', 14105000) === 14105750, 'and both forms are followed');
     check(varac.openingMessage('VK3TR', 7.6) === 'de VK3TR <R+08>' && varac.openingMessage('VK3TR', -120) === 'de VK3TR <R-99>', 'opening report: "de CALL <R+08>", -99..+99');
     const p = new varac.MessageParser();
     const a = p.feed(Buffer.from('5 hel'));
@@ -278,7 +280,7 @@ async function main() {
   check(a.controlServer.state.ptt === false && b.controlServer.state.ptt === false, 'neither is left transmitting');
 
   // On the calling frequency, as VarAC does: the answerer says it is ready (<Q>),
-  // the caller asks to QSY 750 Hz up (<QSYF>), both move, <TL>, <QSYR>, then the reports.
+  // the caller asks to QSY 750 Hz up (<Q:75>), both move, <TL>, <QSYR>, then the reports.
   a.controlServer.state.frequency = 14105000;
   b.controlServer.state.frequency = 14105000;
   const aText0 = a.controlServer.text().length;
@@ -407,13 +409,13 @@ async function main() {
     check(!s.controlServer.state.vara.qsy && sends().at(-2) === '15 de VK3TR <R+02>' && /QSY done: on 14\.10725 MHz with F6JON/.test(s.controlServer.text()), 'their report: the QSY is done, and ours goes out on the new frequency');
     say('DISCONNECTED');
 
-    // Asking to QSY: <QSYF>, move once delivered, <TL>, then their <QSYR>.
+    // Asking to QSY: <Q:-75>, move once delivered, <TL>, then their <QSYR>.
     s.controlServer.state.frequency = 14105000;
     say('SN 1', 'CONNECTED VK3TR F6JON 500');
     data('3 <Q>');
     check(s.controlServer.state.vara.qsyReady && /F6JON is ready to QSY off the calling frequency/.test(s.controlServer.text()), "calling on the calling frequency: their <Q> says they're ready");
     s.bridge.request({ action: 'qsy', offsetHz: -750 });
-    check(sends().at(-1) === '25 <QSYF>000014104250</QSYF>' && s.controlServer.state.vara.qsy?.phase === 'sending', 'QSYD: "<QSYF>000014104250</QSYF>" goes out');
+    check(sends().at(-1) === '7 <Q:-75>' && s.controlServer.state.vara.qsy?.phase === 'sending' && s.controlServer.state.vara.qsy.target === 14104250, 'QSYD: "<Q:-75>" (750 Hz down, as stock VarAC sends it) goes out');
     w.emit('message', { type: 'buffer', bytes: 25 });
     w.emit('message', { type: 'buffer', bytes: 0 });
     await sleep(20);

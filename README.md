@@ -12,7 +12,7 @@ Hamlib, no separate audio server and no extra apps.
 Written by VK3TR. Licensed AGPL-3.0-only (see
 [Licence](#licence)).
 
-**Current build: v113.** This is the version the app shows next to its title.
+**Current build: v114.** This is the version the app shows next to its title.
 It is the `CACHE_NAME` number in `src/client/sw.js`, which goes up with every
 change to the web app.
 
@@ -935,7 +935,8 @@ then the text in UTF-8, and puts tags in the text. PiRO does the same:
   other station (`<QSYF>` with a frequency, or `<Q:225>`, i.e. +2250 Hz):
   once its modem has acknowledged it, the radio moves, waits for `<TL>`
   ("I've arrived"), replies `<QSYR>`, and each side sends its report on
-  the new frequency. Asking works the other way round: `<QSYF>`, move once
+  the new frequency. Asking works the other way round: `<Q:75>` (+750 Hz,
+  the form stock VarAC sends), move once
   it has been delivered, `<TL>`, then wait for `<QSYR>`. Each step is given
   a minute; the status line shows how far it has got. A request for more
   than 4 kHz away isn't followed. When a QSO that was moved off the calling
