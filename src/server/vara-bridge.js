@@ -705,11 +705,11 @@ class VaraBridge {
     }
   }
 
-  /** QSYD/QSYU in a QSO: send VarAC's <QSYF>, move once it has been delivered, then <TL> and wait for <QSYR>. */
+  /** QSYD/QSYU in a QSO: send VarAC's <Q:n>, move once it has been delivered, then <TL> and wait for <QSYR>. */
   _requestQsy(target) {
     const link = this._link;
     link.qsy = { role: 'requester', target, phase: null, timer: null, queued: false };
-    this._sendText(varac.qsyRequest(target));
+    this._sendText(varac.qsyRequest(target - this.controlServer.state.frequency));
     this._addText(`Asking ${this.state.peer} to QSY to ${mhzText(target)} MHz\n`, { note: true });
     this._qsyPhase('sending', QSY_SEND_MS, () => this._qsyFail(`${this.state.peer} didn't receive the request`));
   }

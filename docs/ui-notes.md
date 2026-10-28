@@ -4602,3 +4602,16 @@ model for how to approach that.
   on; QSYU sends `<QSYF>`, the radio moves, `<TL>`, `<QSYR>`, the report;
   back to 14.105 after; OH8XAT's beacon and VMail notice). Not tested on
   air, and not yet with VarAC. Service-worker cache v113.
+
+### VARA: QSY requests as stock VarAC sends them (v114)
+
+- QSYD/QSYU in a QSO now send `<Q:n>` (n the move in tens of Hz: `<Q:75>`
+  is 750 Hz up) instead of `<QSYF>000014105750</QSYF>`. Every QSY request
+  heard from stock VarAC on air in KiwiSDR recordings on 2026-10-28 was
+  this form: `<Q:225>`, `<Q:-375>`, `<Q:75>` (the last from N4RTD,
+  14 s after the answering station's `<AWQ>`). hfmodem sends `<QSYF>`,
+  which its notes say VarAC 16.1.8 reads; older versions may not. PiRO
+  still follows a request in either form.
+- Tests: vara.test.js (`<Q:n>` built and followed; two real modems still
+  move together; QSYD sends `<Q:-75>`), manual-tty-ui.js (QSYU sends
+  `<Q:75>`). Not tested on air. Service-worker cache v114.

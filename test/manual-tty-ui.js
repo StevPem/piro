@@ -471,7 +471,7 @@ class Civ extends EventEmitter {
     check(!(await page.locator('#vara-qsyu-btn').isDisabled()) && /K1ABC is ready to QSY off the calling frequency/.test(await page.locator('#vara-rx-text').textContent()), "K1ABC's <Q>: ready to QSY; QSYU and QSYD come on");
     await page.locator('#vara-qsyu-btn').click();
     await sleep(150);
-    check(sentText()[0] === '25 <QSYF>000014105750</QSYF>' && civ.freq === 14105000, 'QSYU in the QSO asks K1ABC to QSY to 14.10575 (and waits for it to be delivered)');
+    check(sentText()[0] === '6 <Q:75>' && civ.freq === 14105000, 'QSYU in the QSO asks K1ABC to QSY +750 Hz with <Q:75> (and waits for it to be delivered)');
     w.emit('message', { type: 'buffer', bytes: 25 });
     w.emit('message', { type: 'buffer', bytes: 0 });
     await sleep(150);
