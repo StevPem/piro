@@ -4554,3 +4554,51 @@ model for how to approach that.
   to 14.10575 and calls F6JON, back to 14.105 after "No answer", a beacon
   listed). Not tested on air, and not yet with VarAC. Service-worker cache
   v112.
+
+### VARA: VarAC's QSY handshake, beacons and VMail notices (v113)
+
+- **Why:** KiwiSDR recordings of 14.105 MHz (G8URE, 2026-10-28) showed
+  how VarAC is used on the calling frequency: beacons every 15 minutes,
+  stations connecting straight to beaconing stations, the called station
+  answering `<AWQ>` (away), and a QSY to a slot with `<Q:225>`. PiRO
+  threw the beacons away, and showed a QSY request without following it,
+  so a VarAC caller would have moved and lost the link.
+- **QSY handshake** (from hfmodem's `request_qsy_steps()` and
+  `answer_qsy_steps()`):
+  - Called on the calling frequency, PiRO sends `<Q>` (ready to QSY) and
+    no report. Calling there, it shows "ready to QSY" when the other
+    station sends `<Q>` or `<AWQ>`.
+  - Asked to QSY (`<QSYF>000014107250</QSYF>`, `<QF:Hz>` or `<Q:n>`, n
+    in tens of Hz): it waits for its own modem's acknowledgement (PTT off,
+    or 8 s if nothing to send), moves the radio, waits for `<TL>`, sends
+    `<QSYR>`, waits for their report, then sends its own.
+  - QSYD/QSYU in a QSO (once the other station is ready): `<QSYF>`, move
+    once it has been delivered (send buffer up and back to 0), `<TL>`,
+    wait for `<QSYR>`, then the report.
+  - Each step has a time limit; on one, the QSY is abandoned with a note.
+    Requests for more than 4 kHz away aren't followed.
+  - When a QSO moved by a QSY ends, the radio goes back to the calling
+    frequency. The server moves the radio itself here (CI-V, then a
+    `frequency` broadcast), since nobody may be pressing anything.
+  - State: `state.vara.qsyReady` and `state.vara.qsy` ({role, target,
+    phase}); the status line shows "ready to QSY" or "QSY to 14.10575
+    MHz: waiting for K1ABC…".
+- **Beacons and notices:** Xara only listens for KISS broadcasts while a
+  KISS client is connected. The wrapper (`third_party/xara/wasm/src/tnc.rs`)
+  now always listens, and passes each frame up as a line of PiRO's own,
+  `KISS <command> <hex>`. Command 2 is VarAC's beacon (`20OKP10RQOH8XAT`:
+  status letter, locator, callsign): listed in Heard with its locator and
+  services, and noted. Command 1 is an AX.25 UI frame with 7-character
+  callsigns; `<SMP>` is a VMail notice ("OH8XAT has VMail waiting for
+  HB9FIH"). The DH7LK beacon had a letter where hfmodem has only seen a
+  digit (`2AI…`), so that character may be anything.
+- Checked with the recordings: PiRO's modem now reports the four beacons
+  and the VMail notice in them.
+- Tests: vara.test.js (two real modems: connect on the calling frequency,
+  `<Q>`, QSYU, both move, handshake, reports on the slot; stub: answering
+  `<Q:225>` step by step, asking with QSYD step by step, back to the
+  calling frequency, the recorded beacon and notice frames),
+  ws-server.test.js (`qsy`), manual-tty-ui.js (K1ABC's `<Q>` turns QSYU
+  on; QSYU sends `<QSYF>`, the radio moves, `<TL>`, `<QSYR>`, the report;
+  back to 14.105 after; OH8XAT's beacon and VMail notice). Not tested on
+  air, and not yet with VarAC. Service-worker cache v113.

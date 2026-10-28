@@ -6,7 +6,9 @@
 //! replies (command lines, each ending in CR) and received data in buffers
 //! for the caller to collect. The KISS port, the web UI's telemetry and the
 //! UI's tune/restart controls are left out; everything else, including the
-//! handling of every VARA command, is Xara's own code.
+//! handling of every VARA command, is Xara's own code. KISS frames heard on
+//! air (VarAC's beacons and notices) are passed up as a line of PiRO's own,
+//! "KISS <command> <hex>", instead of to a KISS port.
 
 use crate::station::{HostConfig, Modem, Report, TX_RING_BYTES};
 use std::cell::RefCell;
@@ -50,7 +52,10 @@ pub struct Tnc<M: Modem> {
 }
 
 impl<M: Modem> Tnc<M> {
-    pub fn new(station: M) -> Self {
+    pub fn new(mut station: M) -> Self {
+        // Xara listens for KISS broadcasts only while a KISS client is
+        // connected; here they are always wanted (see flush()).
+        station.set_kiss_rx(true);
         Self {
             alive_at: station.now() + ALIVE_EVERY,
             station,
@@ -282,7 +287,13 @@ impl<M: Modem> Tnc<M> {
     fn flush(&mut self) {
         while let Some(r) = self.station.pop() {
             match r {
-                Report::Trace(_) | Report::Kiss(..) => {}
+                Report::Trace(_) => {}
+                // Not a VARA host reply: PiRO's own line, so the host can show
+                // what VarAC broadcasts this way (beacons, VMail notices).
+                Report::Kiss(cmd, data) => {
+                    let hex: String = data.iter().map(|b| format!("{b:02x}")).collect();
+                    self.say(Response::Line(format!("KISS {} {hex}", cmd.byte())));
+                }
                 Report::Ptt(on) => {
                     self.keyed = on;
                     self.say(Response::Ptt(on))

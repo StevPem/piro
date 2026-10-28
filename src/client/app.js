@@ -2558,6 +2558,10 @@ function renderVaraStatus(v) {
     if (Number.isFinite(v.sn)) bits.push(`S/N ${v.sn.toFixed(1)} dB`);
     if (v.bitrate) bits.push(`${v.bitrate} bps`);
     if (v.buffer) bits.push(`${v.buffer} bytes to send`);
+    if (v.qsy) {
+      const step = { sending: 'asking', ack: 'acknowledging', tl: `waiting for ${v.peer}`, qsyr: `waiting for ${v.peer}`, opening: `waiting for ${v.peer}` }[v.qsy.phase] || '';
+      bits.push(`QSY to ${(v.qsy.target / 1e6).toFixed(5)} MHz${step ? `: ${step}…` : ''}`);
+    } else if (v.qsyReady) bits.push('ready to QSY');
     text = bits.join(' · ');
   } else text = v.pending ? 'someone is calling…' : `listening (${v.bw} Hz)${v.busy ? ' · channel busy' : ''}`;
   // Off the band's calling frequency (after QSYD/QSYU, say): by how much.
@@ -2575,7 +2579,10 @@ function renderVaraStatus(v) {
   varaConnectBtn.disabled = !v.available || st === 'off' || st === 'starting';
   varaCqBtn.disabled = !v.available || st !== 'listening';
   // QSY moves only this radio, so not during a QSO (the link would be lost).
-  varaQsydBtn.disabled = varaQsyuBtn.disabled = !v.available || st === 'off' || st === 'starting' || inQso;
+  // Outside a QSO they move this radio; in one they ask the other station to move with it
+  // (VarAC's QSY handshake), once it has said it is ready and while no QSY is under way.
+  const qsyInQso = st === 'connected' && v.qsyReady && !v.qsy;
+  varaQsydBtn.disabled = varaQsyuBtn.disabled = !v.available || st === 'off' || st === 'starting' || (inQso && !qsyInQso);
   if (inQso && v.peer && document.activeElement !== varaCallEl) varaCallEl.value = v.peer;
   varaHeardEl.replaceChildren();
   varaHeardEl.hidden = !v.heard?.length;
@@ -2596,7 +2603,7 @@ function renderVaraStatus(v) {
         t.textContent = ` ${tag}`;
         b.appendChild(t);
       }
-      const where = h.beacon ? 'sent a beacon' : h.offsetHz ? `called CQ, waiting ${h.offsetHz > 0 ? '+' : '−'}${Math.abs(h.offsetHz)} Hz from the calling frequency (slot ${h.slot})` : 'called CQ';
+      const where = h.beacon ? `sent a beacon${h.grid ? ` from ${h.grid}` : ''}${h.services?.length ? ` (offers ${h.services.join(', ')})` : ''}` : h.offsetHz ? `called CQ, waiting ${h.offsetHz > 0 ? '+' : '−'}${Math.abs(h.offsetHz)} Hz from the calling frequency (slot ${h.slot})` : 'called CQ';
       b.title = `${h.call} ${where} at ${utcClock(h.time)} UTC${h.bw ? ` (${h.bw} Hz)` : ''}${Number.isFinite(h.sn) ? `, S/N ${h.sn.toFixed(1)} dB` : ''}. Tap to put the call in the box${h.offsetHz && !h.beacon ? '; Connect then moves to the slot (for about 2 minutes after the CQ)' : ''}.`;
       b.addEventListener('click', () => {
         varaCallEl.value = h.call;
@@ -2676,6 +2683,11 @@ varaCqBtn.addEventListener('click', () => {
 
 /** QSYD / QSYU: moves the radio one VarAC slot (750 Hz) down or up. */
 function varaQsy(direction) {
+  if (varaStatus?.state === 'connected') {
+    // In a QSO: VarAC's QSY handshake, so both stations move.
+    link.request('vara', { action: 'qsy', offsetHz: direction * VARA_QSY_STEP_HZ }).catch((err) => showError(`VARA: ${err.message}`));
+    return;
+  }
   if (currentFreqHz == null) return;
   const hz = currentFreqHz + direction * VARA_QSY_STEP_HZ;
   link

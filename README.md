@@ -12,7 +12,7 @@ Hamlib, no separate audio server and no extra apps.
 Written by VK3TR. Licensed AGPL-3.0-only (see
 [Licence](#licence)).
 
-**Current build: v112.** This is the version the app shows next to its title.
+**Current build: v113.** This is the version the app shows next to its title.
 It is the `CACHE_NAME` number in `src/client/sw.js`, which goes up with every
 change to the web app.
 
@@ -890,16 +890,16 @@ before you call.
   connect to you there. (It names no slot, as a VarAC CQ does; see below.)
 - **Callsign** and **Connect** call a station. While calling, Connect
   reads **Stop**; in a QSO it reads **Disconnect**.
-- **QSYD** and **QSYU**, right of CQ, move the radio 750 Hz down or up
-  (one VarAC slot). Off the calling frequency, the status line says how far
-  ("calling freq +1.5 kHz"). They move only your radio, so they are off
-  during a QSO: VarAC's own QSY requests aren't supported, and moving alone
-  would lose the link. To change frequency in a QSO, agree one in the chat,
-  Disconnect, both QSY, and connect again.
+- **QSYD** and **QSYU**, right of CQ, move 750 Hz down or up (one VarAC
+  slot). Off the calling frequency, the status line says how far
+  ("calling freq +1.5 kHz"). Outside a QSO they move your radio. In a QSO
+  they ask the other station to move with you, as VarAC's QSY does (see
+  below); they come on once the other station has said it is ready to QSY.
 - **Heard** lists the stations heard calling CQ, and VarAC beacons,
   newest first. A VarAC CQ shows its slot ("F6JON +750"), a beacon reads
   "beacon". Tap one to put its callsign in the box; its tooltip gives the
-  S/N and the time.
+  S/N and the time, and for a VarAC beacon its locator and what it offers
+  (VMail, email, AI, BBS).
 - **The conversation**: received text in white, your own in amber, and
   PiRO's notes about the link ("Connected to VK3ABC (500 Hz)") in grey.
 
@@ -926,6 +926,25 @@ then the text in UTF-8, and puts tags in the text. PiRO does the same:
   "is closing the QSO"); tags PiRO doesn't know are shown as they are.
 - **Disconnect** first sends VarAC's goodbye (`<DISC>`), then ends the
   link once it has gone.
+- **On the calling frequency** VarAC sends no reports. The station that
+  was called says it is ready to QSY (`<Q>`, or `<AWQ>` if its operator
+  is away), and the caller asks to move the QSO to a slot. PiRO does the
+  same: called there, it sends `<Q>`; calling, it shows "ready to QSY"
+  when the other station is, and QSYD/QSYU then ask it to move.
+- **QSY in a QSO** is VarAC's handshake. PiRO follows a request from the
+  other station (`<QSYF>` with a frequency, or `<Q:225>`, i.e. +2250 Hz):
+  once its modem has acknowledged it, the radio moves, waits for `<TL>`
+  ("I've arrived"), replies `<QSYR>`, and each side sends its report on
+  the new frequency. Asking works the other way round: `<QSYF>`, move once
+  it has been delivered, `<TL>`, then wait for `<QSYR>`. Each step is given
+  a minute; the status line shows how far it has got. A request for more
+  than 4 kHz away isn't followed. When a QSO that was moved off the calling
+  frequency ends, PiRO goes back to it, as VarAC does.
+- **Beacons and notices:** VarAC's beacons, which carry the station's
+  locator and what it offers, are listed in Heard and noted ("Beacon from
+  OH8XAT (KP10RQ; offers VMail, email, AI, BBS)"). Its VMail notices are
+  noted too ("OH8XAT has VMail waiting for HB9FIH"). PiRO can't collect
+  VMail yet.
 - A station that sends plain text instead (VARA Chat, probably) is shown
   as it comes, and from then on PiRO answers it in plain text too.
 
@@ -956,8 +975,9 @@ key. At 500 Hz a short line takes about 10 to 15 seconds to arrive.
 * A QSO with nothing sent or received for 10 minutes is disconnected.
 * The usual PTT watchdog (ten minutes) still applies.
 * VARA needs `STATION_CALLSIGN`, and audio at 48 kHz (the default).
-* Basic QSOs only. Not yet: calling CQ on a slot as VarAC does, VarAC's
-  QSY handshake during a QSO, sending beacons, VMail, file transfer.
+* Not yet: calling CQ on a slot as VarAC does (PiRO's CQ stays on the
+  calling frequency), choosing a free slot by itself, sending beacons,
+  VMail, BBS and file transfer.
 
 **Bandwidth.** `VARA_BW` sets it: 500 Hz (the default, used on the VarAC
 calling frequencies), 2300 or 2750 Hz. Both stations must use the same.
