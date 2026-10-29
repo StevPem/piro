@@ -4691,3 +4691,10 @@ model for how to approach that.
 - Tests: vara.test.js (CQ, beacon and VMail notice lines start with the
   time; link notes don't), manual-tty-ui.js (the same on the page).
   Service-worker cache v118.
+
+### VARA: heard-traffic time without seconds (v119)
+
+- The UTC time before heard CQs, beacons and notices is now hours and
+  minutes only: "12:15Z CQ from W7BTM (…)" (was "12:15:39Z").
+- Tests: vara.test.js and manual-tty-ui.js match the shorter time.
+  Service-worker cache v119.

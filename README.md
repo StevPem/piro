@@ -12,7 +12,7 @@ Hamlib, no separate audio server and no extra apps.
 Written by VK3TR. Licensed AGPL-3.0-only (see
 [Licence](#licence)).
 
-**Current build: v118.** This is the version the app shows next to its title.
+**Current build: v119.** This is the version the app shows next to its title.
 It is the `CACHE_NAME` number in `src/client/sw.js`, which goes up with every
 change to the web app.
 
@@ -951,7 +951,7 @@ then the text in UTF-8, and puts tags in the text. PiRO does the same:
   noted too ("OH8XAT has VMail waiting for HB9FIH").
 - **Times:** everything heard outside your own QSO (CQs, beacons, VMail
   notices, broadcasts) starts with the UTC time it was heard, e.g.
-  "12:15:39Z CQ from W7BTM (…)". Notes about your own link (Calling,
+  "12:15Z CQ from W7BTM (…)". Notes about your own link (Calling,
   Connected, QSY) and the chat itself have no time. PiRO can't collect
   VMail yet.
 - A station that sends plain text instead (VARA Chat, probably) is shown
