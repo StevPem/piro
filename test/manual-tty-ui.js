@@ -445,7 +445,7 @@ class Civ extends EventEmitter {
     // A station calls CQ: it is listed; tap it, then Connect.
     say('CQFRAME K1ABC 500');
     await page.waitForFunction(() => document.querySelector('#vara-heard .vara-rx__heard-call')?.textContent === 'K1ABC', null, { timeout: 4000 });
-    check(/\d\d:\d\d:\d\dZ CQ from K1ABC \(500 Hz\)/.test(await page.locator('#vara-rx-text').textContent()), 'a CQ heard is listed, and noted in the conversation after its UTC time');
+    check(/\d\d:\d\dZ CQ from K1ABC \(500 Hz\)/.test(await page.locator('#vara-rx-text').textContent()), 'a CQ heard is listed, and noted in the conversation after its UTC time');
     await page.locator('#vara-heard .vara-rx__heard-call').click();
     check((await page.locator('#vara-call').inputValue()) === 'K1ABC', 'tapping a heard call puts it in the callsign box');
     await page.locator('#vara-connect-btn').click();
@@ -538,7 +538,7 @@ class Civ extends EventEmitter {
       return b && /from KP10RQ \(offers VMail, email, AI, BBS\)/.test(b.title);
     }, null, { timeout: 4000 }).then(() => true, () => false);
     check(beaconOk, "OH8XAT's beacon is listed, its tooltip giving its locator and services");
-    check(/\d\d:\d\d:\d\dZ Beacon from OH8XAT \(KP10RQ; offers VMail, email, AI, BBS\)\n\d\d:\d\d:\d\dZ OH8XAT has VMail waiting for HB9FIH/.test(await page.locator('#vara-rx-text').textContent()), 'the beacon and the VMail notice are noted in the conversation');
+    check(/\d\d:\d\dZ Beacon from OH8XAT \(KP10RQ; offers VMail, email, AI, BBS\)\n\d\d:\d\dZ OH8XAT has VMail waiting for HB9FIH/.test(await page.locator('#vara-rx-text').textContent()), 'the beacon and the VMail notice are noted in the conversation');
     if (process.env.VARA_HEARD_SHOT) await page.locator('#vara-rx').screenshot({ path: process.env.VARA_HEARD_SHOT });
   }
 

@@ -363,7 +363,7 @@ async function main() {
     say('SN 4.2', 'CQFRAME F6JON-11 500');
     const h = s.controlServer.state.vara.heard[0];
     check(h.call === 'F6JON' && h.raw === 'F6JON-11' && h.slot === 11 && h.offsetHz === 750 && !h.beacon && h.sn === 4.2, 'a VarAC CQ "F6JON-11": F6JON, waiting on slot 11, 750 Hz up');
-    check(/(^|\n)\d\d:\d\d:\d\dZ CQ from F6JON \(waiting \+750 Hz from the calling frequency \(slot 11\), 500 Hz\)/.test(s.controlServer.text()), 'noted with its slot, after the UTC time it was heard ("12:15:39Z CQ from …")');
+    check(/(^|\n)\d\d:\d\dZ CQ from F6JON \(waiting \+750 Hz from the calling frequency \(slot 11\), 500 Hz\)/.test(s.controlServer.text()), 'noted with its slot, after the UTC time it was heard ("12:15Z CQ from …")');
     check(spots[0]?.call === 'F6JON', 'spotted without the slot suffix');
     say('CQFRAME K1ABC-3 500', 'CQFRAME N1AMD-9 500');
     check(s.controlServer.state.vara.heard[1].offsetHz === -2250 && s.controlServer.state.vara.heard[0].beacon === true && s.controlServer.state.vara.heard[0].call === 'N1AMD', '-3 is 2250 Hz down; -9 is a beacon');
@@ -436,10 +436,10 @@ async function main() {
     say('SN 5.1', 'KISS 2 32314f4b50313052514f48385841542020202020');
     const bh = s.controlServer.state.vara.heard[0];
     check(bh.call === 'OH8XAT' && bh.beacon && bh.grid === 'KP10RQ' && bh.services.join(',') === 'VMail,email,AI,BBS' && bh.sn === 5.1, "OH8XAT's beacon: KP10RQ, VMail, email, AI, BBS");
-    check(/(^|\n)\d\d:\d\d:\d\dZ Beacon from OH8XAT \(KP10RQ; offers VMail, email, AI, BBS\)/.test(s.controlServer.text()), 'noted, after the UTC time');
+    check(/(^|\n)\d\d:\d\dZ Beacon from OH8XAT \(KP10RQ; offers VMail, email, AI, BBS\)/.test(s.controlServer.text()), 'noted, after the UTC time');
     say('KISS 1 9084728c929040609e9070b082a8406103f03c534d503e');
-    check(/(^|\n)\d\d:\d\d:\d\dZ OH8XAT has VMail waiting for HB9FIH/.test(s.controlServer.text()), 'a VMail notice: "OH8XAT has VMail waiting for HB9FIH", after the UTC time');
-    check(!/\d\d:\d\d:\d\dZ (Connected|Calling|Disconnected)/.test(s.controlServer.text()), 'notes about our own link have no time');
+    check(/(^|\n)\d\d:\d\dZ OH8XAT has VMail waiting for HB9FIH/.test(s.controlServer.text()), 'a VMail notice: "OH8XAT has VMail waiting for HB9FIH", after the UTC time');
+    check(!/\d\d:\d\dZ (Connected|Calling|Disconnected)/.test(s.controlServer.text()), 'notes about our own link have no time');
     await s.bridge.stop();
   }
   {

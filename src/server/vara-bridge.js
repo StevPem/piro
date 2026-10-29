@@ -543,12 +543,13 @@ class VaraBridge {
   }
 
   /**
-   * The UTC time ("12:15:39Z") that heard traffic outside a QSO (CQs,
+   * The UTC time ("12:15Z") that heard traffic outside a QSO (CQs,
    * beacons, notices) is marked with in the conversation. Made here, so
    * every browser, and one that connects later, shows the same time.
    */
   _utc() {
-    return `${new Date(this.now()).toISOString().slice(11, 19)}Z`;
+    const t = new Date(this.now()).toISOString();
+    return `${t.slice(11, 16)}Z`;
   }
 
   /** The S/N the modem reported just now, for the frame that came with it (once), or null. */
