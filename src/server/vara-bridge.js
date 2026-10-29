@@ -534,12 +534,21 @@ class VaraBridge {
         const where = cq.beacon ? 'on the calling frequency' : cq.slot ? `waiting ${cq.offsetHz > 0 ? '+' : '−'}${Math.abs(cq.offsetHz)} Hz from the calling frequency (slot ${cq.slot})` : '';
         const bwText = Number(bw) ? `${bw} Hz` : '';
         const detail = [where, bwText].filter(Boolean).join(', ');
-        this._addText(`${cq.beacon ? 'Beacon' : 'CQ'} from ${cq.call}${detail ? ` (${detail})` : ''}\n`, { note: true });
+        this._addText(`${this._utc()} ${cq.beacon ? 'Beacon' : 'CQ'} from ${cq.call}${detail ? ` (${detail})` : ''}\n`, { note: true });
         break;
       }
       default:
         break; // IAMALIVE, REGISTERED, LINK (UN)REGISTERED, ENCRYPTION DISABLED, VERSION ...
     }
+  }
+
+  /**
+   * The UTC time ("12:15:39Z") that heard traffic outside a QSO (CQs,
+   * beacons, notices) is marked with in the conversation. Made here, so
+   * every browser, and one that connects later, shows the same time.
+   */
+  _utc() {
+    return `${new Date(this.now()).toISOString().slice(11, 19)}Z`;
   }
 
   /** The S/N the modem reported just now, for the frame that came with it (once), or null. */
@@ -817,15 +826,15 @@ class VaraBridge {
       this.state.heard = [entry, ...this.state.heard.filter((h) => h.call !== b.call)].slice(0, HEARD_MAX);
       this._spot(b.call, sn);
       this.controlServer.broadcastJsonEvent(EVENT.VARA_STATUS, this.state);
-      this._addText(`Beacon from ${b.call} (${[b.grid, b.services.length ? `offers ${b.services.join(', ')}` : ''].filter(Boolean).join('; ')})\n`, { note: true });
+      this._addText(`${this._utc()} Beacon from ${b.call} (${[b.grid, b.services.length ? `offers ${b.services.join(', ')}` : ''].filter(Boolean).join('; ')})\n`, { note: true });
       return;
     }
     const ui = varac.decodeUi(bytes, command);
     if (!ui) return;
     if (/^<SMP>/.test(ui.info)) {
       const forUs = ui.to.replace(/-\d+$/, '') === this.callsign;
-      this._addText(forUs ? `${ui.from} has VMail waiting for you (PiRO can't collect VMail yet)\n` : `${ui.from} has VMail waiting for ${ui.to}\n`, { note: true });
-    } else this._addText(`${ui.from} to ${ui.to}: ${cleanText(ui.info)}\n`, { note: true });
+      this._addText(`${this._utc()} ${forUs ? `${ui.from} has VMail waiting for you (PiRO can't collect VMail yet)` : `${ui.from} has VMail waiting for ${ui.to}`}\n`, { note: true });
+    } else this._addText(`${this._utc()} ${ui.from} to ${ui.to}: ${cleanText(ui.info)}\n`, { note: true });
   }
 
   /** Something was sent or received: restart the idle clock. */
