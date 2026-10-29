@@ -4676,3 +4676,18 @@ model for how to approach that.
   on a map filtered to VARAC only other stations' reports appear (such
   as ZL2TNB's of you). PiRO now reports "VARAC" too.
 - Tests: vara.test.js (the spot's mode). Service-worker cache v117.
+
+### VARA: UTC time on heard traffic (v118)
+
+- In the VARA conversation, everything heard outside a QSO starts with
+  the UTC time it was heard: "12:15:39Z CQ from W7BTM (…)", "12:15:39Z
+  Beacon from OH8XAT (…)", "12:15:39Z OH8XAT has VMail waiting for
+  HB9FIH", and broadcasts such as "… OE5RPP to ALL: …". Notes about this
+  station's own link (Calling, Connected, QSY, Disconnected) and the chat
+  text have no time.
+- The time is added on the server (`VaraBridge#_utc()`), so every browser
+  shows the same one, and a browser that connects later is sent it with
+  the rest of the conversation.
+- Tests: vara.test.js (CQ, beacon and VMail notice lines start with the
+  time; link notes don't), manual-tty-ui.js (the same on the page).
+  Service-worker cache v118.
