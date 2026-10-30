@@ -99,7 +99,11 @@ function decodePng(buf) {
     while ((bridge._sentSamples - bridge._ackedSamples) / 12000 > 2) await sleep(5);
   }
   const t0 = Date.now();
-  while (!controlServer.broadcasts.some((b) => b.type === EVENT.SSTV_PICTURE) && Date.now() - t0 < 10000) await sleep(20);
+  // The decoder can finish the short fixture before the independent spectrum
+  // timer fires on a fast machine. Wait for both asynchronous outputs before
+  // taking their snapshots; neither assertion below is relaxed.
+  while ((!controlServer.broadcasts.some((b) => b.type === EVENT.SSTV_PICTURE)
+    || !controlServer.binary.some((b) => b[0] === BINARY_TYPE.FT8_SPECTRUM)) && Date.now() - t0 < 10000) await sleep(20);
   const start = controlServer.broadcasts.find((b) => b.type === EVENT.SSTV_START)?.data;
   const pic = controlServer.broadcasts.find((b) => b.type === EVENT.SSTV_PICTURE)?.data;
   const lines = controlServer.binary.filter((b) => b[0] === BINARY_TYPE.SSTV_LINE);
