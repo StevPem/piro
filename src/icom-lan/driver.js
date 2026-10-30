@@ -18,10 +18,18 @@ class IcomLanDriver extends CivDriver {
     this.capture = session.capture;
     this.playback = session.playback;
     this.txRevision = 0;
-    this.pttQueue = Promise.resolve();
+    this.settingsQueue = Promise.resolve();
     this.prepared = false;
     this.rxSaved = [];
     this.txSaved = [];
+    this.radioState = {};
+    this.stateRevision = { frequency: 0, mode: 0, dataMode: 0 };
+    for (const [event, key] of [['frequency', 'frequency'], ['mode', 'mode'], ['data-mode', 'dataMode']]) {
+      this.on(event, (value) => {
+        this.radioState[key] = value;
+        ++this.stateRevision[key];
+      });
+    }
     this.session.on('status', (status) => this.emit('connection-status', status));
     this.session.on('disconnected', () => {
       this.prepared = false;
@@ -29,7 +37,10 @@ class IcomLanDriver extends CivDriver {
       this.emit('transport-lost');
     });
     this.session.on('connected', () => {
-      if (!this.initialOpen) this.initialize().catch((err) => this.session.fail(err, false));
+      const generation = this.session.generation;
+      if (!this.initialOpen) this.initialize().catch((err) => {
+        if (generation === this.session.generation) this.session.fail(err, false);
+      });
     });
     if (options.modLevel !== undefined && (!Number.isInteger(options.modLevel) || options.modLevel < 0 || options.modLevel > 255)) {
       throw new Error('ICOM_LAN_MOD_LEVEL must be an integer from 0 to 255');
@@ -42,43 +53,99 @@ class IcomLanDriver extends CivDriver {
       await super.open();
       await this.initialize();
     } catch (err) {
-      // Roll back settings while this association is still reachable. Closing
-      // first makes even a recoverable later initialization NG irreversible.
-      await this.restore(this.rxSaved).catch((restoreError) => this.emit('restore-error', restoreError));
       await this.session.close();
       throw err;
     } finally { this.initialOpen = false; }
   }
 
-  async initialize() {
-    const generation = this.session.generation;
-    this.prepared = false;
-    this.emit('connection-status', { transport: 'lan', state: 'identifying' });
-    this.radioAddr = this.options.radioAddr ?? 0;
-    const frame = await this._send(0x19, 0);
-    if (frame.cmd !== 0x19 || frame.data[0] !== MK2.id) throw new Error('LAN radio did not identify as an IC-7300MK2; model-specific audio settings were not applied');
-    this.radioAddr = frame.from;
-    this.profile = MK2;
-    // Reconnection never resumes a transmission. Confirm the old keyer/PTT
-    // state is stopped before accepting a new operator command.
-    await super.stopCw();
-    await super.setPtt(false);
-    await this.restore(this.txSaved).catch((err) => this.emit('restore-error', err));
-    // AF, not the 12 kHz IF stream; open squelch preserves decoder input.
-    for (const parameter of [MK2.afSelect, MK2.afSql]) {
-      const old = await this.readParameter(parameter);
-      if (old !== 0) {
-        if (!this.rxSaved.some((s) => s.parameter[1] === parameter[1])) this.rxSaved.push({ parameter, old, value: 0 });
-        await this.writeParameter(parameter, 0);
-      }
+  assertSession(generation) {
+    if (generation !== this.session.generation || !this.session.connected) {
+      throw new Error('Operation belongs to a disconnected radio session');
     }
-    const radioState = { frequency: await this.getFrequency(), mode: await this.getMode(), dataMode: await this.getDataMode() };
-    if (generation !== this.session.generation || !this.session.connected) throw new Error('Radio disconnected during initialization');
-    this.radioState = radioState;
-    this.prepared = true;
-    this.emit('radio-ready', radioState);
-    this.session.confirmReady();
-    this.emit('connection-status', { transport: 'lan', state: 'connected', model: MK2.name, radioAddr: this.radioAddr });
+  }
+
+  queueSettings(operation) {
+    const generation = this.session.generation;
+    const result = this.settingsQueue.then(async () => {
+      this.assertSession(generation);
+      const value = await operation(generation);
+      this.assertSession(generation);
+      return value;
+    });
+    this.settingsQueue = result.catch(() => {});
+    return result;
+  }
+
+  initialize() {
+    this.prepared = false;
+    return this.queueSettings(async (generation) => {
+      let identified = false;
+      try {
+        this.emit('connection-status', { transport: 'lan', state: 'identifying' });
+        this.radioAddr = this.options.radioAddr ?? 0;
+        const frame = await this._send(0x19, 0);
+        if (frame.cmd !== 0x19 || frame.data[0] !== MK2.id) throw new Error('LAN radio did not identify as an IC-7300MK2; model-specific audio settings were not applied');
+        identified = true;
+        this.radioAddr = frame.from;
+        this.profile = MK2;
+        // Reconnection never resumes a transmission. Confirm the old keyer/PTT
+        // state is stopped before accepting a new operator command.
+        await super.stopCw();
+        await super.setPtt(false);
+        await this.restore(this.txSaved).catch((err) => this.emit('restore-error', err));
+        // AF, not the 12 kHz IF stream; open squelch preserves decoder input.
+        for (const parameter of [MK2.afSelect, MK2.afSql]) {
+          const old = await this.readParameter(parameter);
+          if (old !== 0) {
+            this.saveSetting(this.rxSaved, { parameter, value: 0 }, old);
+            await this.writeParameter(parameter, 0);
+          }
+        }
+        for (const [key, read] of [['frequency', () => this.getFrequency()],
+          ['mode', () => this.getMode()], ['dataMode', () => this.getDataMode()]]) {
+          const revision = this.stateRevision[key];
+          const value = await read();
+          // A transceive notification or confirmed local change received
+          // during the read is newer than its reply. Keep that observation.
+          if (revision === this.stateRevision[key]) this.radioState[key] = value;
+        }
+        this.assertSession(generation);
+        this.prepared = true;
+        this.emit('radio-ready', { ...this.radioState });
+        this.session.confirmReady();
+        this.emit('connection-status', { transport: 'lan', state: 'connected', model: MK2.name, radioAddr: this.radioAddr });
+      } catch (err) {
+        this.prepared = false;
+        // Initial open and reconnect share rollback. Keep the verified
+        // association open until its changed RX settings are restored.
+        if (identified && generation === this.session.generation && this.session.connected) {
+          await this.restore(this.rxSaved).catch((restoreError) => this.emit('restore-error', restoreError));
+        }
+        throw err;
+      }
+    });
+  }
+
+  async setDataMode(on, filter) {
+    const result = await super.setDataMode(on, filter);
+    this.emit('data-mode', on);
+    return result;
+  }
+
+  async setFrequency(hz) {
+    const result = await super.setFrequency(hz);
+    this.emit('frequency', hz);
+    return result;
+  }
+
+  saveSetting(saved, setting, old) {
+    const index = saved.findIndex((entry) => entry.parameter[0] === setting.parameter[0]
+      && entry.parameter[1] === setting.parameter[1]);
+    if (index !== -1) {
+      if (old === saved[index].value) return; // Still our previous override.
+      saved.splice(index, 1); // The operator chose a new baseline meanwhile.
+    }
+    saved.push({ ...setting, old });
   }
 
   async readParameter(parameter, level = false) {
@@ -112,7 +179,7 @@ class IcomLanDriver extends CivDriver {
       const old = await this.readParameter(setting.parameter, setting.level);
       if (revision !== this.txRevision) throw new Error('PTT request was cancelled');
       if (old !== setting.value) {
-        if (!this.txSaved.some((entry) => entry.parameter[1] === setting.parameter[1])) this.txSaved.push({ ...setting, old });
+        this.saveSetting(this.txSaved, setting, old);
         await this.writeParameter(setting.parameter, setting.value, setting.level);
       }
     }
@@ -123,14 +190,18 @@ class IcomLanDriver extends CivDriver {
 
   async restore(saved) {
     if (!this.session.connected) return;
+    const generation = this.session.generation;
     const errors = [];
     for (const entry of [...saved].reverse()) {
       const { parameter, value, old, level } = entry;
       try {
         // Preserve front-panel changes; retain failed records for another
         // release/reconnect attempt rather than forgetting their old values.
+        this.assertSession(generation);
         if (await this.readParameter(parameter, level) === value) await this.writeParameter(parameter, old, level);
-        saved.splice(saved.indexOf(entry), 1);
+        this.assertSession(generation);
+        const index = saved.indexOf(entry);
+        if (index !== -1) saved.splice(index, 1);
       } catch (err) { errors.push(err.message); }
     }
     if (errors.length) throw new Error(`Could not restore radio settings: ${errors.join('; ')}`);
@@ -138,16 +209,10 @@ class IcomLanDriver extends CivDriver {
 
   setPtt(on) {
     const revision = ++this.txRevision;
-    const generation = this.session.generation;
     // Cancel local audio immediately on release; serialize radio routing and
     // restoration so an older release cannot restore MIC after a newer key.
     if (!on) this.playback.setKeyed(false);
-    const result = this.pttQueue.then(() => {
-      if (generation !== this.session.generation) throw new Error('PTT belongs to a disconnected radio session');
-      return this.transitionPtt(on, revision);
-    });
-    this.pttQueue = result.catch(() => {});
-    return result;
+    return this.queueSettings(() => this.transitionPtt(on, revision));
   }
 
   async transitionPtt(on, revision) {
@@ -202,7 +267,7 @@ class IcomLanDriver extends CivDriver {
     if (this.session.connected) {
       await this.stopCw().catch(() => {});
       await this.setPtt(false).catch(() => {});
-      await this.restore(this.rxSaved).catch((err) => this.emit('restore-error', err));
+      await this.queueSettings(() => this.restore(this.rxSaved)).catch((err) => this.emit('restore-error', err));
     }
     return super.close();
   }

@@ -166,6 +166,11 @@ class VaraBridge {
     this._onActive = (active) => (active ? this.activate() : this.deactivate()).catch(() => {});
     this._onRequest = (req) => this.request(req);
     this._onPcm = (chunk) => this._handlePcm(chunk);
+    this._onPtt = (on) => {
+      // An external release can cancel our pending audio drain before its
+      // CI-V acknowledgment arrives. Reconcile the latch on confirmation.
+      if (!on && this.controlServer.state.ptt === false) this._clearKey();
+    };
     this._onClientJoined = (ws) => {
       if (this._transcript.length && typeof this.controlServer.sendJsonEvent === 'function') {
         this.controlServer.sendJsonEvent(ws, EVENT.VARA_TEXT, { replace: true, segments: this._transcript });
@@ -197,6 +202,7 @@ class VaraBridge {
   start() {
     this.controlServer.on('vara-active', this._onActive);
     this.controlServer.on('vara', this._onRequest);
+    this.controlServer.on('ptt', this._onPtt);
     this.controlServer.on('client-connected', this._onClientJoined);
     // A browser that connected while the server was still starting has a
     // snapshot without this state: send it now.
@@ -207,6 +213,7 @@ class VaraBridge {
   stop() {
     this.controlServer.off('vara-active', this._onActive);
     this.controlServer.off('vara', this._onRequest);
+    this.controlServer.off('ptt', this._onPtt);
     this.controlServer.off('client-connected', this._onClientJoined);
     return this.deactivate();
   }
@@ -594,6 +601,7 @@ class VaraBridge {
       return;
     }
     if (this.controlServer.state.ptt) return; // someone else is transmitting
+    ++this._keyEpoch;
     this._keyed = true;
     this._update({ ptt: true });
     this._keyTimer = setTimeout(() => {
@@ -610,20 +618,27 @@ class VaraBridge {
     }
   }
 
+  _clearKey() {
+    clearTimeout(this._keyTimer);
+    this._keyTimer = null;
+    this._keyed = false;
+    this._update({ ptt: false });
+  }
+
   async _unkey({ drain = false } = {}) {
     if (!this._keyed) return this.controlServer.state.ptt === false;
     const epoch = ++this._keyEpoch;
     if (drain && typeof this.audioBridge.playback.drain === 'function') {
-      if (await this.audioBridge.playback.drain() === false) return false;
+      if (await this.audioBridge.playback.drain() === false) {
+        if (epoch === this._keyEpoch && this.controlServer.state.ptt === false) this._clearKey();
+        return false;
+      }
     }
     if (!this._keyed || epoch !== this._keyEpoch) return false;
     try {
       await this.controlServer.setPttFromServer(false);
       if (epoch !== this._keyEpoch) return false;
-      clearTimeout(this._keyTimer);
-      this._keyTimer = null;
-      this._keyed = false;
-      this._update({ ptt: false });
+      this._clearKey();
       return true;
     } catch (err) {
       this._error(`Couldn't unkey the radio: ${err.message}`);

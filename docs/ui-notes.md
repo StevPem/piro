@@ -4736,3 +4736,22 @@ model for how to approach that.
 - Added socket, native-pipe and normal-process regressions for the original
   reproductions. See `icom-lan-audit-fixes.md` and `icom-lan-plan.md`.
 - Build/cache v121. Physical-radio and on-air checks remain pending.
+
+### Native LAN restoration and state races (v122)
+
+- Fixed the six findings from the independent review of v121. Reconnect
+  initialization and PTT routing now share one settings queue. Failed
+  restoration records survive overlapping release requests.
+- A new front-panel source or level selection becomes the baseline for the
+  next transmission, replacing an obsolete saved value after a failed restore.
+- Connection loss during restoration rejects the stale release result. The
+  browser keeps PTT unknown until the new radio session confirms its state.
+- Reconnect preserves transceive updates received during or after its state
+  reads. RX rollback runs on failed reconnects as well as initial startup.
+- Confirmed external PTT-off clears VARA's local key latch after a cancelled
+  drain, so the next modem burst can key normally. Its own QSY release still
+  waits for drain and PTT confirmation.
+- Added localhost regressions for all six findings, including source and
+  level changes, two transceive timings and real VARA/ControlServer keying.
+  Final checks are recorded in `icom-lan-plan.md`.
+- Build/cache v122. Not tested on a physical radio or on air.

@@ -1,9 +1,11 @@
-# LAN audit fixes (v121)
+# LAN audit fixes (v121 and v122)
 
 The independent review of `a571ea6` found ten reproducible defects. Each
 has a code fix and regression coverage. These checks use synthetic radios,
 local processes and native-pipe samples. Nothing is tested on a physical
 IC-7300MK2 or on air.
+
+## First review (v121)
 
 | Finding | Change | Regression evidence |
 |---|---|---|
@@ -17,6 +19,20 @@ IC-7300MK2 or on air.
 | 8. Restore failure discarded old settings and left false PTT-on state | Keep each restoration record until it succeeds or the operator has changed that setting. Report a restore error separately from an acknowledged PTT-off. | Inject NG during restoration, assert actual and cached PTT off, retain the saved setting and restore it on the next release. |
 | 9. Failed startup kept changed RX settings | Roll back completed RX changes while the association is still reachable, before closing the session. | Reject the second initialization setting and verify the first setting returns to its original value before close. |
 | 10. VARA stayed selected after its modem stopped | Disable VARA through shared server state and broadcast the app-mode change on radio loss. Automatic reconnect does not restart its transmitter. | Normal PiRO process selects VARA, loses the radio, publishes VARA off, reconnects and accepts explicit VARA activation/CQ again. |
+
+## Second review (v122)
+
+The broader review of `01ad130` found five new races and one remaining gap
+in RX rollback. These cases extend the first review's regression coverage.
+
+| Finding | Change | Regression evidence |
+|---|---|---|
+| 1. Concurrent restores discarded another setting's recovery record | Serialize initialization, PTT routing and restoration; only remove an entry that is still present. | Reconnect overlaps PTT-off with two saved settings and rejected source restores. The failed source remains saved and a later retry restores it. |
+| 2. Retained values overwrote newer operator choices | Replace a retained baseline when the current setting differs from PiRO's override. | After a failed release restore, change source to ACC or level to 170. The next transmission restores that new value. |
+| 3. Cancelled drain left VARA's key latch set | Reconcile the local latch and key timer when shared server state confirms PTT-off. New key requests invalidate older pending releases. | Cancel a real LAN drain with external PTT-off, then verify the next modem burst keys the peer. A separate test verifies its own release still completes QSY. |
+| 4. Disconnect during restoration falsely reported PTT off | Validate the radio session before and after queued settings operations. Reject stale success after connection loss. | Drop the association during a post-release setting read; the request rejects and canonical PTT stays unknown without a false-off event. |
+| 5. Reconnect replayed a stale tuning snapshot | Keep a live state cache and track observations received during each read, including confirmed local changes. | Inject newer frequency notifications during and after its read, plus a mode notification during the DATA read. A separate browser-request test tunes between state reads. Final state and decoder events retain the current values. |
+| 6. Failed reconnect bypassed RX rollback | Run rollback inside the shared initialization path, before closing a reachable, verified association. | Reject the second RX setting read on reconnect. Both RX settings are restored before disconnect and stay restored after close. |
 
 Run `npm run test:lan` for the focused tests, including
 `test/icom-lan-audit.test.js`, or `npm test` for the complete suite.

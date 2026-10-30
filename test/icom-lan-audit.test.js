@@ -1,6 +1,6 @@
 'use strict';
 
-// Regression cases from the independent audit of a571ea6. The existing
+// Regression cases from the independent audits of a571ea6 and 01ad130. The existing
 // localhost peer supplies wire replies without using production encoders.
 const test = require('node:test');
 const assert = require('node:assert/strict');
@@ -178,4 +178,203 @@ test('a later initialization NG rolls back earlier RX settings before closing th
   assert.equal(peer.parameters.get('0079')[0], 1);
   assert.equal(driver.rxSaved.length, 0);
   assert.equal(driver.session.connected, false);
+});
+
+test('reconnect and simultaneous PTT-off retain every failed restoration until retry succeeds', async (t) => {
+  const { peer, driver, cs } = await setup(t, { modLevel: 100, reconnectAttempts: 1, reconnectMs: 20 });
+  await cs.setPttFromServer(true);
+  assert.equal(driver.txSaved.length, 2);
+  const original = peer.civ.bind(peer);
+  let reject = true;
+  peer.civ = (frame, association) => {
+    if (reject && frame.subarray(4).toString('hex') === '1a05008400fd') peer.replyCiv([0xfa], association);
+    else original(frame, association);
+  };
+  let off, offError;
+  driver.session.once('connected', () => { off = cs.setPttFromServer(false).catch((err) => { offError = err; }); });
+  const ready = once(driver, 'radio-ready');
+  peer.release();
+  await ready;
+  await off;
+  assert.equal(offError, undefined);
+  assert.equal(driver.txSaved.length, 1);
+  assert.equal(driver.txSaved[0].parameter[1], 0x84);
+  assert.equal(peer.parameters.get('0084')[0], 5);
+  assert.deepEqual(peer.parameters.get('0083'), Buffer.from([1, 0x28]));
+  reject = false;
+  await cs.setPttFromServer(false);
+  assert.equal(peer.parameters.get('0084')[0], 0);
+  assert.equal(driver.txSaved.length, 0);
+});
+
+test('new operator source and level selections replace obsolete saved TX baselines', async (t) => {
+  for (const setting of [
+    { name: 'modulation source', parameter: '0084', value: Buffer.from([2]) },
+    { name: 'modulation level', parameter: '0083', value: Buffer.from([1, 0x70]) },
+  ]) await t.test(setting.name, async (t) => {
+    const { peer, driver, cs } = await setup(t, { modLevel: 100 });
+    await cs.setPttFromServer(true);
+    rejectOnce(peer, `1a05${setting.parameter}fd`);
+    await cs.setPttFromServer(false);
+    assert.equal(driver.txSaved.length, 1);
+    peer.parameters.set(setting.parameter, Buffer.from(setting.value));
+    await cs.setPttFromServer(true);
+    await cs.setPttFromServer(false);
+    assert.deepEqual(peer.parameters.get(setting.parameter), setting.value);
+    assert.equal(driver.txSaved.length, 0);
+  });
+});
+
+test('an external confirmed PTT-off during VARA drain clears the latch and allows the next burst', async (t) => {
+  const { peer, driver, cs } = await setup(t);
+  const bridge = new VaraBridge({ controlServer: cs, audioBridge: {
+    capture: driver.capture, playback: driver.playback, sampleRate: 48000,
+  }, callsign: 'S53ZO' });
+  bridge.start();
+  bridge._active = bridge._dataReady = true;
+  driver.playback.start();
+  try {
+    await bridge._key();
+    driver.playback.write(Buffer.alloc(1920, 1));
+    await until(() => driver.playback.lastSentAt !== undefined);
+    bridge._handleLine('PTT OFF');
+    await until(() => driver.playback.waiters.size > 0);
+    await cs.setPttFromServer(false);
+    await until(() => bridge._keyed === false);
+    assert.equal(peer.ptt, false);
+    assert.equal(bridge.state.ptt, false);
+    assert.equal(bridge._keyTimer, null);
+    bridge._handleLine('PTT ON');
+    await until(() => peer.ptt && cs.state.ptt);
+    assert.equal(bridge._keyed, true);
+  } finally { await bridge.stop(); }
+});
+
+test('VARA still completes QSY after its own confirmed release with PTT reconciliation attached', async (t) => {
+  const { peer, driver, cs } = await setup(t);
+  const bridge = new VaraBridge({ controlServer: cs, audioBridge: {
+    capture: driver.capture, playback: driver.playback, sampleRate: 48000,
+  }, callsign: 'S53ZO' });
+  bridge.start();
+  bridge._active = bridge._dataReady = true;
+  driver.playback.start();
+  try {
+    await bridge._key();
+    driver.playback.write(Buffer.alloc(1920, 1));
+    await until(() => driver.playback.lastSentAt !== undefined);
+    bridge._link = { qsy: { role: 'receiver', phase: 'ack', target: 14105750 } };
+    bridge._handleLine('PTT OFF');
+    await until(() => cs.state.frequency === 14105750);
+    assert.equal(peer.ptt, false);
+    assert.equal(cs.state.ptt, false);
+    assert.equal(bridge._keyed, false);
+    assert.equal(bridge._link.qsy.phase, 'tl');
+  } finally { await bridge.stop(); }
+});
+
+test('loss during post-release restoration cannot overwrite unknown PTT with a stale success', async (t) => {
+  const { peer, driver, cs } = await setup(t);
+  await cs.setPttFromServer(true);
+  const original = peer.civ.bind(peer);
+  let lost = false;
+  peer.civ = (frame, association) => {
+    if (!lost && frame.subarray(4).toString('hex') === '1a050084fd') {
+      lost = true;
+      peer.release();
+    } else original(frame, association);
+  };
+  const pttEvents = [];
+  cs.on('ptt', (on) => pttEvents.push(on));
+  await assert.rejects(cs.setPttFromServer(false), /disconnected radio session/);
+  assert.equal(driver.session.connected, false);
+  assert.equal(cs.state.ptt, null);
+  assert.deepEqual(pttEvents, []);
+  assert.equal(driver.txSaved.length, 1);
+});
+
+test('reconnect snapshot preserves newer transceive observations during and after state reads', async (t) => {
+  for (const duringFrequencyRead of [false, true]) await t.test(duringFrequencyRead ? 'during frequency read' : 'after frequency read', async (t) => {
+    const { peer, driver, cs } = await setup(t, { reconnectAttempts: 1, reconnectMs: 20 });
+    const frequencies = [], modes = [];
+    cs.on('frequency', (hz) => frequencies.push(hz));
+    driver.on('mode', (value) => modes.push(value.mode));
+    const original = peer.civ.bind(peer);
+    let changedFrequency = false, changedMode = false;
+    peer.civ = (frame, association) => {
+      if (!changedFrequency && frame[4] === (duringFrequencyRead ? 3 : 4)) {
+        changedFrequency = true;
+        const old = peer.frequency;
+        peer.frequency = Buffer.from('0000201400', 'hex');
+        peer.replyCiv(Buffer.concat([Buffer.from([0]), peer.frequency]), association);
+        if (duringFrequencyRead) {
+          peer.replyCiv(Buffer.concat([Buffer.from([3]), old]), association);
+          return;
+        }
+      }
+      if (!changedMode && frame.subarray(4).toString('hex') === '1a06fd') {
+        changedMode = true;
+        peer.mode = 3;
+        peer.dataMode = true;
+        peer.replyCiv([1, 3, 1], association);
+      }
+      original(frame, association);
+    };
+    const ready = once(driver, 'radio-ready');
+    peer.release();
+    await ready;
+    assert.equal(cs.state.frequency, 14200000);
+    assert.equal(cs.state.mode.mode, 'CW');
+    assert.equal(cs.state.dataMode, true);
+    assert.ok(frequencies.length >= 2);
+    assert.ok(frequencies.every((hz) => hz === 14200000));
+    assert.ok(modes.length >= 2);
+    assert.ok(modes.every((mode) => mode === 'CW'));
+    assert.equal(driver.radioState.frequency, await driver.getFrequency());
+    assert.deepEqual(driver.radioState.mode, await driver.getMode());
+  });
+});
+
+test('failed reconnect initialization restores RX settings before failing the association', async (t) => {
+  const { peer, driver } = await setup(t, { reconnectAttempts: 1, reconnectMs: 20 });
+  peer.parameters.set('0079', Buffer.from([1]));
+  rejectOnce(peer, '1a050080fd');
+  let afOnDisconnect;
+  driver.session.once('disconnected', () => {
+    driver.session.once('disconnected', () => { afOnDisconnect = peer.parameters.get('0079')[0]; });
+  });
+  peer.release();
+  await until(() => driver.session.state === 'failed');
+  assert.equal(driver.prepared, false);
+  assert.equal(afOnDisconnect, 1);
+  assert.equal(peer.parameters.get('0079')[0], 1);
+  assert.equal(peer.parameters.get('0080')[0], 1);
+  assert.equal(driver.rxSaved.length, 0);
+  await driver.close();
+  assert.equal(peer.parameters.get('0079')[0], 1);
+});
+
+test('reconnect snapshot also preserves a client tune completed between state reads', async (t) => {
+  const { peer, driver, cs } = await setup(t, { reconnectAttempts: 1, reconnectMs: 20 });
+  const original = peer.civ.bind(peer);
+  const replies = [], frequencies = [];
+  cs.on('frequency', (hz) => frequencies.push(hz));
+  let request;
+  peer.civ = (frame, association) => {
+    if (!request && frame[4] === 4) {
+      request = cs._handleMessage({ send: (raw) => replies.push(JSON.parse(raw)) }, Buffer.from(JSON.stringify({
+        id: 'tune-during-reconnect', type: 'setFrequency', value: 14200000,
+      })));
+    }
+    original(frame, association);
+  };
+  const ready = once(driver, 'radio-ready');
+  peer.release();
+  await ready;
+  await request;
+  assert.equal(replies[0].ok, true);
+  assert.equal(cs.state.frequency, 14200000);
+  assert.equal(driver.radioState.frequency, 14200000);
+  assert.equal(await driver.getFrequency(), 14200000);
+  assert.ok(frequencies.length >= 2);
+  assert.ok(frequencies.every((hz) => hz === 14200000));
 });

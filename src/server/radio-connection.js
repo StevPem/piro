@@ -48,6 +48,10 @@ function wireRadioConnection(civ, controlServer) {
     ...(civ.profile ? { model: civ.profile.name } : {}) });
   civ.on('connection-status', publish);
   civ.on('restore-error', (err) => controlServer.broadcastJsonEvent('rig-error', { message: err.message }));
+  civ.on('data-mode', (on) => {
+    controlServer.state.dataMode = on;
+    controlServer.broadcastJsonEvent('data-mode', { on });
+  });
   civ.on('transport-lost', () => {
     controlServer.state.ptt = null; // actual state is unknown while unreachable.
     controlServer.emit('radio-disconnected');

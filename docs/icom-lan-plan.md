@@ -122,3 +122,30 @@ VARA state recovery. They reported no further actionable regression.
 
 These checks remain offline. Physical IC-7300MK2 firmware, LAN timing and RF
 behavior still require the hardware acceptance checklist. Not tested on air.
+
+## Second audit corrections and v122 verification
+
+The broader independent review of `01ad130` found five new races and a
+remaining reconnect RX rollback gap. All six now have regression coverage;
+see the second table in [icom-lan-audit-fixes.md](icom-lan-audit-fixes.md).
+
+Initialization, PTT routing and restoration share one settings queue, with
+session checks before and after each queued operation. Failed entries stay
+retryable, and a different operator choice replaces an obsolete baseline.
+The state cache preserves newer transceive and confirmed local updates
+while initialization reads other fields. Both initial and reconnect setup
+roll back RX changes before closing a reachable, verified association.
+VARA reconciles its latch on confirmed external PTT-off; its own QSY path
+still drains and waits for release.
+
+| Command or check | Result |
+|---|---|
+| LAN suite through `npm test` | 53 passed, 0 failed. Includes source and level baselines, overlapping restores, cancelled VARA drain and its own QSY, loss during restoration, transceive updates during/after reads, a browser tune between reads, and reconnect rollback. |
+| `npm test` | Exit 0; complete existing suite and all LAN regressions passed on the final source. |
+| `NODE_PATH=/tmp/piro-icom-reference/browser/node_modules CHROMIUM_PATH='/Applications/Google Chrome.app/Contents/MacOS/Google Chrome' node test/manual-tty-ui.js` | All UI checks passed; no page errors or commands sent back by the second browser. |
+| Same environment, `node test/manual-lan-ui.js` | Connected status, release/reconnect and 360px layout passed; no page errors. The 360px screenshot shows v122 and was visually inspected. |
+| New six-finding tests loaded against `01ad130` runtime modules | All six finding groups failed, including their nested source/level and transceive timing cases. This confirms the new tests exercise the reported defects. |
+| Original independent reproduction scripts | Failed source record retained then restored on retry; newer ACC source preserved; 14.200 MHz remains current; PTT stays unknown after loss; reconnect AF rollback succeeds. VARA's normal started lifecycle accepts the next burst after cancelled drain. |
+| `git diff --check` | No whitespace errors. |
+
+Physical radio and on-air checks remain pending.

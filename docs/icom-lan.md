@@ -96,6 +96,8 @@ established link retries at 1, 2, 4, 8 and 10 seconds by default.
 The budget resets only after CI-V initialization succeeds, not just when
 UDP streams open. Reconnect reads current frequency, mode and DATA state
 and updates the existing browsers and decoder listeners.
+Front-panel updates received during these reads remain current; readiness
+does not replay an older tuning snapshot.
 
 The last browser's departure cancels queued FT8/text/CW transmission and
 releases browser-driven PTT. WSPR's existing explicitly configured unattended
@@ -125,6 +127,10 @@ if the operator has not changed them meanwhile. Abrupt network loss can
 prevent restoration; verify radio settings after a failed session.
 Recoverable restoration errors leave saved settings available for retry.
 A confirmed PTT-off is reported independently from any restoration error.
+If the connection disappears during that restoration, the request fails
+and PTT remains unknown. A newer operator source or level selection becomes
+the baseline for the next transmission. Failed initial and reconnect setup
+both attempt RX rollback before closing a reachable, verified radio.
 
 Receive audio feeds the existing raw capture stream, including CW/digital
 decoders. The receive buffer drops old backlog above 300 ms and inserts
@@ -149,6 +155,9 @@ bounded pre-key queue. It cannot be sent until the radio confirms PTT, and
 is discarded if preparation is cancelled. Radio key/release transitions are
 serialized so one transmission's restored source cannot overwrite the next
 transmission's LAN routing.
+Reconnect initialization uses the same queue, so it cannot overlap another
+settings restoration. Confirmed external PTT-off also clears VARA's local
+key latch if it interrupts a drain; the next modem burst can key normally.
 
 If the link disappears during TX, the radio's actual state is unknown.
 PiRO can stop local producers and attempt cleanup but cannot make an

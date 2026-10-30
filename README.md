@@ -12,7 +12,7 @@ Hamlib, no separate audio server and no extra apps.
 Written by VK3TR. Licensed AGPL-3.0-only (see
 [Licence](#licence)).
 
-**Current build: v121.** This is the version the app shows next to its title.
+**Current build: v122.** This is the version the app shows next to its title.
 It is the `CACHE_NAME` number in `src/client/sw.js`, which goes up with every
 change to the web app.
 
@@ -112,8 +112,9 @@ radio software is needed. This path is implemented and tested offline;
 it is not tested on a physical radio or on air. See
 [LAN setup and hardware validation](docs/icom-lan.md) and
 [protocol/source evidence](docs/icom-lan-sources.md). USB remains the default.
-The [v121 audit fixes](docs/icom-lan-audit-fixes.md) cover connection timing,
-audio integrity, PTT/QSY ordering, restoration and reconnect state.
+The [LAN audit fixes](docs/icom-lan-audit-fixes.md) cover connection timing,
+audio integrity, PTT/QSY ordering, restoration and reconnect state. Build v122
+also covers overlapping restores, operator changes and cancelled VARA drains.
 
 ### What you need
 
