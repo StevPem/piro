@@ -2,7 +2,7 @@
 
 const fs = require('fs');
 const path = require('path');
-const { CivDriver, KNOWN_RADIO_ADDR } = require('../civ');
+const { createRadio, wireRadioConnection } = require('./radio-connection');
 const { ControlServer } = require('./ws-server');
 const { AudioBridge } = require('./audio-bridge');
 const { ScopeBridge } = require('./scope-bridge');
@@ -32,11 +32,6 @@ const { FreeDvReporterBridge } = require('./freedv-reporter');
 
 const SERIAL_PATH = process.env.CIV_SERIAL_PATH || '/dev/ttyUSB0';
 const RADIO_MODEL = process.env.CIV_RADIO_MODEL; // e.g. "IC-7300"
-// Must match the radio's own "CI-V USB Baud Rate" menu setting exactly —
-// defaults to 19200 (CivDriver's own default) if unset. Spectrum scope
-// data is high-volume enough that some setups need this raised (115200 is
-// common) — see docs/civ-notes.md.
-const CIV_BAUD_RATE = process.env.CIV_BAUD_RATE ? parseInt(process.env.CIV_BAUD_RATE, 10) : undefined;
 const WS_PORT = process.env.WS_PORT ? parseInt(process.env.WS_PORT, 10) : 8080;
 // Displayed as both the browser tab title and the on-screen heading —
 // see docs/ui-notes.md for why this is sent to the client at connect
@@ -334,13 +329,12 @@ async function maximizeUsbAudioLevelsOnRadio(civ) {
 }
 
 async function main() {
-  const radioAddr = RADIO_MODEL ? KNOWN_RADIO_ADDR[RADIO_MODEL] : undefined;
-  civ = new CivDriver({ path: SERIAL_PATH, radioAddr, baudRate: CIV_BAUD_RATE });
+  civ = createRadio();
 
   civ.on('error', (err) => console.error('[civ error]', err.message));
 
   await civ.open();
-  console.log(`CI-V port open: ${SERIAL_PATH} at ${civ.baudRate} baud`);
+  console.log(civ.session ? 'Icom LAN radio connected (48 kHz mono PCM)' : `CI-V port open: ${SERIAL_PATH} at ${civ.baudRate} baud`);
 
   if (!civ.radioAddr) {
     console.log('No radio address configured; attempting auto-detect...');
@@ -350,10 +344,10 @@ async function main() {
     console.log(`Using configured radio address 0x${civ.radioAddr.toString(16)}`);
   }
 
-  if (CIV_MAXIMIZE_USB_LEVELS) {
+  if (CIV_MAXIMIZE_USB_LEVELS && !civ.session && RADIO_MODEL !== 'IC-7300MK2') {
     await maximizeUsbAudioLevelsOnRadio(civ);
   } else {
-    console.log('CIV_MAXIMIZE_USB_LEVELS=0; leaving the radio\'s own USB audio levels as found.');
+    console.log('USB audio level setup skipped for this connection.');
   }
 
   let tls = null;
@@ -379,6 +373,23 @@ async function main() {
     sourceCodeUrl: SOURCE_CODE_URL,
   });
   const boundPort = await controlServer.listen();
+  wireRadioConnection(civ, controlServer);
+  controlServer.on('radio-disconnected', () => {
+    ttyBridge?.abort();
+    sstvTxBridge?.abort();
+    easypalTxBridge?.abort();
+    wsprBridge?.setTx({ enabled: false });
+    varaBridge?.deactivate().catch(() => {});
+    // Stop pipelines while the actual radio state remains unknown. This is
+    // an internal producer signal; the browser snapshot keeps ptt=null.
+    controlServer.emit('ptt', false);
+  });
+  controlServer.on('client-disconnected', () => {
+    if (!civ.session || controlServer.clients.size) return;
+    ft8Bridge?.cancelTx('Last browser disconnected');
+    ttyBridge?.abort();
+    if (civ.session.connected) controlServer.setPttFromServer(false).catch(() => {});
+  });
   const scheme = tls ? 'https' : 'http';
   console.log(`Control server listening on ${scheme}://0.0.0.0:${boundPort}`);
   console.log(`Serving PWA app shell from ${STATIC_DIR}`);
@@ -421,7 +432,7 @@ async function main() {
     console.log('FREEDV_REPORTER_ENABLED=0; FreeDV Reporter disabled.');
   }
 
-  if (AUDIO_RX_DEVICE) {
+  if (AUDIO_RX_DEVICE || civ.session) {
     audioBridge = new AudioBridge({
       controlServer,
       // Only ever used to pick which HamNoise model (CW vs. voice) is
@@ -431,6 +442,7 @@ async function main() {
       civ,
       rxDevice: AUDIO_RX_DEVICE,
       txDevice: AUDIO_TX_DEVICE,
+      ...(civ.session ? { capture: civ.capture, playback: civ.playback, maximizeVolumeOnStart: false } : {}),
       sampleRate: AUDIO_SAMPLE_RATE,
       channels: AUDIO_CHANNELS,
       opusBitrate: AUDIO_OPUS_BITRATE,
@@ -447,7 +459,7 @@ async function main() {
       opusBitrate: AUDIO_OPUS_BITRATE,
     });
     console.log(
-      `Audio bridge started (rx: ${AUDIO_RX_DEVICE}, tx: ${AUDIO_TX_DEVICE}, ` +
+      `Audio bridge started (rx: ${civ.session ? 'Icom LAN' : AUDIO_RX_DEVICE}, tx: ${civ.session ? 'Icom LAN' : AUDIO_TX_DEVICE}, ` +
         `${AUDIO_SAMPLE_RATE}Hz, ${AUDIO_CHANNELS}ch, compressed: ${audioBridge.compressedCodecs.join("/") || "none"}, ` +
         `HamNoise quality: ${HAMNOISE_QUALITY})`
     );
@@ -726,6 +738,9 @@ async function main() {
 
   if (SCOPE_ENABLED) {
     scopeBridge = new ScopeBridge({ civ, controlServer });
+    civ.on('radio-ready', () => scopeBridge.start().catch((err) => {
+      controlServer.broadcastJsonEvent('scope-error', { message: err.message });
+    }));
     try {
       await scopeBridge.start();
       controlServer.setScopeInfo({ enabled: true });

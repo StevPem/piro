@@ -2,7 +2,7 @@
 
 PiRO is a web app for remote control of an Icom transceiver. It runs as one
 Node.js service on a Raspberry Pi (or any small Linux machine) that is
-connected to the radio by USB. You open it in a browser on your network and
+connected to the radio by USB, or by Ethernet for the IC-7300MK2. You open it in a browser on your network and
 get frequency, mode and PTT control, RX/TX audio, a spectrum scope and
 waterfall, and a set of digital-mode and noise-reduction tools. It needs no
 Hamlib, no separate audio server and no extra apps.
@@ -12,7 +12,7 @@ Hamlib, no separate audio server and no extra apps.
 Written by VK3TR. Licensed AGPL-3.0-only (see
 [Licence](#licence)).
 
-**Current build: v119.** This is the version the app shows next to its title.
+**Current build: v120.** This is the version the app shows next to its title.
 It is the `CACHE_NAME` number in `src/client/sw.js`, which goes up with every
 change to the web app.
 
@@ -106,6 +106,13 @@ CI-V address table covers the IC-7300, IC-7610, IC-9700, IC-705, IC-7100,
 IC-7850 and IC-7851, and `IC-7300` is the default model. Spectrum-scope
 behaviour varies by radio and firmware (see `docs/civ-notes.md`).
 
+**IC-7300MK2 Ethernet:** native Icom LAN control, CW text, scope and RX/TX
+audio are available with `CIV_CONNECTION=lan`. No USB audio device or other
+radio software is needed. This path is implemented and tested offline;
+it is not tested on a physical radio or on air. See
+[LAN setup and hardware validation](docs/icom-lan.md) and
+[protocol/source evidence](docs/icom-lan-sources.md). USB remains the default.
+
 ### What you need
 
 | | |
@@ -113,8 +120,8 @@ behaviour varies by radio and firmware (see `docs/civ-notes.md`).
 | Computer | A Raspberry Pi 3, 4, 5 or Zero 2 W, or any Linux machine. Use a **64-bit** OS: the CW 3 decoder needs `onnxruntime-node`, which has no 32-bit ARM build. |
 | OS | Raspberry Pi OS or Debian 12 "Bookworm" or newer. Other distributions work if you adjust the package names. |
 | Node.js | 18 or newer. 20 or 22 is recommended. |
-| Radio | An Icom transceiver connected by USB. The one cable gives a CI-V serial port and, on most models, a USB audio codec. |
-| System packages | `alsa-utils` (audio), `git`. `build-essential` and `python3` are only needed if `npm install` has to compile the serial-port module itself. |
+| Radio | An Icom transceiver connected by USB (CI-V and USB audio), or an IC-7300MK2 using its built-in Ethernet port. |
+| System packages | `git`; `alsa-utils` for USB audio. Native LAN audio needs no ALSA device or command. `build-essential` and `python3` are only needed if `npm install` has to compile the serial-port module itself. |
 | Accurate clock | FT8 works in UTC 15-second slots, so the clock must be right. Raspberry Pi OS runs `systemd-timesyncd` by default. A Pi has no battery clock, so it needs the network at boot. |
 
 ### Installing PiRO
@@ -1459,6 +1466,8 @@ All settings are environment variables. For the systemd service they go in
 |---|---|---|
 | `CIV_SERIAL_PATH` | `/dev/ttyUSB0` | The radio's CI-V serial port. |
 | `CIV_RADIO_MODEL` | none | Radio model, such as `IC-7300`. Picks the CI-V address. |
+| `CIV_CONNECTION` | `usb` | `usb` or native Icom `lan` (IC-7300MK2). See [LAN configuration](docs/icom-lan.md) for host, server-side credentials, UDP ports, buffering and retry options. |
+| `CIV_RADIO_ADDR` | auto | Optional hexadecimal CI-V address override, such as `B6`. |
 | `CIV_BAUD_RATE` | `19200` | Must equal the radio's "CI-V USB Baud Rate" menu setting. |
 | `CIV_SCOPE_ENABLED` | off | `true` turns on the spectrum scope and waterfall. |
 | `CIV_MAXIMIZE_USB_LEVELS` | on | At start-up, sets the radio's USB audio levels to maximum. `0` or `false` leaves them alone. |
@@ -2114,6 +2123,10 @@ audio and scope data (tagged, see `docs/ui-notes.md`), multiplexed on the
 same connection. See `src/server/protocol.js` for the full JSON message
 shapes.
 
+Native LAN connections also publish `radio-connection` status events and
+`state.radioConnection` in the initial snapshot. They include connection
+state, model/address when known and a useful error message, without credentials.
+
 - **Control (JSON, text frames)**: requests (`getFrequency`,
   `setFrequency`, `getMode`, `setMode`, `setDataMode`, `getDataMode`,
   `setPtt`, `getSMeter`, `getSWR`, `getAlc`,
@@ -2288,6 +2301,8 @@ shapes.
   Playwright (set `NODE_PATH` to a Playwright install) and `CHROMIUM_PATH`.
   `test/manual-audio-ui.js` does the same for compressed audio and the
   squelch.
+- `test/manual-lan-ui.js` checks the real PWA against a synthetic localhost
+  radio. It needs Playwright and Chrome, like the other browser UI checks.
 - The other `test/manual-*.js` scripts talk to a real radio (see
   [Hardware diagnostics](#hardware-diagnostics)).
 - Nothing counts as tested on air until it has been used on the air. The
@@ -2296,6 +2311,14 @@ shapes.
 The test files:
 
 ```
+  icom-lan-protocol.test.js    independent wire vectors, wrapping sequence,
+                               replay, malformed packets and bounded reorder
+  icom-lan-integration.test.js localhost UDP peer: session, CW, control,
+                               RX/TX PCM, scope, loss, renewal and reconnect
+  icom-lan-audio.test.js       PCM queue limits, loss concealment and TX drain
+  icom-lan-server.test.js      normal PiRO startup and real browser protocol,
+                               no ALSA or physical radio needed
+  icom-lan-demo.js             npm run demo:lan: synthetic radio and normal PWA
   frame.test.js           unit tests for CI-V framing/BCD, no hardware needed
   scope.test.js           unit tests for scope waveform decoding/reassembly,
                            synthetic frames, no hardware needed

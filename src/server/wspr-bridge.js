@@ -673,6 +673,7 @@ class WsprBridge {
         });
       }
       await wait(durationSec * 1000 + this.pttReleaseMarginMs);
+      if (!tx.aborted) await this.audioBridge.playback.drain?.();
     } catch (err) {
       this._warn(`transmit failed: ${err.message}`);
     } finally {

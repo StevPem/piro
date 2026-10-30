@@ -132,6 +132,7 @@ const REQUEST = {
 };
 
 const EVENT = {
+  RADIO_CONNECTION: 'radio-connection', // {transport:'usb'|'lan', state, model?, radioAddr?, message?}; also state.radioConnection
   FREQUENCY: 'frequency',
   MODE: 'mode',
   DATA_MODE: 'data-mode', // broadcast on IC-7300 DATA MODE changes — see REQUEST.SET_DATA_MODE / civ/driver.js#setDataMode

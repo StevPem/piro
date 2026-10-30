@@ -80,6 +80,10 @@ class FrameParser {
 
       const end = this._buf.indexOf(TERMINATOR);
       if (end === -1) {
+        if (this._buf.length > 4096) {
+          this.reset();
+          throw new Error('CI-V frame exceeds 4096 bytes without a terminator');
+        }
         // Frame not complete yet; wait for more data.
         break;
       }

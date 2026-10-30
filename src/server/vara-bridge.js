@@ -156,6 +156,7 @@ class VaraBridge {
     this._transcript = []; // [{text, own?, note?}]
     this._transcriptChars = 0;
     this._warnedKey = false;
+    this._keyEpoch = 0;
     this._lastSn = null; // {sn, time}: the modem's latest S/N report
     this._link = null; // the QSO now: {parser, openingSent, disc: {at, timer}|null}
     this._slotsHeard = []; // slots VarAC CQs were heard waiting on: [{cfHz, offsetHz, time}]
@@ -443,7 +444,7 @@ class VaraBridge {
       case 'PTT':
         if (rest[0] === 'ON') this._key().catch(() => {});
         else {
-          this._unkey().catch(() => {});
+          this._unkey({ drain: true }).catch(() => {});
           if (this._link?.qsy?.phase === 'ack') this._qsyMove();
         }
         break;
@@ -599,10 +600,14 @@ class VaraBridge {
     }
   }
 
-  async _unkey() {
+  async _unkey({ drain = false } = {}) {
     clearTimeout(this._keyTimer);
     this._keyTimer = null;
     if (!this._keyed) return;
+    const epoch = this._keyEpoch;
+    if (drain) await this.audioBridge.playback.drain?.();
+    if (!this._keyed || epoch !== this._keyEpoch) return;
+    ++this._keyEpoch;
     this._keyed = false;
     this._update({ ptt: false });
     try {

@@ -4698,3 +4698,23 @@ model for how to approach that.
   minutes only: "12:15Z CQ from W7BTM (…)" (was "12:15:39Z").
 - Tests: vara.test.js and manual-tty-ui.js match the shorter time.
   Service-worker cache v119.
+
+### Native IC-7300MK2 LAN connection (v120)
+
+- Added `CIV_CONNECTION=lan` with server-side radio host, credentials and
+  UDP port settings. USB remains the default.
+- Added Icom session/lease handling, CI-V control and CW, raw RX/TX audio
+  adapters and scope delivery. Native LAN audio needs no ALSA hardware.
+- The header reports radio connection state separately from the browser's
+  connection to PiRO. New clients receive the same status in their snapshot.
+- MK2 LAN input settings use the model's own menu numbers. Finite digital
+  transmitters drain queued audio before unkeying. Stop and reconnect flush
+  pending audio and invalidate earlier keying packets.
+- Added an independent localhost peer, literal byte expectations, protocol,
+  lifecycle, fault, CW, PCM, scope and normal-process integration tests.
+- The baseline SSTV bridge test could read its spectrum result before the
+  separate spectrum timer fired. It now waits for both expected asynchronous
+  outputs, keeping both assertions unchanged.
+- Hardware and on-air checks are still pending. See `docs/icom-lan.md` and
+  `docs/icom-lan-sources.md` for setup, evidence and the acceptance checklist.
+- Build/cache v120. Final test results are recorded in `icom-lan-plan.md`.

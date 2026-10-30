@@ -249,6 +249,7 @@ class EasypalTxBridge {
       tx.timer = null;
       if (stopWatch) await stopWatch();
       stopWatch = null;
+      if (!tx.aborted) await this.audioBridge.playback.drain?.();
       if (keyed) await this.controlServer.setPttFromServer(false);
       keyed = false;
       await this._restore(civ, dataOn, prevPower);

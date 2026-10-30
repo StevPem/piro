@@ -993,6 +993,24 @@ function setClientCount(n) {
 }
 link.addEventListener('clients', (event) => setClientCount(event.detail?.count));
 
+const radioLinkStatus = document.getElementById('radio-link-status');
+function showRadioConnection(info) {
+  if (!radioLinkStatus) return;
+  radioLinkStatus.hidden = info?.transport !== 'lan';
+  if (radioLinkStatus.hidden) {
+    radioLinkStatus.textContent = '';
+    radioLinkStatus.title = '';
+    return;
+  }
+  const labels = { connecting: 'Connecting to radio', authenticating: 'Radio login',
+    negotiating: 'Opening radio link', 'opening-streams': 'Opening radio audio',
+    identifying: 'Checking radio', connected: 'Radio connected',
+    disconnected: 'Radio disconnected', reconnecting: 'Reconnecting to radio', failed: 'Radio unavailable' };
+  radioLinkStatus.textContent = labels[info?.state] || 'Radio unavailable';
+  radioLinkStatus.title = info?.message || info?.model || '';
+}
+link.addEventListener('radio-connection', (event) => showRadioConnection(event.detail));
+
 function showError(message) {
   errorLine.textContent = message;
   errorLine.hidden = false;
@@ -1008,6 +1026,7 @@ link.addEventListener('connected', (event) => {
   const data = event.detail || {};
   setLed('connected', 'Connected');
   setClientCount(data.clients);
+  showRadioConnection(data.radioConnection);
 
   if (data.screenTitle) {
     document.title = data.screenTitle;

@@ -314,6 +314,7 @@ class TtyBridge {
       tx.timer = null;
       if (stopWatch) await stopWatch();
       stopWatch = null;
+      if (!tx.aborted) await this.audioBridge.playback.drain?.();
       await this.controlServer.setPttFromServer(false);
       if (switched) {
         switched = false;

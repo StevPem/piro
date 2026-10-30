@@ -111,12 +111,14 @@ class CwTxBridge {
   start() {
     this.controlServer.on('cw-send', this._onSend);
     this.controlServer.on('cw-abort', this._onAbort);
+    this.controlServer.on('radio-disconnected', this._onAbort);
     this.controlServer.on('client-disconnected', this._onClientGone);
   }
 
   stop() {
     this.controlServer.off('cw-send', this._onSend);
     this.controlServer.off('cw-abort', this._onAbort);
+    this.controlServer.off('radio-disconnected', this._onAbort);
     this.controlServer.off('client-disconnected', this._onClientGone);
     if (this._tx) this.abort();
   }
@@ -159,7 +161,7 @@ class CwTxBridge {
     const durationSec = this.estimateSeconds(clean, speed);
     if (durationSec > MAX_SECONDS) return fail(`That would take ${Math.ceil(durationSec / 60)} minutes at ${speed} WPM; send it in parts.`);
 
-    const tx = { aborted: false, wakers: new Set() };
+    const tx = { aborted: false, wakers: new Set(), generation: civ.session?.generation };
     this._tx = tx;
     let prevSpeed = null;
     let prevBreakIn = null;
@@ -208,6 +210,7 @@ class CwTxBridge {
         }
       }
       if (tx.aborted) await civ.stopCw().catch(() => {});
+      civ.finishCw?.();
       await this._restore(civ, { changedSpeed, prevSpeed, changedBreakIn, prevBreakIn });
       this._tx = null;
       this._status({ status: tx.aborted ? 'aborted' : 'sent', ...info });
@@ -221,6 +224,7 @@ class CwTxBridge {
   }
 
   async _restore(civ, { changedSpeed, prevSpeed, changedBreakIn, prevBreakIn }) {
+    if (civ.session && this._tx?.generation !== civ.session.generation) return;
     if (changedBreakIn && prevBreakIn != null) await civ.setBreakIn(prevBreakIn);
     if (changedSpeed && prevSpeed != null) await civ.setKeySpeed(prevSpeed);
   }
