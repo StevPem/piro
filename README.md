@@ -931,10 +931,13 @@ it writes the audio at the slot boundary.
 
 **How far it has been tested.** The port was checked against JS8Call's
 code tables, and round trip: text to frames to audio, through simulated
-noise, overlapping signals and timing errors, and back to text. It has
-not been tested with JS8Call itself, or on air. Recordings of a JS8
-frequency (from a KiwiSDR, say) would show whether it decodes real
-signals. See [`third_party/js8call/README.md`](third_party/js8call/README.md).
+noise, overlapping signals and timing errors, and back to text. On air
+(30 October 2026), PiRO called CQ and worked VK2PKH, running
+JS8Call 3.0.3, through a full QSO: S/N reports, INFO, free text both ways
+and 73s. In the same half hour it decoded other stations' CQs,
+heartbeats and directed messages from +2 to −25 dB (WW8O, in the USA, at
+−25), between 500 and 2550 Hz. Only the Normal speed has been used. See
+[`third_party/js8call/README.md`](third_party/js8call/README.md).
 
 #### VARA chat
 
