@@ -1317,6 +1317,31 @@ button {
   font-style: italic;
 }
 
+/* JS8: the band activity table is a little taller than JTTY's, and its
+   columns fit HH:MM:SS, a 4-digit offset and a 3-digit S/N. */
+.js8-table {
+  max-height: 260px;
+}
+
+.js8-table .ft8-table__head,
+.js8-table .ft8-table__row {
+  grid-template-columns: 5em 2.8em 2.4em 1fr;
+}
+
+.js8-rx__hint {
+  font-size: 0.75rem;
+  color: var(--text-muted);
+}
+
+/* JS8: this station's own messages, and messages to it. */
+.js8-table__row--own > span:last-child {
+  color: var(--led-amber);
+}
+
+.js8-table__row--to-me {
+  border-left: 3px solid var(--led-green);
+}
+
 /* SSTV receive panel: the picture at full panel width (it is 320-800
    pixels wide, so on a phone it is shown at or above its own resolution),
    keeping its shape, with recent pictures as thumbnails underneath. */

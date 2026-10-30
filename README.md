@@ -12,7 +12,7 @@ Hamlib, no separate audio server and no extra apps.
 Written by VK3TR. Licensed AGPL-3.0-only (see
 [Licence](#licence)).
 
-**Current build: v119.** This is the version the app shows next to its title.
+**Current build: v120.** This is the version the app shows next to its title.
 It is the `CACHE_NAME` number in `src/client/sw.js`, which goes up with every
 change to the web app.
 
@@ -64,7 +64,12 @@ Note that it DOES NOT include any form of login or password - so don't present i
   text is decoded as it arrives, or for Feld-Hell painted in the scope and
   read from the picture as text. See
   [RTTY, JTTY, Olivia and Feld-Hell](#rtty-jtty-olivia-and-feld-hell).
-- **VARA chat**: the TTY button's fourth choice is a VARA HF modem for
+- **JS8**: the TTY button's fourth choice is
+  [JS8Call](https://github.com/JS8Call-improved/JS8Call-improved)'s
+  keyboard mode at Normal speed, ported to JavaScript: every signal in the
+  passband is decoded each 15-second slot, and what you type goes out a
+  frame a slot. See [JS8](#js8).
+- **VARA chat**: the TTY button's fifth choice is a VARA HF modem for
   keyboard QSOs with VARA Chat and VarAC users. It runs
   [Xara](https://github.com/x0rro/xara), an open-source VARA-compatible
   modem, on the Pi. See [VARA chat](#vara-chat).
@@ -418,7 +423,7 @@ From the top:
   - **SSB**, **AM**, **FM** and **CW** are the radio's own modes. SSB picks
     the usual sideband (LSB below 10 MHz, USB above). Press it again to
     swap sidebands. It reads **LSB** or **USB** while selected.
-  - **TTY** steps through RTTY, JTTY, Olivia, VARA and Feld-Hell.
+  - **TTY** steps through RTTY, JTTY, Olivia, JS8, VARA and Feld-Hell.
   - **DIGI** steps through FT8, FT4 and WSPR.
   - **FreeDV** is RADE digital voice.
   - **Image** steps through SSTV, EasyPal and Radiofax.
@@ -633,7 +638,7 @@ but hidden; see [CW decoders](#cw-decoders) in Part 2.
 
 #### RTTY, JTTY, Olivia and Feld-Hell
 
-The **TTY** button steps through five text modes:
+The **TTY** button steps through six text modes:
 
 1. The first click selects the radio's RTTY mode, and the button now reads **RTTY**.
    Selecting RTTY also tunes to the middle of the band's digital-modes segment
@@ -646,20 +651,23 @@ The **TTY** button steps through five text modes:
 3. The next click switches to **Olivia** (Olivia 8/250), and the button reads
    **Olivia**. Entering Olivia tunes to the band's Olivia calling frequency
    (e.g. 14.0715 MHz dial on 20 m), and band buttons then go to each band's.
-4. The next click switches to **VARA** (see [VARA chat](#vara-chat)), and
+4. The next click switches to **JS8** (see [JS8](#js8)), and the button
+   reads **JS8**. Entering JS8 tunes to the band's JS8 frequency (14.078 MHz
+   dial on 20 m).
+5. The next click switches to **VARA** (see [VARA chat](#vara-chat)), and
    the button reads **VARA**. Entering VARA tunes to the band's VarAC
    calling frequency (14.105 MHz dial on 20 m).
-5. The next click switches to **Feld-Hell**, and the button reads
+6. The next click switches to **Feld-Hell**, and the button reads
    **Feld-Hell**. Entering Feld-Hell tunes so a signal on the band's Feld-Hell
    frequency (e.g. 14.063 MHz on 20 m) comes out at the audio tone (dial
    14.062 MHz with the default 1000 Hz tone), and band buttons then go to
    each band's.
-6. The next click goes back to **RTTY**, and so on round.
-7. Picking any other mode (LSB, USB, AM, FM, CW, FT8, FreeDV) puts the button
+7. The next click goes back to **RTTY**, and so on round.
+8. Picking any other mode (LSB, USB, AM, FM, CW, FT8, FreeDV) puts the button
    back to **TTY**.
 
 While a TTY mode is selected, a text box and a **Send** button replace the
-PTT button (in VARA, Send works only during a QSO). Enter in the text box also sends. While a message is going out,
+PTT button (in VARA, Send works only during a QSO; in JS8 it sends from the next slot). Enter in the text box also sends. While a message is going out,
 Send turns into **Stop**, which cuts the transmission short and releases PTT.
 The Space bar does not key the microphone in these modes. The text box starts
 with a CQ built from `STATION_CALLSIGN` (if set), and keeps whatever you
@@ -847,9 +855,90 @@ not yet been tested over the air.
 Transmit is refused if the radio is already transmitting. The usual PTT
 watchdog (ten minutes) still applies.
 
+#### JS8
+
+**JS8** is the TTY button's fourth choice. It is
+[JS8Call](https://github.com/JS8Call-improved/JS8Call-improved)'s
+keyboard mode at **Normal** speed: 8-tone FSK, 50 Hz wide, in 15-second UTC
+slots like FT8, with messages sent a frame (about 6 to 15 characters) a
+slot. PiRO's receiver and transmitter are a JavaScript port of
+JS8Call-improved 3.0's; nothing else needs to be installed. JS8Call's
+other speeds (Fast, JS8 40, Slow, JS8 60) are not supported yet.
+
+Selecting JS8 puts the radio on USB with DATA MODE on, and tunes to the
+band's JS8 frequency, JS8Call's own list:
+
+| Band | 160 m | 80 m | 40 m | 30 m | 20 m | 17 m | 15 m | 12 m | 10 m | 6 m |
+|---|---|---|---|---|---|---|---|---|---|---|
+| Dial (MHz) | 1.8435 | 3.578 | 7.078 | 10.130 | 14.078 | 18.104 | 21.078 | 24.922 | 28.078 | 50.318 |
+
+Band buttons then go to each band's. Signals sit 300 to 2700 Hz above the
+dial, mostly between 1000 and 2000 Hz.
+
+**Receiving.** At the end of each slot the server decodes every JS8 signal
+in the passband (in a worker; about a second on a PC, a few on a Pi). The
+JS8 panel (under the S-meter) shows:
+- the status line: listening, decoding, or how a message is going out,
+  and your transmit offset;
+- **CQ**, which sends `CQ CQ CQ` and the first four characters of
+  `STATION_GRID` in the next slot;
+- **Heard**: the stations heard (from their CQs, heartbeats and directed
+  messages), newest first. Tap one to start a message to it;
+- the band activity: one line per message, its frames joined in order
+  (time, offset in Hz, S/N, text), as JS8Call's band activity shows them.
+  A line still waiting for its next frame has an amber edge; a message
+  to you a green one; your own messages are in amber. Tap a line to start
+  a reply.
+
+A browser that connects is sent the recent activity. S/N is as JS8Call
+reports it, which reads about 7 dB lower than FT8's figures for the same
+signal; JS8 Normal decodes down to about −26 dB on that scale.
+
+**Sending.** Type a message and press **Send** (or Enter). The text goes
+out in capitals, as JS8Call sends it:
+- start it with a callsign to send it to that station: `VK2ABC SNR?`,
+  `VK2ABC HELLO`, `VK2ABC 73`. JS8Call's directed commands (`SNR?`,
+  `GRID?`, `INFO?`, `HEARING?`, `ACK`, `MSG`, `AGN?` and the rest) are sent
+  as their compact codes;
+- `@ALLCALL` (or a group such as `@JS8`) sends to everyone;
+- anything else goes out as `VK2IO: your text`, so others know who sent it.
+
+The message is cut into frames and sent one a slot from the next slot
+boundary, at the **Offset** (the lowest tone, 300 to 2700 Hz; type it, or
+click the audio spectrum). Each frame keys the radio for about 13 seconds.
+**Send** becomes **Stop** while a message is waiting or going out; Stop
+drops the rest and releases PTT at once.
+
+Limits:
+* 300 characters, and at most 40 frames (10 minutes on the air, the class
+  licence's limit for a remotely controlled transmission). A longer message
+  is refused; shorten it.
+* No automatic replies and no heartbeats, ever. JS8Call answers some
+  queries (`SNR?`, `GRID?`, `INFO?` and others) by itself; PiRO only shows
+  them, and you reply if you choose to.
+* Transmitting needs `STATION_CALLSIGN`; without it JS8 receives only.
+* Leaving JS8, or the last browser leaving, stops a message being sent.
+
+**PSK Spot.** The FT8 **PSK Spot** button is shown in JS8 too (the same
+setting). While it is on, the stations a decode names as its sender (CQs,
+heartbeats, directed messages) are reported to
+[PSK Reporter](https://pskreporter.info) as mode "JS8", at the dial
+frequency plus their offset, with their grid if they sent one.
+
+**Timing.** Frames start 0.5 s into the slot, as JS8Call's do. PiRO allows
+`VARA_AUDIO_LATENCY_MS` (500 ms by default) for the sound card's delay, so
+it writes the audio at the slot boundary.
+
+**How far it has been tested.** The port was checked against JS8Call's
+code tables, and round trip: text to frames to audio, through simulated
+noise, overlapping signals and timing errors, and back to text. It has
+not been tested with JS8Call itself, or on air. Recordings of a JS8
+frequency (from a KiwiSDR, say) would show whether it decodes real
+signals. See [`third_party/js8call/README.md`](third_party/js8call/README.md).
+
 #### VARA chat
 
-**VARA** is the TTY button's fourth choice. It is the VARA HF modem that
+**VARA** is the TTY button's fifth choice. It is the VARA HF modem that
 [VARA Chat](https://rosmodem.wordpress.com/) and
 [VarAC](https://www.varac-hamradio.com/) use for keyboard QSOs. PiRO runs
 [Xara](https://github.com/x0rro/xara), an open-source modem compatible with
@@ -1475,7 +1564,7 @@ All settings are environment variables. For the systemd service they go in
 | `OLIVIA_FREQ_HZ` | `1500` | Olivia's default audio centre frequency, in Hz, for sending and receiving, until it is changed in the UI. The signal is 250 Hz wide; the receiver searches 125 Hz either side. |
 | `VARA_BW` | `500` | VARA bandwidth in Hz: `500`, `2300` or `2750`. See [VARA chat](#vara-chat). |
 | `VARA_NAME`, `VARA_QTH` | none | Your name and QTH, sent to the other station after the opening report, as VarAC's profile (`<NAME:…>`, `<QTH:…>`). `STATION_GRID` goes with them as the locator. |
-| `VARA_AUDIO_LATENCY_MS` | `500` | How far VARA's transmit audio lags what is written to the sound card, in ms (0 to 2000). The modem holds PTT that much longer and times its replies to suit. |
+| `VARA_AUDIO_LATENCY_MS` | `500` | How far VARA's transmit audio lags what is written to the sound card, in ms (0 to 2000). The modem holds PTT that much longer and times its replies to suit. JS8 uses it too, to start its frames 0.5 s into the slot. |
 | `OLIVIA_SQUELCH` | on | `off` turns off PiRO's filtering of junk characters and decodes exactly as fldigi does with its squelch off. See [Olivia](#rtty-jtty-olivia-and-feld-hell). |
 | `SSTV_SAVE_DIR` | none | If set, every received SSTV picture is also saved in this folder as a PNG (`YYYYMMDD-HHMMSSz-<mode>.png`, UTC). |
 | `FAX_STATE_FILE` | `~/.config/piro/fax.json` | Where Radiofax keeps the sound card's measured clock error between restarts. |
@@ -1552,7 +1641,7 @@ one hard refresh (Ctrl+Shift+R, or Cmd+Shift+R on a Mac).
   build. Re-do the check in [RNNoise](#rnnoise-rnn-button).
 - **The server runs at 100% CPU after turning HamNoise on.** Make sure
   `HAMNOISE_QUALITY` is not set to `v2` on a Raspberry Pi.
-- **A digital transmission (FT8, RTTY, JTTY, Olivia, VARA, Feld-Hell, SSTV) keys
+- **A digital transmission (FT8, RTTY, JTTY, Olivia, JS8, VARA, Feld-Hell, SSTV) keys
   the radio but shows no power.** The radio's display should read USB-D or
   LSB-D while it transmits; PiRO turns DATA mode on with CI-V `1A 06`
   (before v78 it sent the wrong command, so DATA mode never came on). Then
@@ -1600,6 +1689,13 @@ one hard refresh (Ctrl+Shift+R, or Cmd+Shift+R on a Mac).
 - **The Audio button can't be tapped.** The server can't compress audio:
   `AUDIO_CHANNELS` must be 1.
 
+- **JS8 decodes nothing.** Check that signals show on the audio spectrum,
+  and that the Pi's clock is right: JS8 needs it within a
+  second or so of UTC (`timedatectl` should say "System clock synchronized:
+  yes"). If others decode you late or not at all, try
+  `VARA_AUDIO_LATENCY_MS` at 300 or 800.
+- **The JS8 panel says "not running on the server".** Audio isn't set up
+  (`AUDIO_RX_DEVICE`), or PiRO was updated without a restart.
 - **VARA calls never connect, or links drop.** Both stations must use the
   same bandwidth (`VARA_BW`). Watch the status line: if the other station
   is heard (its CQ is listed, or "someone is calling…" shows) but the link
@@ -1695,7 +1791,7 @@ browser. There is no build step: the browser loads plain ES modules.
   feature. Each listens to ControlServer's events, reads received audio
   or writes transmit audio, drives the radio through CivDriver, and
   broadcasts results.
-- **Workers.** Heavy decoding and encoding (FT8, JTTY, Olivia, SSTV, WSPR,
+- **Workers.** Heavy decoding and encoding (FT8, JTTY, Olivia, JS8, SSTV, WSPR,
   EasyPal) and the VARA modem run in worker threads, so the main thread stays free for CI-V,
   audio and the WebSocket.
 - **The client** (`src/client/`): `app.js` is the whole UI. `rpc.js`
@@ -1717,7 +1813,7 @@ is a preview of the first page.
 - **The radio is the source of truth** for its settings: frequency, mode,
   filter, DATA mode, power, preamp, NR and the rest, including changes made
   on its front panel. **The server is the source of truth** for its own
-  settings: the app-level modes (FT8/FT4, FreeDV, JTTY, Olivia, VARA,
+  settings: the app-level modes (FT8/FT4, FreeDV, JTTY, Olivia, JS8, VARA,
   Feld-Hell, SSTV, EasyPal, Radiofax, WSPR) and their frequencies, the decoder
   options, the notes. Every browser shows what the radio or the server
   reports, by event or by polling. A browser never treats its own copy as
@@ -1772,6 +1868,9 @@ src/
                          jtty-tbcc-decode.js, jtty-decode-worker.js
                 Olivia   olivia-dsp.js, olivia-tx.js, olivia-rx.js,
                          olivia-decode-worker.js
+                JS8      js8/ (js8-fft.js, js8-codec.js, js8-decoder.js,
+                         js8-modulator.js, js8-jsc.js and its word list
+                         jsc-words.txt.br, js8-varicode.js), js8-worker.js
                 Hell     hell-font.js, hell-tx.js, hell-rx.js, hell-ocr.js
                 SSTV     sstv-modes.js, sstv-rx.js, sstv-tx.js,
                          sstv-decode-worker.js, sstv-encode-worker.js
@@ -2154,6 +2253,18 @@ shapes.
   and sets the centre frequency (sending it again retunes); decoded text
   arrives as `olivia-text` broadcasts (`{text, snr, freqOffsetHz, centreHz,
   time}`, a block of up to three characters at a time).
+  `setJs8Active` (`{active, txHz?}`) starts and stops JS8 and sets the
+  transmit offset every browser shows. `js8` (`{action:
+  'send'|'cq'|'stop', text?}`) queues a message (or a CQ) for the next
+  slot, or stops one; it answers `{frames, startsAt}`, or fails with a
+  reason (JS8 off, no `STATION_CALLSIGN`, a message still going, too
+  long). JS8's state is the connect snapshot's `js8` and the `js8-status`
+  broadcast (`{available, reason, callsign, grid, canTransmit, txHz,
+  sending: {text, frames, sent, total, startsAt}|null, keyed, decoding}`).
+  Each slot's decodes, and each own frame as it goes, arrive as
+  `js8-decodes` (`{slotStartMs, dialHz, decodes: [{freq, dt, snr, text,
+  first, last, from?, to?, cmd?, num?, grid?, cq?, heartbeat?, own?}]}`);
+  a page that connects is sent `{replace: true, decodes}`, the recent ones.
   `setVaraActive` (`{active}`) starts and stops the VARA chat modem. While
   it runs it listens for calls and keys PTT itself. `vara` (`{action:
   'cq'|'connect'|'disconnect'|'send', call?, text?}`) drives it: a CQ
@@ -2437,6 +2548,13 @@ The test files:
                            VARA bridges (each with its real worker) joined by a
                            simulated channel: CQ, call, text both ways,
                            disconnect; PTT, DATA mode, the 30 s and idle limits
+  js8.test.js             JS8: the FFT, CRC-12 and LDPC code, the word list,
+                           the message layer as JS8Call shows it, the
+                           receiver on simulated slots (four signals, one
+                           overlapping, noise), a message over several slots,
+                           and the bridge with its worker: a slot decoded and
+                           spotted, a message sent a frame a slot (the audio
+                           played decodes), Stop, the 40-frame limit
   hell.test.js            Feld-Hell port checked against fldigi's own transmit
                            code (40 half-pixel sequences, a waveform), the
                            font, and the received picture clean, in noise,
@@ -2613,6 +2731,7 @@ checked against the original, and the original's licence notice:
 | WSPR | wsprd and wsprsim (WSJT-X) | [`third_party/wsjtx-wsprd/`](third_party/wsjtx-wsprd/README.md) |
 | EasyPal | QSSTV (and Dream) | [`third_party/qsstv-drm/`](third_party/qsstv-drm/README.md) |
 | VarAC messages and CQ slots | hfmodem (W9SSJ) | [`third_party/hfmodem/`](third_party/hfmodem/README.md) |
+| JS8 | JS8Call-improved (Jordan Sherer and the JS8Call-improved team) | [`third_party/js8call/`](third_party/js8call/README.md) |
 | VARA HF modem | Xara (x0rro), compiled to WebAssembly, not ported | [`third_party/xara/`](third_party/xara/README.md) |
 | RNNoise (patched demo) | xiph/rnnoise | [`third_party/rnnoise/`](third_party/rnnoise/README.md) |
 
@@ -2636,6 +2755,7 @@ Several of the cooler features in this app are built on the work of others:
 - EasyPal (HamDRM) receiver and transmitter = Ported to JS from QSSTV by Johan Maes (ON4QZ) and M. Bos (PA0MBO), https://github.com/ON4QZ/QSSTV, whose transmitter builds on Dream by Volker Fischer (TU Darmstadt)
 - WSPR support = Ported to JS from wsprd and wsprsim (K1JT, K9AN) in WSJT-X, https://wsjtx.github.io/wsjtx/index.html
 - VarAC messages and slots = Ported to JS from hfmodem by Saul St John (W9SSJ), https://github.com/sstjohn/hfmodem
+- JS8 = Ported to JS from JS8Call-improved by Jordan Sherer (KN4CRD) and the JS8Call-improved team, https://github.com/JS8Call-improved/JS8Call-improved
 - VARA chat = Xara, an open-source VARA-compatible modem by x0rro (MIT), compiled to WebAssembly, https://github.com/x0rro/xara. VARA is by Jose Alberto Nieto Ros (EA5HVK).
 
 ## Licence

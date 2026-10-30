@@ -197,6 +197,30 @@
         </div>
         <pre class="olivia-rx__text" id="olivia-rx-text" aria-live="polite" aria-label="Received Olivia text"></pre>
       </section>
+      <!-- JS8, shown while the TTY chip is on JS8 (see updateTtyUi() and
+           renderJs8Status() in app.js): the state, CQ, the stations heard,
+           and the band activity, one row per message (its frames joined),
+           with this station's own messages inline. -->
+      <section class="ft8-panel olivia-rx vara-rx js8-rx" id="js8-rx" aria-label="JS8" hidden>
+        <div class="ft8-panel__header">
+          <span class="row-group__label">JS8</span>
+          <span class="ft8-panel__slot" id="js8-status" aria-live="polite">off</span>
+        </div>
+        <div class="vara-rx__controls">
+          <button class="chip" id="js8-cq-btn" type="button" disabled title="Send a JS8 CQ (CQ CQ CQ and your grid) in the next 15-second slot">CQ</button>
+          <span class="js8-rx__hint">Tap a call or a line to reply to it.</span>
+        </div>
+        <div class="vara-rx__heard" id="js8-heard" hidden></div>
+        <div class="ft8-table jtty-table js8-table" role="table" aria-label="JS8 band activity">
+          <div class="ft8-table__head" role="row">
+            <span role="columnheader">UTC</span>
+            <span role="columnheader">Freq</span>
+            <span role="columnheader">SNR</span>
+            <span role="columnheader">Message</span>
+          </div>
+          <div class="ft8-table__body" id="js8-table-body"></div>
+        </div>
+      </section>
       <!-- VARA chat, shown while the TTY chip is on VARA (see updateTtyUi()
            and renderVaraStatus() in app.js): the modem's state, CQ and
            Connect/Disconnect, the stations heard calling CQ, and the
