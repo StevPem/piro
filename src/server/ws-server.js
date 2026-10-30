@@ -1,6 +1,7 @@
 'use strict';
 
 const { clampOliviaCentre } = require('../audio/olivia-dsp');
+const { clampJs8TxHz } = require('./js8-bridge');
 const { clampHellTone } = require('../audio/hell-rx');
 const http = require('http');
 const https = require('https');
@@ -174,6 +175,12 @@ class ControlServer extends EventEmitter {
       // Same reasons as jttyActive.
       hellActive: false,
       hellToneHz: 1000,
+      // Whether the client has JS8 selected, and its transmit offset (see
+      // REQUEST.SET_JS8_ACTIVE / server/js8-bridge.js), and JS8's state
+      // (state.js8, kept by Js8Bridge; null when it isn't set up).
+      js8Active: false,
+      js8TxHz: 1500,
+      js8: null,
       // Whether the client has VARA chat selected (REQUEST.SET_VARA_ACTIVE /
       // server/vara-bridge.js), and the modem's state (state.vara, kept by
       // VaraBridge; null when it isn't set up).
@@ -385,6 +392,8 @@ class ControlServer extends EventEmitter {
       jttyTxHz: s.jttyTxHz,
       oliviaActive: s.oliviaActive,
       oliviaCentreHz: s.oliviaCentreHz,
+      js8Active: s.js8Active,
+      js8TxHz: s.js8TxHz,
       hellActive: s.hellActive,
       hellToneHz: s.hellToneHz,
       varaActive: s.varaActive,
@@ -411,6 +420,13 @@ class ControlServer extends EventEmitter {
     if (centreHz !== undefined) this.state.oliviaCentreHz = centreHz;
     // Handled by OliviaDecoderBridge (internal-only event, same pattern as 'jtty-active').
     this.emit('olivia-active', { active, centreHz: this.state.oliviaCentreHz });
+  }
+
+  _setJs8Active(active, txHz) {
+    this.state.js8Active = active;
+    if (txHz !== undefined) this.state.js8TxHz = txHz;
+    // Handled by Js8Bridge (internal-only event).
+    this.emit('js8-active', { active, txHz: this.state.js8TxHz });
   }
 
   _setHellActive(active, toneHz) {
@@ -464,6 +480,8 @@ class ControlServer extends EventEmitter {
     }
     if (this.state.jttyActive) this._setJttyActive(false);
     if (this.state.oliviaActive) this._setOliviaActive(false);
+    // JS8 too: a message may be being sent.
+    if (this.state.js8Active) this._setJs8Active(false);
     if (this.state.hellActive) this._setHellActive(false);
     // VARA too: it transmits on its own (answering calls, acknowledging).
     if (this.state.varaActive) this._setVaraActive(false);
@@ -623,6 +641,33 @@ class ControlServer extends EventEmitter {
           this._setOliviaActive(msg.active, centreHz);
           ws.send(makeResult(id, { active: msg.active, centreHz: this.state.oliviaCentreHz }));
           this._broadcastAppModes(ws);
+          break;
+        }
+        case REQUEST.SET_JS8_ACTIVE: {
+          if (typeof msg.active !== 'boolean') {
+            throw new Error('"active" must be a boolean');
+          }
+          if (msg.txHz !== undefined && (typeof msg.txHz !== 'number' || !Number.isFinite(msg.txHz))) {
+            throw new Error('"txHz" must be a number (Hz) if provided');
+          }
+          if (msg.active && !this.listenerCount('js8-active')) throw new Error('JS8 is not set up on this server (it needs audio).');
+          const txHz = msg.txHz === undefined ? undefined : clampJs8TxHz(msg.txHz);
+          this._setJs8Active(msg.active, txHz);
+          ws.send(makeResult(id, { active: msg.active, txHz: this.state.js8TxHz }));
+          this._broadcastAppModes(ws);
+          break;
+        }
+        case REQUEST.JS8: {
+          if (!['send', 'cq', 'stop'].includes(msg.action)) {
+            throw new Error('"action" must be "send", "cq" or "stop"');
+          }
+          if (msg.text !== undefined && typeof msg.text !== 'string') throw new Error('"text" must be a string');
+          if (typeof msg.text === 'string' && msg.text.length > 1000) throw new Error('"text" is too long');
+          if (!this.listenerCount('js8')) throw new Error('JS8 is not set up on this server (it needs audio).');
+          // Handled by Js8Bridge#request (its listener); it resolves with the result or rejects with why not.
+          const handler = this.listeners('js8')[0];
+          const result = await handler({ action: msg.action, text: msg.text });
+          ws.send(makeResult(id, result || {}));
           break;
         }
         case REQUEST.SET_HELL_ACTIVE: {

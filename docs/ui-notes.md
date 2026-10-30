@@ -4698,3 +4698,62 @@ model for how to approach that.
   minutes only: "12:15Z CQ from W7BTM (…)" (was "12:15:39Z").
 - Tests: vara.test.js and manual-tty-ui.js match the shorter time.
   Service-worker cache v119.
+
+### JS8 in the TTY button (v120)
+
+- **New mode.** The TTY button now steps RTTY, JTTY, Olivia, **JS8**, VARA,
+  Feld-Hell. JS8 is JS8Call's keyboard mode at Normal speed (15-second
+  slots, 50 Hz wide). Entering it puts the radio on USB with DATA MODE on
+  and tunes to the band's JS8 frequency (JS8Call's list: 14.078 MHz on
+  20 m); band buttons then go to each band's. The frequency box is the
+  transmit **Offset** (300-2700 Hz, 1500 by default), shared by every
+  browser; a click on the audio spectrum sets it too.
+- **Receive.** `server/js8-bridge.js` cuts the audio (reduced to 12 kHz)
+  into UTC slots and decodes each in a worker (`audio/js8-worker.js`).
+  The decoder (`audio/js8/js8-decoder.js`) is a port of the core of
+  JS8Call-improved 3.0's: the coarse Costas search over symbol spectra
+  with its polynomial noise baseline, downsampling to 200 samples a
+  second, fine time and frequency, 8-tone magnitudes, JS8Call's whitened
+  bit likelihoods, belief propagation (four passes, with JS8Call's LDPC
+  feedback), the CRC-12, and subtraction of each decode before the next
+  pass. Left out for now: the frequency and timing trackers, coherent
+  likelihoods, soft combining across slots, the deep search, LDPC rescue
+  and re-demodulation.
+- **The panel** shows the status, CQ, the stations heard, and the band
+  activity: one line per message, its frames joined at one offset from
+  first to last (as JS8Call's band activity). Lines still coming have an
+  amber edge, messages to this station a green one, own messages are
+  amber. Tapping a line or a heard call puts "CALL " in the text box.
+- **Send.** The worker turns the text into frames as JS8Call's
+  `buildMessageFrames()` does (heartbeat/CQ, compound, directed with
+  JS8Call's command codes and checksums, then Huffman or word-list data
+  frames; plain text gets "MYCALL: " first). One frame goes out each slot
+  from the next boundary: DATA mode confirmed, PTT on, 12.6 s of audio
+  starting 0.5 s into the slot (allowing `VARA_AUDIO_LATENCY_MS`), PTT
+  off. Send becomes Stop; Stop drops the rest and unkeys at once. At most
+  300 characters and 40 frames (10 minutes). No automatic replies and no
+  heartbeats. JS8 stops when the last browser leaves.
+- **PSK Spot** is shown in JS8 and reports the senders of CQs, heartbeats
+  and directed frames as mode "JS8", at dial + offset, with their grid.
+- **The word list.** Data frames use JS8Call's 262,144-word list. It is
+  `audio/js8/jsc-words.txt.br` (866 kB, brotli; Node reads it with no
+  extra package), made from JS8Call's tables by
+  `third_party/js8call/make-wordlist.js`, which also checks that PiRO's
+  simpler lookup (the longest listed word) finds what JS8Call's search
+  finds. Two quirks are kept so PiRO sends what JS8Call sends: `@ALLCALL`
+  can't be found as a word, and "ROSIDS" steps over one character.
+- **Bugs found while building it.** The status line first read "frame NaN
+  of undefined": the client read `sent`/`total` from the state instead of
+  `state.sending`. The browser test's "QSYD and QSYU sit to the right of
+  CQ" check also matched JS8's controls, which reuse VARA's classes; it now
+  looks inside the VARA panel only.
+- **Sensitivity** (simulated, white noise): half of single frames decode
+  at −19 dB S/N in 2500 Hz, which JS8Call's S/N scale (ported as is)
+  reports as about −26. A slot with four signals took about 1.3 s on a
+  2.1 GHz PC.
+- Not tested with JS8Call itself, and not tested on air.
+- Tests: js8.test.js (new; in npm test), ws-server.test.js (setJs8Active,
+  js8, release on the last disconnect), manual-tty-ui.js (the JS8 step:
+  cycle, band chips, offset shared, slots decoded and joined, reply by
+  tap, send a frame a slot, Stop, CQ, the second browser following).
+  Service-worker cache v120.

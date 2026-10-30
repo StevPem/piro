@@ -1235,6 +1235,49 @@ async function run() {
     await vServer.close();
   }
 
+  // JS8: setJs8Active (with the transmit offset), js8 requests (answered by the bridge), release when the last client leaves.
+  {
+    const jServer = new ControlServer({ civ: new StubCivDriver(), port: 0 });
+    const jPort = await jServer.listen();
+    const c = await connect(jPort);
+    const hello = await nextMessage(c);
+    check(hello.data.js8Active === false && hello.data.js8TxHz === 1500 && hello.data.js8 === null, 'connected snapshot reports js8Active=false, the offset and no JS8 state');
+    c.send(JSON.stringify({ id: 'j1', type: 'setJs8Active', active: true }));
+    const none = await nextMessage(c);
+    check(none.type === 'error' && /not set up/.test(none.error), 'setJs8Active fails without a JS8 bridge');
+    c.send(JSON.stringify({ id: 'j1b', type: 'js8', action: 'cq' }));
+    const none2 = await nextMessage(c);
+    check(none2.type === 'error' && /not set up/.test(none2.error), 'js8 fails without a JS8 bridge');
+    const actives = [];
+    const reqs = [];
+    jServer.on('js8-active', (a) => actives.push(a));
+    jServer.on('js8', async (r) => {
+      if (r.action === 'send' && !r.text) throw new Error('Nothing to send.');
+      reqs.push(r);
+      return { frames: 2, startsAt: 15000 };
+    });
+    c.send(JSON.stringify({ id: 'j2', type: 'setJs8Active', active: 'on' }));
+    check((await nextMessage(c)).type === 'error', 'setJs8Active rejects a non-boolean');
+    c.send(JSON.stringify({ id: 'j3', type: 'setJs8Active', active: true, txHz: 1234.4 }));
+    const ok = await nextMessage(c);
+    check(ok.data.active === true && ok.data.txHz === 1234 && jServer.state.js8Active === true && actives[0].txHz === 1234, 'setJs8Active arms JS8 with its offset');
+    c.send(JSON.stringify({ id: 'j3b', type: 'setJs8Active', active: true, txHz: 5000 }));
+    const high = await nextMessage(c);
+    check(high.data.txHz === 2700 && jServer.state.js8TxHz === 2700, 'an offset above the passband is clamped to 2700 Hz');
+    c.send(JSON.stringify({ id: 'j4', type: 'js8', action: 'jump' }));
+    check((await nextMessage(c)).type === 'error', 'js8 rejects an unknown action');
+    c.send(JSON.stringify({ id: 'j5', type: 'js8', action: 'send', text: 'VK2ABC SNR?' }));
+    const sent = await nextMessage(c);
+    check(sent.ok === true && sent.data.frames === 2 && reqs[0]?.text === 'VK2ABC SNR?', "js8 send is passed to the bridge and its answer returned");
+    c.send(JSON.stringify({ id: 'j6', type: 'js8', action: 'send', text: '' }));
+    const refused = await nextMessage(c);
+    check(refused.type === 'error' && refused.error === 'Nothing to send.', "the bridge's refusal goes back to the browser");
+    c.close();
+    await new Promise((r) => setTimeout(r, 100));
+    check(jServer.state.js8Active === false && actives.at(-1).active === false, 'last client disconnecting stops JS8');
+    await jServer.close();
+  }
+
   // SSTV: setSstvActive, endSstvPicture, getSstvPictures, release when the last client leaves.
   {
     const sServer = new ControlServer({ civ: new StubCivDriver(), port: 0 });

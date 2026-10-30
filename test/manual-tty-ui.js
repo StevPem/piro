@@ -21,6 +21,8 @@ const { FaxDecoderBridge } = require(PKG + '/src/server/fax-decoder-bridge');
 const { EasypalDecoderBridge } = require(PKG + '/src/server/easypal-decoder-bridge');
 const { EasypalTxBridge } = require(PKG + '/src/server/easypal-tx-bridge');
 const { VaraBridge } = require(PKG + '/src/server/vara-bridge');
+const { Js8Bridge } = require(PKG + '/src/server/js8-bridge');
+const js8v = require(PKG + '/src/audio/js8/js8-varicode');
 const easypalFx = require('./fixtures/easypal-audio');
 const { encodeFax, FAX_WIDTH } = require(PKG + '/src/audio/fax-tx');
 const { EVENT } = require(PKG + '/src/server/protocol');
@@ -110,6 +112,35 @@ class Civ extends EventEmitter {
     },
   });
   vara.start();
+  // JS8, with a slot clock the test drives, a stand-in decoder (answered by
+  // hand; the real one is tested in js8.test.js) and the real message builder.
+  const js8Clock = Object.assign(new EventEmitter(), { start() {}, stop() {}, nextSlotStart: () => Date.now() - (Date.now() % 15000) + 15000 });
+  const js8Decodes = []; // decode requests waiting for an answer
+  const js8Holds = []; // PTT holds waiting to end
+  const js8 = new Js8Bridge({
+    controlServer: server,
+    audioBridge,
+    callsign: 'VK2IO',
+    grid: 'QF56',
+    dataSettleMs: 0,
+    slotClock: js8Clock,
+    setTimer: (fn) => js8Holds.push(fn),
+    clearTimer: () => {},
+    createWorker: () => {
+      const w = new EventEmitter();
+      w.terminate = () => {};
+      w.postMessage = (m) => {
+        if (m.type === 'decode') js8Decodes.push(m);
+        else if (m.type === 'encode') {
+          const frames = js8v.buildMessageFrames(m.mycall, m.mygrid, '', m.text).map((f) => ({ frame: f.frame, bits: f.type, text: js8v.decodeFrame(f.frame, f.type).message }));
+          setImmediate(() => w.emit('message', { type: 'encoded', id: m.id, frames }));
+        }
+      };
+      js8.worker = w;
+      return w;
+    },
+  });
+  js8.start();
   // "Current conditions", with wspr.live answered by hand
   const conditions = new BandConditions({ controlServer: server, grid: 'QF56', query: async () => [[1409, 'K1ABC', 16500, ['VK2IO']], [704, 'VK3TR', 700, ['VK2IO']]] });
   conditions.start();
@@ -388,14 +419,126 @@ class Civ extends EventEmitter {
     check(civ.log.filter((e) => e[0] === 'setPtt').at(-1)[1] === false && oliviaRx.attached, 'Stop releases PTT and the receiver resumes');
   }
 
-  // click 4 -> VARA
+  // click 4 -> JS8
   {
     const modeCalls = civ.log.filter((e) => e[0] === 'setMode' || e[0] === 'setDataMode').length;
     await page.locator('#modes .chip', { hasText: /^Olivia$/ }).click();
+    await page.waitForFunction(() => [...document.querySelectorAll('#modes .chip')].some((c) => c.textContent === 'JS8'));
+    await page.waitForFunction(() => /^listening · offset 1500 Hz$/.test(document.getElementById('js8-status').textContent), null, { timeout: 4000 }).catch(() => {});
+    check(civ.mode === 'USB' && civ.dataMode === true && civ.log.filter((e) => e[0] === 'setMode' || e[0] === 'setDataMode').length === modeCalls, 'fourth click: JS8, radio left alone (USB, DATA MODE on)');
+    check(server.state.oliviaActive === false && !oliviaRx.attached && server.state.js8Active === true && js8.active, 'Olivia receiver disarmed, JS8 started');
+    check(civ.log.some((e) => e[0] === 'setFrequency' && e[1] === 14078000), 'entering JS8 on 20m tunes to 14.078 MHz');
+    for (const [band, hz] of [['80m', 3578000], ['40m', 7078000], ['30m', 10130000], ['10m', 28078000], ['20m', 14078000]]) {
+      await page.locator('#bands .chip', { hasText: new RegExp(`^${band}$`) }).click();
+      await sleep(150);
+      check(civ.freq === hz && civ.mode === 'USB' && server.state.js8Active, `in JS8, the ${band} band chip goes to ${hz / 1e6} MHz USB`);
+    }
+    check((await vis('#js8-rx')) && !(await vis('#olivia-rx')) && !(await vis('#vara-rx')) && (await vis('#tty-freq')), 'JS8: its panel shown, the frequency box kept');
+    check((await page.locator('#tty-freq-label').textContent()).trim().startsWith('Offset') && (await page.locator('#tty-freq').inputValue()) === '1500', 'the box is the transmit offset, 1500 Hz');
+    check((await page.locator('#js8-status').textContent()) === 'listening · offset 1500 Hz', 'status: ' + (await page.locator('#js8-status').textContent()));
+    check((await page.locator('#ptt-hint').textContent()).includes('JS8Call'), 'hint text describes JS8');
+    check((await page.locator('#tty-input').evaluate((e) => getComputedStyle(e).textTransform)) === 'uppercase', 'JS8: the text box shows capitals (JS8 sends them)');
+    check((await page.locator('#tty-input').getAttribute('placeholder')) === 'VK2ABC SNR?', 'the text box suggests a directed message (CQ is a button)');
+    check(await vis('.psk-spot-toggle'), 'the PSK Spot button is shown in JS8');
+    check(/ Hz$/.test(await page.locator('#scope-range-hi').textContent()) && !(await vis('#scope-spans')), 'JS8: the scope shows the audio spectrum, RF spans hidden');
+    // The offset, typed: shared once typing pauses.
+    await page.locator('#tty-freq').fill('1234');
+    await page.locator('#tty-freq').dispatchEvent('input');
+    await sleep(900);
+    check(server.state.js8TxHz === 1234 && server.state.js8.txHz === 1234, 'a typed offset goes to the server');
+    check(await bFollows(() => [...document.querySelectorAll('#modes .chip')].some((c) => c.textContent === 'JS8') && !document.getElementById('js8-rx').hidden && document.getElementById('tty-freq').value === '1234'), 'the second browser is in JS8 too, with the new offset');
+
+    // Receive: a slot of audio, then the decoder's answer.
+    const slotPcm = Buffer.alloc(15 * 48000 * 2);
+    const feedSlot = (startMs) => {
+      for (let i = 0; i < slotPcm.length; i += 96000) capture.emit('data', slotPcm.subarray(i, i + 96000));
+      js8Clock.emit('boundary', { slotStartMs: startMs + 15000, slotMs: 15000 });
+    };
+    const answer = async (texts, startMs) => {
+      for (let i = 0; i < 50 && !js8Decodes.length; i++) await sleep(20);
+      const req = js8Decodes.shift();
+      check(!!req && req.nfqso === 1234 && req.samples.byteLength >= 12.5 * 12000 * 4, `a whole slot goes to the decoder (${req ? req.samples.byteLength / 4 / 12000 : 0} s), with the offset tried first`);
+      const decodes = texts.map(([call, text, freq, snr]) => {
+        const frames = js8v.buildMessageFrames(call, 'FN42', '', text);
+        return frames.map((f) => ({ freq, dt: 0.1, snr, frame: f.frame, bits: f.type, hardErrors: 2, text: js8v.decodeFrame(f.frame, f.type).message, info: js8v.decodeFrame(f.frame, f.type) }));
+      });
+      return { req, decodes, startMs };
+    };
+    const t0 = Date.now() - (Date.now() % 15000) - 60000;
+    js8Clock.emit('boundary', { slotStartMs: t0, slotMs: 15000 });
+    feedSlot(t0);
+    {
+      const { req, decodes } = await answer([['K1ABC', 'CQ CQ CQ FN42', 1612, -12], ['VK3XYZ', 'VK2IO HELLO FROM MELBOURNE', 987, -15]]);
+      // The CQ is one frame; VK3XYZ's message takes two, here its first.
+      const reply = [...decodes[0], decodes[1][0]];
+      js8.worker.emit('message', { type: 'decoded', id: req.id, decodes: reply, ms: 900 });
+    }
+    await page.waitForFunction(() => document.querySelectorAll('#js8-table-body .ft8-table__row').length === 2, null, { timeout: 4000 }).catch(() => {});
+    const rows = async () => page.locator('#js8-table-body .ft8-table__row').evaluateAll((els) => els.map((e) => ({ cells: [...e.children].map((c) => c.textContent), cls: e.className, from: e.dataset.from })));
+    let r = await rows();
+    check(r.length === 2 && r[0].cells[1] === '1612' && r[0].cells[2] === '-12' && r[0].cells[3] === 'K1ABC: @ALLCALL CQ CQ CQ FN42', 'a CQ is shown as one line: ' + JSON.stringify(r[0]?.cells));
+    check(r[1].cells[3] === 'VK3XYZ: VK2IO' && /row--live/.test(r[1].cls) && /to-me/.test(r[1].cls), 'a message to this station starts, marked as to me and still coming: ' + JSON.stringify(r[1]?.cells));
+    const heard = await page.locator('#js8-heard .vara-rx__heard-call').allTextContents();
+    check(heard.join('|') === 'K1ABC CQ|VK3XYZ' || heard.join('|') === 'VK3XYZ|K1ABC CQ', 'the stations heard are listed: ' + heard.join(', '));
+    // The next slot: the rest of VK3XYZ's message joins its line.
+    feedSlot(t0 + 15000);
+    {
+      const { req, decodes } = await answer([['VK3XYZ', 'VK2IO HELLO FROM MELBOURNE', 988, -14]]);
+      js8.worker.emit('message', { type: 'decoded', id: req.id, decodes: decodes[0].slice(1), ms: 800 });
+    }
+    await page.waitForFunction(() => /MELBOURNE/.test(document.getElementById('js8-table-body').textContent), null, { timeout: 4000 }).catch(() => {});
+    r = await rows();
+    check(r.length === 2 && r[1].cells[3] === 'VK3XYZ: VK2IO  HELLO FROM MELBOURNE' && !/row--live/.test(r[1].cls) && r[1].cells[1] === '988', 'the second frame joins the same line, which is then complete: ' + JSON.stringify(r[1]?.cells));
+    check(await bFollows(() => /HELLO FROM MELBOURNE/.test(document.getElementById('js8-table-body').textContent)), 'the second browser shows the band activity too');
+    // Tap the line: a reply to VK3XYZ starts.
+    await page.locator('#js8-table-body .ft8-table__row').nth(1).click();
+    check((await page.locator('#tty-input').inputValue()) === 'VK3XYZ ', 'tapping a line starts a reply to its station');
+    await page.locator('#js8-heard .vara-rx__heard-call', { hasText: 'K1ABC' }).click();
+    check((await page.locator('#tty-input').inputValue()) === 'K1ABC ', 'tapping a heard call does too');
+
+    // Send a message: queued for the next slot, a frame a slot, Stop part-way.
+    await page.locator('#tty-input').fill('vk3xyz tnx for the call 73');
+    const w0 = writes.length;
+    await page.locator('#tty-send-btn').click();
+    await page.waitForFunction(() => /^sending from \d\d:\d\d:\d\d UTC \(\d frames\)/.test(document.getElementById('js8-status').textContent), null, { timeout: 4000 }).catch(() => {});
+    check(/^sending from \d\d:\d\d:\d\d UTC \(\d frames\) · offset 1234 Hz$/.test(await page.locator('#js8-status').textContent()), 'status: ' + (await page.locator('#js8-status').textContent()));
+    check((await page.locator('#tty-send-btn').textContent()) === 'Stop' && (await page.locator('#tty-input').inputValue()) === '' && (await page.locator('#js8-cq-btn').isDisabled()), 'Send became Stop, the box cleared, CQ waits');
+    check(server.state.js8.sending.frames.join('') === 'VK2IO: VK3XYZ  TNX FOR THE CALL 73', 'the message, as JS8Call will show it: ' + server.state.js8.sending.frames.join(''));
+    js8Clock.emit('boundary', { slotStartMs: Date.now() - (Date.now() % 15000), slotMs: 15000 });
+    for (let i = 0; i < 50 && !js8Holds.length; i++) await sleep(20);
+    check(writes.length === w0 + 1 && civ.log.filter((e) => e[0] === 'setPtt').at(-1)[1] === true && !js8._attached, 'at the boundary: PTT on, the first frame played, receiving paused');
+    await page.waitForFunction(() => /^sending frame 1 of \d/.test(document.getElementById('js8-status').textContent), null, { timeout: 4000 }).catch(() => {});
+    check(/^sending frame 1 of \d/.test(await page.locator('#js8-status').textContent()), 'status while on the air: ' + (await page.locator('#js8-status').textContent()));
+    await page.waitForFunction(() => document.querySelector('#js8-table-body .js8-table__row--own'), null, { timeout: 4000 }).catch(() => {});
+    r = await rows();
+    check(r.at(-1).cells[3] === 'VK2IO: VK3XYZ' && /row--own/.test(r.at(-1).cls) && r.at(-1).cells[1] === '1234', 'the frame sent is shown as an own line at the offset');
+    js8Holds.shift()();
+    await page.waitForFunction(() => /next slot/.test(document.getElementById('js8-status').textContent), null, { timeout: 4000 }).catch(() => {});
+    check(civ.log.filter((e) => e[0] === 'setPtt').at(-1)[1] === false && js8._attached && /^frame 2 of \d next slot/.test(await page.locator('#js8-status').textContent()), 'after the frame: PTT off, receiving again; status: ' + (await page.locator('#js8-status').textContent()));
+    await page.locator('#tty-send-btn').click();
+    await page.waitForFunction(() => /^listening/.test(document.getElementById('js8-status').textContent), null, { timeout: 4000 }).catch(() => {});
+    js8Clock.emit('boundary', { slotStartMs: Date.now() - (Date.now() % 15000) + 15000, slotMs: 15000 });
+    await sleep(200);
+    check(server.state.js8.sending === null && writes.length === w0 + 1 && (await page.locator('#tty-send-btn').textContent()) === 'Send', 'Stop: the rest is dropped, nothing more goes out, Send again');
+    // CQ
+    await page.locator('#js8-cq-btn').click();
+    await page.waitForFunction(() => /^sending from/.test(document.getElementById('js8-status').textContent), null, { timeout: 4000 }).catch(() => {});
+    check(server.state.js8.sending?.frames.join('') === 'VK2IO: @ALLCALL CQ CQ CQ QF56 ', 'CQ queues "CQ CQ CQ QF56"');
+    check(await bFollows(() => /^sending from/.test(document.getElementById('js8-status').textContent) && document.getElementById('tty-send-btn').textContent === 'Stop'), 'the second browser shows it waiting to go, with Stop');
+    await page.locator('#tty-send-btn').click();
+    await page.waitForFunction(() => /^listening/.test(document.getElementById('js8-status').textContent), null, { timeout: 4000 }).catch(() => {});
+    check(server.state.js8.sending === null, 'and Stop cancels it before it goes');
+  }
+
+  // click 5 -> VARA
+  {
+    const modeCalls = civ.log.filter((e) => e[0] === 'setMode' || e[0] === 'setDataMode').length;
+    await page.locator('#modes .chip', { hasText: /^JS8$/ }).click();
     await page.waitForFunction(() => [...document.querySelectorAll('#modes .chip')].some((c) => c.textContent === 'VARA'));
     await page.waitForFunction(() => /^listening/.test(document.getElementById('vara-status').textContent), null, { timeout: 4000 });
-    check(civ.mode === 'USB' && civ.dataMode === true && civ.log.filter((e) => e[0] === 'setMode' || e[0] === 'setDataMode').length === modeCalls, 'fourth click: VARA, radio left alone (USB, DATA MODE on)');
-    check(server.state.oliviaActive === false && !oliviaRx.attached && server.state.varaActive === true && vara.active, 'Olivia receiver disarmed, VARA modem started');
+    check(civ.mode === 'USB' && civ.dataMode === true && civ.log.filter((e) => e[0] === 'setMode' || e[0] === 'setDataMode').length === modeCalls, 'fifth click: VARA, radio left alone (USB, DATA MODE on)');
+    check(server.state.js8Active === false && !js8.active && server.state.varaActive === true && vara.active, 'JS8 stopped, VARA modem started');
+    check((await page.locator('#tty-send-btn').textContent()) === 'Send' && (await page.locator('#tty-send-btn').isDisabled()), 'Send reads Send again, and is off until there is a VARA QSO');
     check(civ.log.some((e) => e[0] === 'setFrequency' && e[1] === 14105000), 'entering VARA on 20m tunes to the 14.105 MHz VarAC calling frequency');
     for (const [band, hz] of [['160m', 1995000], ['30m', 10133000], ['17m', 18107000], ['12m', 24927000], ['10m', 28105000], ['20m', 14105000]]) {
       await page.locator('#bands .chip', { hasText: new RegExp(`^${band}$`) }).click();
@@ -405,7 +548,7 @@ class Civ extends EventEmitter {
     // QSYD / QSYU: one 750 Hz slot down or up; the status line says how far from the calling frequency.
     await page.waitForFunction(() => !document.getElementById('vara-qsyu-btn').disabled, null, { timeout: 4000 });
     {
-      const order = await page.locator('.vara-rx__controls input, .vara-rx__controls button').evaluateAll((els) => els.map((e) => e.id));
+      const order = await page.locator('#vara-rx .vara-rx__controls input, #vara-rx .vara-rx__controls button').evaluateAll((els) => els.map((e) => e.id));
       check(order.join(' ') === 'vara-call vara-connect-btn vara-cq-btn vara-qsyd-btn vara-qsyu-btn', 'QSYD and QSYU sit to the right of CQ');
     }
     await page.locator('#vara-qsyu-btn').click();
@@ -542,13 +685,13 @@ class Civ extends EventEmitter {
     if (process.env.VARA_HEARD_SHOT) await page.locator('#vara-rx').screenshot({ path: process.env.VARA_HEARD_SHOT });
   }
 
-  // click 5 -> Feld-Hell
+  // click 6 -> Feld-Hell
   {
     const modeCalls = civ.log.filter((e) => e[0] === 'setMode' || e[0] === 'setDataMode').length;
     await page.locator('#modes .chip', { hasText: /^VARA$/ }).click();
     await page.waitForFunction(() => [...document.querySelectorAll('#modes .chip')].some((c) => c.textContent === 'Feld-Hell'));
     await sleep(150);
-    check(civ.mode === 'USB' && civ.dataMode === true && civ.log.filter((e) => e[0] === 'setMode' || e[0] === 'setDataMode').length === modeCalls, 'fifth click: Feld-Hell, radio left alone (USB, DATA MODE on)');
+    check(civ.mode === 'USB' && civ.dataMode === true && civ.log.filter((e) => e[0] === 'setMode' || e[0] === 'setDataMode').length === modeCalls, 'sixth click: Feld-Hell, radio left alone (USB, DATA MODE on)');
     check(server.state.varaActive === false && !vara.active && varaWorkers.at(-1).terminated && server.state.hellActive === true && hellRx.attached, 'VARA modem stopped, Feld-Hell receiver armed');
     check(!(await page.locator('#tty-send-btn').isDisabled()), 'Send is on again for Feld-Hell');
     check(!(await vis('.psk-spot-toggle')), 'PSK Spot is hidden again outside FT8 and VARA');
@@ -624,11 +767,11 @@ class Civ extends EventEmitter {
   }
 
   // Enter key sends too; RTTY text via Enter
-  // click 5 -> back to RTTY
+  // click 7 -> back to RTTY
   await page.locator('#modes .chip', { hasText: /^Feld-Hell$/ }).click();
   await page.waitForFunction(() => [...document.querySelectorAll('#modes .chip')].some((c) => c.textContent === 'RTTY'));
   await sleep(150);
-  check(civ.mode === 'RTTY' && civ.dataMode === false, 'fifth click: back to RTTY, DATA MODE off');
+  check(civ.mode === 'RTTY' && civ.dataMode === false, 'seventh click: back to RTTY, DATA MODE off');
   await page.locator('#bands .chip', { hasText: /^40m$/ }).click();
   await sleep(200);
   check(civ.freq === 7050000 && civ.mode === 'RTTY', 'in RTTY, the 40m band chip goes to 7.050 MHz (middle of the WIA digital segment) and stays in RTTY');
@@ -660,7 +803,7 @@ class Civ extends EventEmitter {
   await sleep(200);
   check(true, 'Enter sends; RTTY status "Sent RTTY"');
   check(civ.mode === 'RTTY' && civ.dataMode === false && civ.freq === 7050000 && (await ttyLabel()).includes('RTTY'), 'afterwards: back in RTTY on 7.050 MHz, DATA MODE off');
-  check(writes.length === 4, 'RTTY audio written');
+  check(writes.length === 5, 'RTTY audio written'); // after JTTY, Olivia, JS8 (one frame) and Feld-Hell
 
   // typed text survives mode toggling
   await page.locator('#modes .chip', { hasText: /^RTTY$/ }).click();
@@ -1208,6 +1351,7 @@ class Civ extends EventEmitter {
   faxRx.stop();
   easypalTx.stop();
   easypalRx.stop();
+  await js8.stop();
   await server.close();
   console.log(failures ? `\n${failures} FAILED` : '\nAll UI checks passed');
   process.exit(failures ? 1 : 0);

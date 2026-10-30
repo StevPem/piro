@@ -16,6 +16,7 @@ const { SstvDecoderBridge } = require('./sstv-decoder-bridge');
 const { SstvTxBridge, DEFAULT_SSTV_TX_MODE } = require('./sstv-tx-bridge');
 const { EasypalTxBridge, easypalTxConfig } = require('./easypal-tx-bridge');
 const { VaraBridge, varaConfig } = require('./vara-bridge');
+const { Js8Bridge } = require('./js8-bridge');
 const { WsprBridge, parseBandList, WSPR_DIAL_HZ } = require('./wspr-bridge');
 const { FaxDecoderBridge } = require('./fax-decoder-bridge');
 const { EasypalDecoderBridge } = require('./easypal-decoder-bridge');
@@ -292,6 +293,7 @@ let faxDecoderBridge;
 let easypalDecoderBridge;
 let easypalTxBridge;
 let varaBridge;
+let js8Bridge;
 let bandConditions;
 let radeBridge;
 let freeDvReporterBridge;
@@ -642,6 +644,19 @@ async function main() {
       console.log(varaBridge.unavailable ? `VARA chat unavailable: ${varaBridge.unavailable}` : `VARA chat ready (${cfg.bw} Hz; runs while VARA is selected).`);
     }
 
+    // JS8 (the TTY button's JS8; JS8Call's Normal speed): decodes each
+    // 15-second slot in a worker while a browser has JS8 selected, and
+    // sends what the operator types, one frame a slot. Transmitting needs
+    // STATION_CALLSIGN; CQ sends STATION_GRID's first 4 characters. Frames
+    // start 0.5 s into the slot, allowing VARA_AUDIO_LATENCY_MS for the
+    // sound card. PSK Spot shares the FT8 bridge's client. See server/js8-bridge.js.
+    {
+      const { latencyMs } = varaConfig(process.env);
+      js8Bridge = new Js8Bridge({ controlServer, audioBridge, callsign: STATION_CALLSIGN || '', grid: STATION_GRID || '', latencyMs, pskReporter: ft8Bridge.pskReporter });
+      js8Bridge.start();
+      console.log(js8Bridge.unavailable ? `JS8 unavailable: ${js8Bridge.unavailable}` : 'JS8 ready (decodes while JS8 is selected).');
+    }
+
     // WSPR receive and transmit (the third choice of the DIGI button).
     // WSPR_GRID is the Maidenhead locator sent and reported (defaults to
     // STATION_GRID); spots go to wsprnet.org unless WSPR_UPLOAD=off;
@@ -762,6 +777,7 @@ async function shutdown(signal) {
     if (faxDecoderBridge) faxDecoderBridge.stop();
     if (easypalTxBridge) easypalTxBridge.stop();
     if (varaBridge) await varaBridge.stop();
+    if (js8Bridge) await js8Bridge.stop();
     if (easypalDecoderBridge) easypalDecoderBridge.stop();
     if (bandConditions) bandConditions.stop();
     if (radeBridge) radeBridge.stop();
