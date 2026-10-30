@@ -426,6 +426,11 @@ class ControlServer extends EventEmitter {
     this.emit('vara-active', active);
   }
 
+  setVaraActiveFromServer(active) {
+    this._setVaraActive(active);
+    this._broadcastAppModes();
+  }
+
   _setWsprActive(active) {
     this.state.wsprActive = active;
     // Handled by WsprBridge (internal-only event).

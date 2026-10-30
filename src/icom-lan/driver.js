@@ -10,7 +10,7 @@ const MK2 = Object.freeze({ id: 0xb6, name: 'IC-7300MK2', afSelect: [0, 0x79], a
 
 class IcomLanDriver extends CivDriver {
   constructor(options) {
-    const session = new IcomSession(options);
+    const session = new IcomSession({ ...options, deferReady: true });
     super({ transport: new CivLanTransport(session), radioAddr: options.radioAddr ?? 0,
       requestTimeoutMs: options.requestTimeoutMs ?? 2000 });
     this.session = session;
@@ -25,7 +25,6 @@ class IcomLanDriver extends CivDriver {
     this.session.on('status', (status) => this.emit('connection-status', status));
     this.session.on('disconnected', () => {
       this.prepared = false;
-      this.txSaved = [];
       ++this.txRevision;
       this.emit('transport-lost');
     });
@@ -43,12 +42,16 @@ class IcomLanDriver extends CivDriver {
       await super.open();
       await this.initialize();
     } catch (err) {
+      // Roll back settings while this association is still reachable. Closing
+      // first makes even a recoverable later initialization NG irreversible.
+      await this.restore(this.rxSaved).catch((restoreError) => this.emit('restore-error', restoreError));
       await this.session.close();
       throw err;
     } finally { this.initialOpen = false; }
   }
 
   async initialize() {
+    const generation = this.session.generation;
     this.prepared = false;
     this.emit('connection-status', { transport: 'lan', state: 'identifying' });
     this.radioAddr = this.options.radioAddr ?? 0;
@@ -60,6 +63,7 @@ class IcomLanDriver extends CivDriver {
     // state is stopped before accepting a new operator command.
     await super.stopCw();
     await super.setPtt(false);
+    await this.restore(this.txSaved).catch((err) => this.emit('restore-error', err));
     // AF, not the 12 kHz IF stream; open squelch preserves decoder input.
     for (const parameter of [MK2.afSelect, MK2.afSql]) {
       const old = await this.readParameter(parameter);
@@ -68,9 +72,13 @@ class IcomLanDriver extends CivDriver {
         await this.writeParameter(parameter, 0);
       }
     }
+    const radioState = { frequency: await this.getFrequency(), mode: await this.getMode(), dataMode: await this.getDataMode() };
+    if (generation !== this.session.generation || !this.session.connected) throw new Error('Radio disconnected during initialization');
+    this.radioState = radioState;
     this.prepared = true;
+    this.emit('radio-ready', radioState);
+    this.session.confirmReady();
     this.emit('connection-status', { transport: 'lan', state: 'connected', model: MK2.name, radioAddr: this.radioAddr });
-    this.emit('radio-ready');
   }
 
   async readParameter(parameter, level = false) {
@@ -104,7 +112,7 @@ class IcomLanDriver extends CivDriver {
       const old = await this.readParameter(setting.parameter, setting.level);
       if (revision !== this.txRevision) throw new Error('PTT request was cancelled');
       if (old !== setting.value) {
-        this.txSaved.push({ ...setting, old });
+        if (!this.txSaved.some((entry) => entry.parameter[1] === setting.parameter[1])) this.txSaved.push({ ...setting, old });
         await this.writeParameter(setting.parameter, setting.value, setting.level);
       }
     }
@@ -115,10 +123,17 @@ class IcomLanDriver extends CivDriver {
 
   async restore(saved) {
     if (!this.session.connected) return;
-    for (const { parameter, value, old, level } of saved.reverse()) {
-      // Preserve changes the operator made on the front panel meanwhile.
-      if (await this.readParameter(parameter, level) === value) await this.writeParameter(parameter, old, level);
+    const errors = [];
+    for (const entry of [...saved].reverse()) {
+      const { parameter, value, old, level } = entry;
+      try {
+        // Preserve front-panel changes; retain failed records for another
+        // release/reconnect attempt rather than forgetting their old values.
+        if (await this.readParameter(parameter, level) === value) await this.writeParameter(parameter, old, level);
+        saved.splice(saved.indexOf(entry), 1);
+      } catch (err) { errors.push(err.message); }
     }
+    if (errors.length) throw new Error(`Could not restore radio settings: ${errors.join('; ')}`);
   }
 
   setPtt(on) {
@@ -139,8 +154,9 @@ class IcomLanDriver extends CivDriver {
     if (!on) {
       this.playback.setKeyed(false);
       const result = await super.setPtt(false);
-      const saved = this.txSaved.splice(0);
-      await this.restore(saved);
+      // PTT was confirmed off independently of settings restoration. Report
+      // restoration failure without leaving the server's TX state falsely on.
+      await this.restore(this.txSaved).catch((err) => this.emit('restore-error', err));
       return result;
     }
     try {
@@ -156,7 +172,7 @@ class IcomLanDriver extends CivDriver {
       if (revision === this.txRevision && this.session.connected) {
         this.playback.setKeyed(false);
         await super.setPtt(false).catch(() => {});
-        await this.restore(this.txSaved.splice(0)).catch(() => {});
+        await this.restore(this.txSaved).catch((restoreError) => this.emit('restore-error', restoreError));
       }
       throw err;
     }
@@ -186,7 +202,7 @@ class IcomLanDriver extends CivDriver {
     if (this.session.connected) {
       await this.stopCw().catch(() => {});
       await this.setPtt(false).catch(() => {});
-      await this.restore(this.rxSaved.splice(0)).catch(() => {});
+      await this.restore(this.rxSaved).catch((err) => this.emit('restore-error', err));
     }
     return super.close();
   }

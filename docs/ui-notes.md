@@ -4718,3 +4718,21 @@ model for how to approach that.
 - Hardware and on-air checks are still pending. See `docs/icom-lan.md` and
   `docs/icom-lan-sources.md` for setup, evidence and the acceptance checklist.
 - Build/cache v120. Final test results are recorded in `icom-lan-plan.md`.
+
+### Native LAN audit fixes (v121)
+
+- Fixed all ten findings from the independent review of v120. Malformed
+  microphone input no longer escapes the WebSocket handler. VARA waits for
+  confirmed PTT release before a QSY.
+- Streaming TX preserves short native-pipe chunks until a full frame is
+  available. RX uses a sample clock to catch up after delayed callbacks.
+- Token renewal honors its ACK grace period. Retry budgets reset after
+  complete radio initialization rather than after UDP handshake alone.
+- Reconnect refreshes tuning, mode and DATA state. Radio loss clears VARA's
+  selected state so the browser can activate it again after reconnect.
+- Failed restoration retains saved values for retry without falsely leaving
+  PTT on in the server state. Failed startup rolls back RX settings before
+  closing a reachable session.
+- Added socket, native-pipe and normal-process regressions for the original
+  reproductions. See `icom-lan-audit-fixes.md` and `icom-lan-plan.md`.
+- Build/cache v121. Physical-radio and on-air checks remain pending.

@@ -379,7 +379,7 @@ async function main() {
     sstvTxBridge?.abort();
     easypalTxBridge?.abort();
     wsprBridge?.setTx({ enabled: false });
-    varaBridge?.deactivate().catch(() => {});
+    if (controlServer.state.varaActive) controlServer.setVaraActiveFromServer(false);
     // Stop pipelines while the actual radio state remains unknown. This is
     // an internal producer signal; the browser snapshot keeps ptt=null.
     controlServer.emit('ptt', false);

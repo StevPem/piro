@@ -47,17 +47,30 @@ function wireRadioConnection(civ, controlServer) {
   publish({ transport: civ.session ? 'lan' : 'usb', state: 'connected', radioAddr: civ.radioAddr,
     ...(civ.profile ? { model: civ.profile.name } : {}) });
   civ.on('connection-status', publish);
+  civ.on('restore-error', (err) => controlServer.broadcastJsonEvent('rig-error', { message: err.message }));
   civ.on('transport-lost', () => {
     controlServer.state.ptt = null; // actual state is unknown while unreachable.
     controlServer.emit('radio-disconnected');
     controlServer.broadcastJsonEvent('rig-error', { message: 'Radio LAN connection lost. Transmission state is unknown; reconnect will not replay commands.' });
   });
-  civ.on('radio-ready', () => {
+  const ready = (radioState) => {
     controlServer.state.radioAddr = civ.radioAddr;
+    if (radioState) {
+      controlServer.state.frequency = radioState.frequency;
+      controlServer.state.mode = radioState.mode;
+      controlServer.state.dataMode = radioState.dataMode;
+      // Driver events also notify mode-driven decoders and the ordinary
+      // ControlServer broadcast paths, not only the reconnecting browser.
+      civ.emit('frequency', radioState.frequency);
+      civ.emit('mode', radioState.mode);
+      controlServer.broadcastJsonEvent('data-mode', { on: radioState.dataMode });
+    }
     controlServer.state.ptt = false; // initialize() confirmed PTT off.
     controlServer.broadcastJsonEvent('ptt', { value: false });
     controlServer.emit('ptt', false);
-  });
+  };
+  civ.on('radio-ready', ready);
+  if (civ.radioState) ready(civ.radioState);
 }
 
 module.exports = { createRadio, wireRadioConnection };

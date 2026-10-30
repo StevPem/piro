@@ -54,14 +54,70 @@ test('TX bounds voice latency, preserves finite waveforms, pads tails and stops 
   assert.deepEqual(Buffer.concat(output), finite);
   playback.write(Buffer.from([0, 128]));
   playback.pump();
-  assert.equal(playback.stats.paddedBytes, 1918);
+  assert.equal(playback.stats.paddedBytes, 0, 'partial input remains buffered until finalization');
   const drain = playback.drain();
+  assert.equal(playback.stats.paddedBytes, 1918);
   playback.setKeyed(false);
   await drain;
   assert.equal(playback.waiters.size, 0);
   assert.equal(playback.queue.bytes, 0);
   assert.throws(() => { playback.setKeyed(true); playback.write(Buffer.alloc(3)); }, /aligned/);
   playback.stop();
+});
+
+test('RX catches up after coalesced callbacks without losing valid 48 kHz decoder samples', () => {
+  let now = 0;
+  const session = new EventEmitter();
+  const capture = new LanCapture(session, { now: () => now });
+  capture.active = true;
+  const input = [], output = [];
+  capture.on('data', (p) => output.push(p));
+  // A continuous radio source, but JS callbacks only run every third frame.
+  // There is enough buffer and CPU time to recover; samples must not vanish.
+  for (let n = 1; n <= 100; n++) {
+    now = n * 20;
+    const pcm = Buffer.alloc(1920, n);
+    input.push(pcm);
+    session.emit('rx-audio', pcm);
+    if (n % 3 === 0) capture.pumpDue();
+  }
+  now = 2040;
+  capture.pumpDue();
+  assert.deepEqual(Buffer.concat(output), Buffer.concat(input));
+  assert.equal(capture.stats.droppedBytes, 0);
+  assert.equal(capture.stats.silenceBytes, 0);
+});
+
+test('arbitrary native RADE chunks retain exact PCM duration and samples through LAN transmission', async () => {
+  const { RadeBridge } = require('../src/server/rade-bridge');
+  const session = new EventEmitter();
+  const sent = [];
+  Object.assign(session, { connected: true, options: { txBufferMs: 0 }, sendAudio: (p) => sent.push(Buffer.from(p)) });
+  const playback = new LanPlayback(session);
+  const expected = [];
+  const iq = Buffer.alloc(80 * 8); // ten ms at the native 8 kHz modem rate.
+  for (let i = 0; i < 80; i++) iq.writeFloatLE(Math.sin(i / 3) * 0.2, i * 8);
+  const convert = (destination) => RadeBridge.prototype._handleModulatedAudio.call({
+    _txGain: 1, audioBridge: { playback: destination, sampleRate: 48000 },
+    _reportError: (_context, err) => { throw err; },
+  }, iq);
+  playback.start();
+  playback.setKeyed(true);
+  try {
+    for (let n = 0; n < 30; n++) {
+      convert({ write: (pcm) => expected.push(Buffer.from(pcm)) });
+      convert(playback);
+      await new Promise((resolve) => setTimeout(resolve, 10));
+    }
+    await playback.drain();
+    assert.equal(Buffer.concat(expected).length, 28800);
+    assert.deepEqual(Buffer.concat(sent), Buffer.concat(expected));
+    assert.equal(playback.stats.paddedBytes, 0);
+    playback.write(Buffer.from([0, 128]));
+    await playback.drain();
+    assert.equal(playback.stats.paddedBytes, 1918, 'only the explicitly finalized tail is padded');
+    assert.deepEqual(Buffer.concat(sent).subarray(28800, 28802), Buffer.from([0, 128]));
+  } finally { playback.stop(); }
 });
 
 test('audio arriving during asynchronous PTT preparation waits for confirmation and is flushed if cancelled', () => {

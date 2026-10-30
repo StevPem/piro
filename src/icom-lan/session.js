@@ -181,12 +181,17 @@ class IcomSession extends EventEmitter {
   mediaReady() {
     if (this.connected || !this.serial.ready || !this.audio.ready) return;
     this.connected = true;
-    this.attempts = 0;
-    this.status('connected');
+    if (!this.options.deferReady) this.confirmReady();
+    else this.status('identifying');
     this.emit('connected');
     this.resolveOpen?.();
     this.resolveOpen = this.rejectOpen = null;
     this.openPromise = null;
+  }
+
+  confirmReady() {
+    this.attempts = 0;
+    this.status('connected');
   }
 
   tick() {
@@ -199,8 +204,9 @@ class IcomSession extends EventEmitter {
       this.fail(new Error('Icom LAN session token expired'));
       return;
     }
-    if (this.authId && ((this.pendingRenewals.size && now - this.lastRenewSent >= this.options.tokenGraceMs)
-      || (this.authenticated && now >= this.renewDue))) this.renew();
+    if (this.authId && (this.pendingRenewals.size
+      ? now - this.lastRenewSent >= this.options.tokenGraceMs
+      : this.authenticated && now >= this.renewDue)) this.renew();
     if (this.serial?.ready && !this.civSeen && now - this.lastSerialOpen >= 500) this.openSerial();
   }
 

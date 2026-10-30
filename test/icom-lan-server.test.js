@@ -75,6 +75,13 @@ test('normal PiRO process starts without ALSA and carries control, PCM and scope
   await waitFor(() => peer.txAudio.length >= 2);
   assert.deepEqual(Buffer.concat(peer.txAudio.map((p) => p.bytes)), Buffer.alloc(1920, 4));
   await request('setPtt', { value: false });
+  // The audited crash packet must produce an error/release, not an uncaught
+  // exception that kills the service while the radio is keyed.
+  await request('setPtt', { value: true });
+  ws.send(Buffer.from([1, 0]));
+  await waitFor(() => !peer.ptt && events.some((e) => e.type === 'audio-error' && /aligned/.test(e.data.message)));
+  assert.equal(exit, undefined, errors);
+  assert.equal((await request('getFrequency')).data.value, 14080000);
   for (let n = 0; n < 3; n++) peer.rxAudio(Buffer.alloc(1920, 5));
   await waitFor(() => binary.some((p) => p[0] === 1));
   assert.deepEqual(binary.find((p) => p[0] === 1).subarray(1), Buffer.alloc(1920, 5));
@@ -122,4 +129,48 @@ test('normal PiRO process starts without ALSA and carries control, PCM and scope
   assert.equal(peer.parameters.get('0079')[0], 1); // startup AF setting restored.
   assert.ok(peer.received.some(({ role, packet: p }) => role === 'control' && p.length === 64 && p[21] === 1));
   for (const role of ['control', 'civ', 'audio']) assert.ok(peer.received.some((p) => p.role === role && p.packet.readUInt16LE(4) === 5));
+});
+
+test('radio loss disables VARA in the shared app state and it can be explicitly activated after reconnect', { timeout: 15000 }, async (t) => {
+  const peer = await new IcomPeer().start();
+  const child = spawn(process.execPath, [path.join(__dirname, '../src/server/index.js')], {
+    env: { ...serverEnvironment(peer), STATION_CALLSIGN: 'S53ZO' }, stdio: ['ignore', 'pipe', 'pipe'],
+  });
+  let output = '', errors = '', exit, ws;
+  child.stdout.on('data', (p) => { output += p; });
+  child.stderr.on('data', (p) => { errors += p; });
+  child.on('exit', (code) => { exit = code; });
+  t.after(async () => {
+    ws?.terminate();
+    if (exit === undefined) child.kill('SIGTERM');
+    try { await waitFor(() => exit !== undefined, 3000); }
+    finally { if (exit === undefined) child.kill('SIGKILL'); await peer.close(); }
+  });
+  await waitFor(() => output.includes('Scope output enabled') || exit !== undefined);
+  assert.equal(exit, undefined, errors);
+  const port = output.match(/listening on http:\/\/0\.0\.0\.0:(\d+)/)[1];
+  const events = [];
+  ws = new WebSocket(`ws://127.0.0.1:${port}`);
+  ws.on('message', (p, binary) => { if (!binary) events.push(JSON.parse(p)); });
+  await waitFor(() => events.some((e) => e.type === 'connected'));
+  let id = 0;
+  const request = async (type, data) => {
+    const requestId = `vara-${++id}`;
+    ws.send(JSON.stringify({ id: requestId, type, ...data }));
+    await waitFor(() => events.some((e) => e.id === requestId));
+    const reply = events.find((e) => e.id === requestId);
+    assert.equal(reply.ok, true, JSON.stringify(reply));
+  };
+  await request('setVaraActive', { active: true });
+  await waitFor(() => events.some((e) => e.type === 'vara-status' && e.data.state === 'listening'));
+  const before = events.length;
+  peer.release();
+  await waitFor(() => events.slice(before).some((e) => e.type === 'app-modes' && e.data.varaActive === false));
+  await waitFor(() => events.slice(before).some((e) => e.type === 'radio-connection' && e.data.state === 'connected' && e.data.model));
+  await waitFor(() => events.slice(before).some((e) => e.type === 'vara-status' && e.data.state === 'off'));
+  const again = events.length;
+  await request('setVaraActive', { active: true });
+  await waitFor(() => events.slice(again).some((e) => e.type === 'vara-status' && e.data.state === 'listening'));
+  await request('vara', { action: 'cq' });
+  assert.equal(exit, undefined, errors);
 });

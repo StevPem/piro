@@ -12,7 +12,7 @@ Hamlib, no separate audio server and no extra apps.
 Written by VK3TR. Licensed AGPL-3.0-only (see
 [Licence](#licence)).
 
-**Current build: v120.** This is the version the app shows next to its title.
+**Current build: v121.** This is the version the app shows next to its title.
 It is the `CACHE_NAME` number in `src/client/sw.js`, which goes up with every
 change to the web app.
 
@@ -112,6 +112,8 @@ radio software is needed. This path is implemented and tested offline;
 it is not tested on a physical radio or on air. See
 [LAN setup and hardware validation](docs/icom-lan.md) and
 [protocol/source evidence](docs/icom-lan-sources.md). USB remains the default.
+The [v121 audit fixes](docs/icom-lan-audit-fixes.md) cover connection timing,
+audio integrity, PTT/QSY ordering, restoration and reconnect state.
 
 ### What you need
 
@@ -2316,6 +2318,8 @@ The test files:
   icom-lan-integration.test.js localhost UDP peer: session, CW, control,
                                RX/TX PCM, scope, loss, renewal and reconnect
   icom-lan-audio.test.js       PCM queue limits, loss concealment and TX drain
+  icom-lan-audit.test.js       regressions for the independent LAN audit,
+                               including QSY, state, renewal and restoration
   icom-lan-server.test.js      normal PiRO startup and real browser protocol,
                                no ALSA or physical radio needed
   icom-lan-demo.js             npm run demo:lan: synthetic radio and normal PWA

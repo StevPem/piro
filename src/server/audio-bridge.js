@@ -720,8 +720,20 @@ class AudioBridge extends EventEmitter {
       return; // tagged for something else (e.g. scope) — not ours
     }
     if (!pcm.length) return;
-    this.emit('tx-pcm', pcm);
-    if (!this._txMuted) this.playback.write(pcm);
+    try {
+      if (pcm.length % (2 * this.channels)) throw new Error('Microphone PCM is not sample-aligned');
+      this.emit('tx-pcm', pcm);
+      if (!this._txMuted) this.playback.write(pcm);
+    } catch (err) {
+      // WebSocket events do not have an outer async request/error handler.
+      // Reject malformed/oversized input without taking down the service or
+      // leaving a failed producer's transmitter keyed.
+      this._reportError('playback', err);
+      try { this.playback.restart?.(); } catch (restartError) { this._reportError('playback-reset', restartError); }
+      if (typeof this.controlServer.setPttFromServer === 'function') {
+        this.controlServer.setPttFromServer(false).catch((releaseError) => this._reportError('unkey', releaseError));
+      }
+    }
   }
 
   _reportError(context, err) {

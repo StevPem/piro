@@ -30,11 +30,12 @@ class PcmQueue {
 }
 
 class LanCapture extends EventEmitter {
-  constructor(session, { jitterMs = 60, maxMs = 300 } = {}) {
+  constructor(session, { jitterMs = 60, maxMs = 300, now = () => performance.now() } = {}) {
     super();
     this.session = session;
     this.jitterMs = jitterMs;
     this.maxBytes = maxMs * 96;
+    this.now = now;
     this.queue = new PcmQueue();
     this.active = false;
     this.primed = false;
@@ -51,7 +52,7 @@ class LanCapture extends EventEmitter {
     });
     session.on('disconnected', () => this.flush());
   }
-  flush() { this.queue.clear(); this.primed = false; }
+  flush() { this.queue.clear(); this.primed = false; this.nextFrameAt = undefined; }
   pump() {
     if (!this.active || !this.primed) return;
     const available = Math.min(FRAME_BYTES, this.queue.bytes);
@@ -61,7 +62,19 @@ class LanCapture extends EventEmitter {
   start() {
     if (this.active) return;
     this.active = true;
-    this.timer = setInterval(() => this.pump(), 20);
+    this.timer = setInterval(() => this.pumpDue(), 5);
+  }
+  pumpDue() {
+    if (!this.active || !this.primed) return;
+    const now = this.now();
+    if (this.nextFrameAt === undefined) this.nextFrameAt = now;
+    const due = Math.floor((now - this.nextFrameAt) / 20) + 1;
+    // Recover coalesced callbacks while the jitter buffer still holds the
+    // samples. Bound work after a pause longer than the entire buffer.
+    const frames = Math.min(due, Math.ceil(this.maxBytes / FRAME_BYTES));
+    for (let n = 0; n < frames; n++) this.pump();
+    this.nextFrameAt += frames * 20;
+    if (due > frames) this.nextFrameAt = now + 20;
   }
   stop() { this.active = false; clearInterval(this.timer); this.flush(); }
 }
@@ -79,6 +92,7 @@ class LanPlayback extends EventEmitter {
     this.finite = false;
     this.stats = { sentBytes: 0, droppedBytes: 0, paddedBytes: 0 };
     this.waiters = new Set();
+    this.epoch = 0;
     session.on('disconnected', () => this.setKeyed(false));
   }
   start() {
@@ -87,11 +101,14 @@ class LanPlayback extends EventEmitter {
     this.nextFrameAt = undefined;
     this.timer = setInterval(() => {
       const now = performance.now();
-      if (!this.keyed || !this.queue.bytes) { this.nextFrameAt = undefined; return; }
-      if (this.nextFrameAt === undefined) this.nextFrameAt = now;
+      if (!this.keyed) { this.nextFrameAt = undefined; return; }
+      if (this.nextFrameAt === undefined) {
+        if (this.queue.bytes < FRAME_BYTES) return;
+        this.nextFrameAt = now;
+      }
       // Keep a sample clock rather than accumulating setInterval drift.
       // A stalled event loop may recover at most two frames per tick.
-      for (let n = 0; n < 2 && now >= this.nextFrameAt && this.queue.bytes; n++) {
+      for (let n = 0; n < 2 && now >= this.nextFrameAt; n++) {
         this.pump();
         this.nextFrameAt += 20;
       }
@@ -120,10 +137,10 @@ class LanPlayback extends EventEmitter {
     }
   }
   pump() {
-    if (!this.active || !this.keyed || !this.session.connected || !this.queue.bytes) return;
-    const count = Math.min(FRAME_BYTES, this.queue.bytes);
-    const frame = this.queue.take(FRAME_BYTES, true);
-    this.stats.paddedBytes += FRAME_BYTES - count;
+    if (!this.active || !this.keyed || !this.session.connected || this.queue.bytes < FRAME_BYTES) return;
+    // A native pipe/read or resampler chunk is not a complete modem frame.
+    // Preserve partial samples until more arrive; only drain() ends a stream.
+    const frame = this.queue.take(FRAME_BYTES);
     this.session.sendAudio(frame.subarray(0, 1364));
     this.session.sendAudio(frame.subarray(1364));
     this.stats.sentBytes += FRAME_BYTES;
@@ -131,10 +148,12 @@ class LanPlayback extends EventEmitter {
     if (!this.queue.bytes) this.finite = false;
   }
   flush() {
+    ++this.epoch;
     this.queue.clear();
     this.finite = false;
     this.session.audio?.invalidate('audio');
     this.nextFrameAt = undefined;
+    this.lastSentAt = undefined;
     for (const wake of this.waiters) wake();
   }
   wait(ms) {
@@ -145,11 +164,21 @@ class LanPlayback extends EventEmitter {
     });
   }
   async drain() {
-    while (this.keyed && this.session.connected && this.queue.bytes) await this.wait(20);
-    if (this.keyed && this.session.connected && this.lastSentAt !== undefined) {
+    const epoch = this.epoch;
+    while (epoch === this.epoch && this.keyed && this.session.connected && this.queue.bytes) {
+      const tail = this.queue.bytes % FRAME_BYTES;
+      if (tail) {
+        const padding = FRAME_BYTES - tail;
+        this.queue.push(Buffer.alloc(padding));
+        this.stats.paddedBytes += padding;
+      }
+      await this.wait(20);
+    }
+    if (epoch === this.epoch && this.keyed && this.session.connected && this.lastSentAt !== undefined) {
       const remaining = this.lastSentAt + 20 + (this.session.options?.txBufferMs ?? 300) - performance.now();
       if (remaining > 0) await this.wait(remaining);
     }
+    return epoch === this.epoch && this.keyed && this.session.connected;
   }
   restart() { this.flush(); }
   stop() { clearInterval(this.timer); this.active = false; this.setKeyed(false); }

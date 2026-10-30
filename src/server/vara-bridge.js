@@ -310,6 +310,12 @@ class VaraBridge {
     clearTimeout(this._idleTimer);
     this._idleTimer = null;
     await this._unkey();
+    // The producer is stopped even if the unreachable radio cannot confirm
+    // release. Do not carry its local key latch into a later activation.
+    this._keyed = false;
+    ++this._keyEpoch;
+    clearTimeout(this._keyTimer);
+    this._keyTimer = null;
     if (this._stopWatch) await this._stopWatch().catch(() => {});
     this._stopWatch = null;
     this._dataReady = false;
@@ -444,8 +450,12 @@ class VaraBridge {
       case 'PTT':
         if (rest[0] === 'ON') this._key().catch(() => {});
         else {
-          this._unkey({ drain: true }).catch(() => {});
-          if (this._link?.qsy?.phase === 'ack') this._qsyMove();
+          const link = this._link;
+          this._unkey({ drain: true }).then((released) => {
+            const q = link?.qsy;
+            if (released && this._link === link && (q?.phase === 'ack'
+              || (q?.phase === 'sending' && q.queued && this.state.buffer === 0))) this._qsyMove();
+          }).catch(() => {});
         }
         break;
       case 'KISS':
@@ -601,19 +611,23 @@ class VaraBridge {
   }
 
   async _unkey({ drain = false } = {}) {
-    clearTimeout(this._keyTimer);
-    this._keyTimer = null;
-    if (!this._keyed) return;
-    const epoch = this._keyEpoch;
-    if (drain) await this.audioBridge.playback.drain?.();
-    if (!this._keyed || epoch !== this._keyEpoch) return;
-    ++this._keyEpoch;
-    this._keyed = false;
-    this._update({ ptt: false });
+    if (!this._keyed) return this.controlServer.state.ptt === false;
+    const epoch = ++this._keyEpoch;
+    if (drain && typeof this.audioBridge.playback.drain === 'function') {
+      if (await this.audioBridge.playback.drain() === false) return false;
+    }
+    if (!this._keyed || epoch !== this._keyEpoch) return false;
     try {
       await this.controlServer.setPttFromServer(false);
+      if (epoch !== this._keyEpoch) return false;
+      clearTimeout(this._keyTimer);
+      this._keyTimer = null;
+      this._keyed = false;
+      this._update({ ptt: false });
+      return true;
     } catch (err) {
       this._error(`Couldn't unkey the radio: ${err.message}`);
+      return false;
     }
   }
 
@@ -773,6 +787,7 @@ class VaraBridge {
     const link = this._link;
     const q = link?.qsy;
     if (!q || (q.phase !== 'ack' && q.phase !== 'sending') || q.moving) return;
+    if (this._keyed || this.controlServer.state.ptt !== false) return;
     q.moving = true;
     clearTimeout(q.timer);
     try {

@@ -93,10 +93,15 @@ status. Status events and new-client snapshots include `radioConnection`
 without credentials. A failed initial connection reports an error after the
 configured retry budget; restart the service after fixing settings. An
 established link retries at 1, 2, 4, 8 and 10 seconds by default.
+The budget resets only after CI-V initialization succeeds, not just when
+UDP streams open. Reconnect reads current frequency, mode and DATA state
+and updates the existing browsers and decoder listeners.
 
 The last browser's departure cancels queued FT8/text/CW transmission and
 releases browser-driven PTT. WSPR's existing explicitly configured unattended
 receive behavior remains available; a network loss disables pending WSPR TX.
+Radio loss also disables VARA in the shared app state. After reconnect,
+select VARA again to restart the modem; it does not resume a prior call.
 
 The transport uses fresh sockets and session IDs on reconnect. It rejects
 old-session packets and pending CI-V jobs. Reconnect never resumes CW, PTT
@@ -118,11 +123,15 @@ TX, PiRO selects and confirms LAN in DATA OFF MOD or DATA MOD according to
 the current data-mode state. It restores changed TX settings after release
 if the operator has not changed them meanwhile. Abrupt network loss can
 prevent restoration; verify radio settings after a failed session.
+Recoverable restoration errors leave saved settings available for retry.
+A confirmed PTT-off is reported independently from any restoration error.
 
 Receive audio feeds the existing raw capture stream, including CW/digital
 decoders. The receive buffer drops old backlog above 300 ms and inserts
 silence for underflow after it has started. Audio processing selected by the
 browser is downstream of the raw decoder feed.
+The RX clock catches up after coalesced callbacks while samples still fit
+in the buffer, preserving the decoder's 48-kHz sample stream.
 
 Transmit audio is paced as 20-ms frames, split into 1364- and 556-byte
 payloads. Voice backlog is capped at 500 ms. A finite modem waveform is
@@ -131,6 +140,9 @@ TX completion drains PiRO's queue and allows for the negotiated 300-ms radio
 buffer before PTT release. Stop/disconnect discards pending audio and
 invalidates retained audio/keying packets. No audio resampler is needed
 between the radio and PiRO because their PCM format matches exactly.
+Partial native-pipe chunks accumulate without padding. Only final drain
+pads an incomplete tail. Malformed browser PCM is rejected with an audio
+error and a release request rather than an uncaught process exception.
 
 Audio produced while a PTT request is still preparing its route waits in a
 bounded pre-key queue. It cannot be sent until the radio confirms PTT, and

@@ -80,7 +80,7 @@ Document uncertainties rather than treating simulation as hardware proof.
   firmware/RF/timing confirmation stays pending by design, not a completion
   claim made by this offline implementation.
 
-## Final verification commands
+## Original v120 verification commands
 
 Host: macOS arm64, Node v26.12.1. USB hardware and Raspberry Pi hardware
 were not attached; existing USB behavior is covered by the unchanged
@@ -98,5 +98,27 @@ the tracked tree under `/tmp/piro-icom-reference`.
 | `git diff --check` | No whitespace errors. |
 | `clang++ -std=c++20 -I src src/core/backends/icom/IcomProtocol.cpp tests/icom_protocol_test.cpp -o /tmp/piro-icom-reference/reference-protocol-test` followed by that executable, in the pinned AetherSDR checkout | Reference protocol checks all passed. |
 
-Protocol decisions, source revisions, test results and remaining work will be
-recorded here as implementation proceeds.
+## Audit corrections and v121 verification
+
+Three independent SWE auditors reviewed `a571ea6`. Ten reproducible defects
+were confirmed and fixed. The finding-to-fix matrix and regression evidence
+are in [icom-lan-audit-fixes.md](icom-lan-audit-fixes.md).
+
+The same auditors rechecked their findings after the fixes. Their original
+reproductions now pass, including delayed token replies, exhausted CI-V retry
+budgets, partial RADE chunks, RX callback stalls, restoration NG replies and
+VARA state recovery. They reported no further actionable regression.
+
+| Command or check | Result |
+|---|---|
+| `npm run test:lan` | 41 passed, 0 failed, including the new audit regressions and normal-process fault tests. |
+| `npm test` | Exit 0; complete existing suite and all LAN regressions passed. |
+| `node test/vara.test.js` | Passed. |
+| `NODE_PATH=/tmp/piro-icom-reference/browser/node_modules CHROMIUM_PATH='/Applications/Google Chrome.app/Contents/MacOS/Google Chrome' node test/manual-tty-ui.js` | All UI checks passed; no page errors. |
+| Same environment, `node test/manual-lan-ui.js` | Connected status, release/reconnect and 360px layout passed; no page errors. |
+| Independent UDP/CPU-stall reproduction | All 192,000 input PCM bytes preserved; zero dropped bytes. |
+| Real RADE conversion chunks | Thirty 10-ms chunks produced exactly 28,800 PCM bytes with no padding. |
+| `git diff --check` | No whitespace errors. |
+
+These checks remain offline. Physical IC-7300MK2 firmware, LAN timing and RF
+behavior still require the hardware acceptance checklist. Not tested on air.
