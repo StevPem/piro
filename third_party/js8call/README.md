@@ -76,7 +76,10 @@ The output is the same file byte for byte.
   a message sent a frame a slot (the audio played is decoded again: right
   frame, offset and timing), Stop, the limits.
 
-What isn't checked yet: interworking with JS8Call itself. JS8Call-improved
-has no test vectors, and building it needs Qt 6.12, Boost, FFTW and
-Hamlib. The tables were taken from its source by script, not by hand, but
-a recording of real JS8 signals (and a QSO on air) is still needed.
+JS8Call-improved has no test vectors, and building it needs Qt 6.12,
+Boost, FFTW and Hamlib, so interworking was checked on air instead. On
+30 October 2026 PiRO worked VK2PKH (JS8Call 3.0.3) through a full QSO:
+CQ, S/N reports, INFO, free text both ways and 73s. PiRO also decoded
+other stations' CQs, heartbeats and directed messages down to −25 dB.
+That confirms the frame code, the LDPC code, the CRC-12, the word list
+and the slot timing in both directions.
