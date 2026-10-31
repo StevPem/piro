@@ -1342,6 +1342,33 @@ button {
   border-left: 3px solid var(--led-green);
 }
 
+/* Speech to text (copy aid). */
+.stt-rx {
+  margin-top: 8px;
+}
+
+.stt-rx__time {
+  color: var(--text-muted);
+}
+
+/* A word Whisper wasn't sure of. */
+.stt-rx__low {
+  color: var(--text-muted);
+  opacity: 0.7;
+}
+
+/* A callsign spelled in the over, as letters. */
+.stt-rx__call {
+  color: var(--led-amber);
+  font-weight: 600;
+}
+
+.stt-rx__hint {
+  margin-top: 4px;
+  font-size: 0.7rem;
+  color: var(--text-muted);
+}
+
 /* SSTV receive panel: the picture at full panel width (it is 320-800
    pixels wide, so on a phone it is shown at or above its own resolution),
    keeping its shape, with recent pictures as thumbnails underneath. */

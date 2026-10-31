@@ -12,7 +12,7 @@ Hamlib, no separate audio server and no extra apps.
 Written by VK3TR. Licensed AGPL-3.0-only (see
 [Licence](#licence)).
 
-**Current build: v120.** This is the version the app shows next to its title.
+**Current build: v121.** This is the version the app shows next to its title.
 It is the `CACHE_NAME` number in `src/client/sw.js`, which goes up with every
 change to the web app.
 
@@ -69,6 +69,11 @@ Note that it DOES NOT include any form of login or password - so don't present i
   keyboard mode at Normal speed, ported to JavaScript: every signal in the
   passband is decoded each 15-second slot, and what you type goes out a
   frame a slot. See [JS8](#js8).
+- **Speech to text** (copy aid): the **STT** checkbox below Filter shows
+  received speech as text under the S-meter, using
+  [whisper.cpp](https://github.com/ggml-org/whisper.cpp), with the
+  callsigns spelled in it picked out. An aid to copying, not a log. See
+  [Speech to text](#speech-to-text-copy-aid).
 - **VARA chat**: the TTY button's fifth choice is a VARA HF modem for
   keyboard QSOs with VARA Chat and VarAC users. It runs
   [Xara](https://github.com/x0rro/xara), an open-source VARA-compatible
@@ -289,6 +294,7 @@ nothing and an error is shown) if its part is missing.
 | "CW 3" decoder (DeepCW) | The bundled model and `onnxruntime-node` (installed by `npm install`) | [DeepCW](#deepcw-cw-3-decoder) |
 | "RNN" button (hidden for now) | A patched `rnnoise_demo` that you build | [RNNoise](#rnnoise-rnn-button) |
 | FreeDV RADE mode | `rade_c` built and installed | [FreeDV RADE](#freedv-rade) |
+| "STT" checkbox (speech to text) | whisper.cpp's `whisper-server` built, and a Whisper model (or one running on another computer) | [whisper.cpp](#whispercpp-stt-checkbox) |
 
 #### RNNoise ("RNN" button)
 
@@ -399,6 +405,44 @@ which is already present on Debian and Raspberry Pi OS. `docs/ui-notes.md`
 `4`) sets the TX drive. Adjust it by ear and by your radio's power meter or ALC
 if the transmit level seems low or distorted. RADE is installed separately,
 and nothing else in PiRO needs it.
+
+#### whisper.cpp ("STT" checkbox)
+
+Speech to text uses [whisper.cpp](https://github.com/ggml-org/whisper.cpp)
+(MIT), OpenAI's Whisper in plain C++. PiRO talks to its HTTP server,
+`whisper-server`. Build it and fetch a model:
+
+```bash
+sudo apt install -y git cmake build-essential
+sudo git clone https://github.com/ggml-org/whisper.cpp /opt/whisper.cpp
+sudo chown -R "$USER" /opt/whisper.cpp
+cd /opt/whisper.cpp
+cmake -B build -DCMAKE_BUILD_TYPE=Release
+cmake --build build -j4 --target whisper-server
+sh ./models/download-ggml-model.sh base.en-q5_1     # about 60 MB
+```
+
+Then add these to `/etc/piro/piro.env` and restart PiRO (`sudo systemctl restart piro`):
+
+```
+STT_WHISPER_SERVER=/opt/whisper.cpp/build/bin/whisper-server
+STT_MODEL=/opt/whisper.cpp/models/ggml-base.en-q5_1.bin
+STT_THREADS=4
+```
+
+PiRO starts `whisper-server` when STT is ticked and stops it when it is
+unticked (or the last browser leaves), so the model only uses memory (a
+few hundred MB for `base.en`) while STT is on. Loading takes a few seconds.
+
+**Which model.** `base.en-q5_1` is a good start on a Pi 5. On a Pi 4 use
+`tiny.en-q5_1` (faster, less accurate), or run the server on a faster
+computer instead. The `.en` models are English only, and better at it.
+`small.en-q5_1` is more accurate again, but too slow for a Pi.
+
+**On another computer.** Build whisper.cpp there the same way, start it
+with `whisper-server -m models/ggml-base.en-q5_1.bin --host 0.0.0.0 --port
+8178 -l en`, and set `STT_URL=http://that-computer:8178` instead of the two
+settings above. The audio of each over is sent to it over your network.
 
 ### Using PiRO
 
@@ -563,6 +607,43 @@ It was tuned on a real 285 s recording of an SSB contact (with a weak
 station, static crashes and AGC) and on synthetic audio. Not yet tried on
 the air with PiRO; the Pi's CPU use is estimated from a desktop (about 2%
 of a core there).
+
+##### Speech to text (copy aid)
+
+Tick **STT** (below the Filter button) to show received speech as text,
+in a panel under the S-meter. It is a copy aid: something to glance at
+when a word or a callsign is hard to catch. It is not a log, and nothing
+is saved. It needs whisper.cpp set up on the server (see
+[whisper.cpp](#whispercpp-stt-checkbox)); otherwise the panel says so.
+
+- PiRO listens for speech with the voice squelch's detector (the pitch of
+  a voice), and sends each over to Whisper when it ends: about 1.5 s after
+  the speaker stops. The text appears a few seconds later (how long
+  depends on the computer and the model). An over longer than 28 s is
+  sent in parts.
+- Each line starts with the UTC time the over began. Words Whisper wasn't
+  sure of are grey. Callsigns spelled in the over ("Victor Kilo Three
+  Tango Romeo") are added after it in letters, `[VK3TR]`.
+- It works only in voice modes: SSB, AM and FM, with DATA mode off and no
+  app mode on. It pauses while you transmit (your own speech is never
+  sent).
+- Every browser sees the same text, and the setting. STT is off by
+  default, and turns off when the last browser leaves.
+
+**What to expect.** Whisper was trained on clean speech. On a strong SSB
+signal it copies well; near the noise it gets words wrong, and that is
+when you need it most, so check by ear. On noise alone Whisper can make
+up text ("Thank you for watching."). PiRO drops what Whisper itself marks
+as not speech or very unsure, and text it is known to invent, but some
+will get through. It is given a short QSO-like prompt (the phonetic
+alphabet, "five nine", QTH, 73) so it expects radio talk.
+
+**How far it has been tested.** PiRO's side was checked with synthetic
+voices in noise and a stand-in for Whisper, and against a real
+`whisper-server` (started, sent overs, stopped) loaded with whisper.cpp's
+small test model, which answers but transcribes nothing. It has not yet
+been tried with a real Whisper model or on air, so how well it copies SSB
+is still to be seen.
 
 ##### Compressed audio for remote use
 
@@ -1567,6 +1648,10 @@ All settings are environment variables. For the systemd service they go in
 | `OLIVIA_FREQ_HZ` | `1500` | Olivia's default audio centre frequency, in Hz, for sending and receiving, until it is changed in the UI. The signal is 250 Hz wide; the receiver searches 125 Hz either side. |
 | `VARA_BW` | `500` | VARA bandwidth in Hz: `500`, `2300` or `2750`. See [VARA chat](#vara-chat). |
 | `VARA_NAME`, `VARA_QTH` | none | Your name and QTH, sent to the other station after the opening report, as VarAC's profile (`<NAME:…>`, `<QTH:…>`). `STATION_GRID` goes with them as the locator. |
+| `STT_WHISPER_SERVER`, `STT_MODEL` | none | whisper.cpp's `whisper-server` program and the Whisper model it loads, for the STT checkbox. PiRO starts it while STT is ticked. See [whisper.cpp](#whispercpp-stt-checkbox). |
+| `STT_THREADS` | `4` | Threads `whisper-server` uses (1 to 16). |
+| `STT_PORT` | `8178` | The local port `whisper-server` is started on (127.0.0.1 only). |
+| `STT_URL` | none | A `whisper-server` already running (on another computer, say), e.g. `http://192.168.1.20:8178`. Used instead of the two above. |
 | `VARA_AUDIO_LATENCY_MS` | `500` | How far VARA's transmit audio lags what is written to the sound card, in ms (0 to 2000). The modem holds PTT that much longer and times its replies to suit. JS8 uses it too, to start its frames 0.5 s into the slot. |
 | `OLIVIA_SQUELCH` | on | `off` turns off PiRO's filtering of junk characters and decodes exactly as fldigi does with its squelch off. See [Olivia](#rtty-jtty-olivia-and-feld-hell). |
 | `SSTV_SAVE_DIR` | none | If set, every received SSTV picture is also saved in this folder as a PNG (`YYYYMMDD-HHMMSSz-<mode>.png`, UTC). |
@@ -1692,6 +1777,15 @@ one hard refresh (Ctrl+Shift+R, or Cmd+Shift+R on a Mac).
 - **The Audio button can't be tapped.** The server can't compress audio:
   `AUDIO_CHANNELS` must be 1.
 
+- **The STT panel says it "didn't start".** The line after it is
+  whisper.cpp's own message. Check `STT_WHISPER_SERVER` and `STT_MODEL`
+  are full paths that exist, and try the command by hand:
+  `whisper-server -m <model> --port 8178`. With `STT_URL`, check the other
+  computer's server answers at that address.
+- **STT says "paused".** It works only in SSB, AM and FM with DATA mode
+  off and no app mode (FT8, JS8 and so on), and not while transmitting.
+- **STT shows text that wasn't said.** Whisper makes things up on noise.
+  Use it on signals you can mostly hear, and check by ear.
 - **JS8 decodes nothing.** Check that signals show on the audio spectrum,
   and that the Pi's clock is right: JS8 needs it within a
   second or so of UTC (`timedatectl` should say "System clock synchronized:
@@ -1858,7 +1952,8 @@ src/
               scope-bridge.js, one *-bridge.js per feature,
               radio-setup.js (NR, notch and filter for fax and EasyPal),
               band-conditions.js, wsprnet.js, freedv-reporter.js, png.js,
-              varac.js (VarAC's messages and CQ slots)
+              varac.js (VarAC's messages and CQ slots),
+              stt-text.js (what is kept of Whisper's text, callsigns)
   audio/      ALSA (alsa.js, mixer.js), Opus (opus-codec.js), PCM framing,
               resampling (resample.js, decimator.js), FFT (fft.js),
               noise reduction (rnnoise-filter.js, hamnoise-filter.js),
@@ -2256,6 +2351,13 @@ shapes.
   and sets the centre frequency (sending it again retunes); decoded text
   arrives as `olivia-text` broadcasts (`{text, snr, freqOffsetHz, centreHz,
   time}`, a block of up to three characters at a time).
+  `setSttEnabled` (`{enabled}`) is the STT checkbox. The state is the
+  connect snapshot's `stt` and the `stt-status` broadcast (`{available,
+  reason, enabled, engine: 'local'|'remote'|null, phase:
+  'off'|'starting'|'listening'|'paused'|'error', note, busy, waiting}`);
+  each transcribed over arrives as `stt-text` (`{id, time, durationSec,
+  text, words: [{w, p, low?}], callsigns, seconds}`), and a page that
+  connects is sent `{replace: true, overs}`.
   `setJs8Active` (`{active, txHz?}`) starts and stops JS8 and sets the
   transmit offset every browser shows. `js8` (`{action:
   'send'|'cq'|'stop', text?}`) queues a message (or a CQ) for the next
@@ -2551,6 +2653,13 @@ The test files:
                            VARA bridges (each with its real worker) joined by a
                            simulated channel: CQ, call, text both ways,
                            disconnect; PTT, DATA mode, the 30 s and idle limits
+  stt.test.js             Speech to text: what is kept of Whisper's answer
+                           (invented text, not-speech, repetition, doubtful
+                           words), callsigns from phonetics, the WAV and form,
+                           and the bridge with a stand-in whisper-server: an
+                           over cut and sent, noise not sent, PTT and
+                           non-voice modes pause it, the local server started
+                           and stopped, its failure shown
   js8.test.js             JS8: the FFT, CRC-12 and LDPC code, the word list,
                            the message layer as JS8Call shows it, the
                            receiver on simulated slots (four signals, one
@@ -2757,6 +2866,7 @@ Several of the cooler features in this app are built on the work of others:
 - SSTV receiver = Ported to JS from slowrx by Oona Räisänen (OH2EIQ), https://github.com/windytan/slowrx
 - EasyPal (HamDRM) receiver and transmitter = Ported to JS from QSSTV by Johan Maes (ON4QZ) and M. Bos (PA0MBO), https://github.com/ON4QZ/QSSTV, whose transmitter builds on Dream by Volker Fischer (TU Darmstadt)
 - WSPR support = Ported to JS from wsprd and wsprsim (K1JT, K9AN) in WSJT-X, https://wsjtx.github.io/wsjtx/index.html
+- Speech to text = whisper.cpp by Georgi Gerganov and contributors (MIT), https://github.com/ggml-org/whisper.cpp, running OpenAI's Whisper models (MIT); used as a separate program, not bundled
 - VarAC messages and slots = Ported to JS from hfmodem by Saul St John (W9SSJ), https://github.com/sstjohn/hfmodem
 - JS8 = Ported to JS from JS8Call-improved by Jordan Sherer (KN4CRD) and the JS8Call-improved team, https://github.com/JS8Call-improved/JS8Call-improved
 - VARA chat = Xara, an open-source VARA-compatible modem by x0rro (MIT), compiled to WebAssembly, https://github.com/x0rro/xara. VARA is by Jose Alberto Nieto Ros (EA5HVK).
