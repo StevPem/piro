@@ -4801,7 +4801,7 @@ model for how to approach that.
   its callsign and a greyed word, PTT pausing it, untick, the second
   browser following). Service-worker cache v121.
 
-### Speech to text: Whisper's own silence rule, shorter encodes, a log line an over (v122)
+### Speech to text: Whisper's own silence rule, shorter encodes, 10 s pieces, a log line an over (v122)
 
 - **Reported:** with STT ticked, whisper-server ran at full CPU but no text
   appeared. The Pi transcribes whisper.cpp's 11 s sample in 8.9 s with
@@ -4820,7 +4820,22 @@ model for how to approach that.
   over, 3.1 s to transcribe: "…"" or "nothing kept; dropped silence
   (no_speech 0.82, avg_logprob -1.31): "…""), and the status line shows the
   last over's length and time, or "nothing kept".
+- **Long overs in 10 s pieces** (was 28 s; `STT_MAX_SEGMENT_SEC`, 5-28):
+  text from a long over now appears while the station is still talking,
+  each piece joining its over's line on the page. To keep the cost of
+  shorter pieces down:
+  - each is cut at the quietest 20 ms of its last 2 s, usually a gap
+    between words, not at exactly 10 s;
+  - each later piece is sent with the over's text so far (its last 200
+    characters) after the usual prompt, so Whisper carries on the
+    sentence;
+  - callsigns are looked for in the whole over so far, so one spelled
+    across a cut is found, once, with the piece that completes it.
+  Shorter pieces cost a little more CPU in all (about 20%), and a word
+  can still be split where nobody pauses.
 - Checked against the real whisper-server (it accepts `audio_ctx`).
   Recognition on air is still to be seen.
 - Tests: stt.test.js (Whisper's rule both ways, the reasons given,
-  audio_ctx, the last over in the status). Service-worker cache v122.
+  audio_ctx, the last over in the status; a 21 s over in three pieces,
+  the first cut in a gap, context passed on, a callsign across a cut).
+  Service-worker cache v122.

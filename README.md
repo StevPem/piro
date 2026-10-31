@@ -619,9 +619,16 @@ is saved. It needs whisper.cpp set up on the server (see
 - PiRO listens for speech with the voice squelch's detector (the pitch of
   a voice), and sends each over to Whisper when it ends: about 1.5 s after
   the speaker stops. The text appears a few seconds later (how long
-  depends on the computer and the model). An over longer than 28 s is
-  sent in parts. Whisper is told how long the over is, so a short over is
-  quicker (Whisper otherwise works on 30 s every time).
+  depends on the computer and the model). Whisper is told how long the
+  over is, so a short over is quicker (Whisper otherwise works on 30 s
+  every time).
+- A long over is sent in pieces of up to 10 s (`STT_MAX_SEGMENT_SEC`) as
+  it goes, so its text appears while the station is still talking, on the
+  same line. Each piece is cut at the quietest moment of its last 2 s
+  (usually a gap between words), and Whisper is given the text before it,
+  so it carries on the sentence. A callsign spelled across a cut is still
+  found. Shorter pieces mean text sooner, but a little less context for
+  Whisper, and a word can still be split where nobody pauses.
 - The status line shows the last over's length and how long it took, or
   "nothing kept" if Whisper heard no words worth showing.
 - Each line starts with the UTC time the over began. Words Whisper wasn't
@@ -1654,6 +1661,7 @@ All settings are environment variables. For the systemd service they go in
 | `STT_WHISPER_SERVER`, `STT_MODEL` | none | whisper.cpp's `whisper-server` program and the Whisper model it loads, for the STT checkbox. PiRO starts it while STT is ticked. See [whisper.cpp](#whispercpp-stt-checkbox). |
 | `STT_THREADS` | `4` | Threads `whisper-server` uses (1 to 16). |
 | `STT_PORT` | `8178` | The local port `whisper-server` is started on (127.0.0.1 only). |
+| `STT_MAX_SEGMENT_SEC` | `10` | A long over is sent in pieces this long (5 to 28 s), so its text appears as it goes. Longer: a little more accurate, but later. |
 | `STT_URL` | none | A `whisper-server` already running (on another computer, say), e.g. `http://192.168.1.20:8178`. Used instead of the two above. |
 | `VARA_AUDIO_LATENCY_MS` | `500` | How far VARA's transmit audio lags what is written to the sound card, in ms (0 to 2000). The modem holds PTT that much longer and times its replies to suit. JS8 uses it too, to start its frames 0.5 s into the slot. |
 | `OLIVIA_SQUELCH` | on | `off` turns off PiRO's filtering of junk characters and decodes exactly as fldigi does with its squelch off. See [Olivia](#rtty-jtty-olivia-and-feld-hell). |
@@ -2364,8 +2372,9 @@ shapes.
   connect snapshot's `stt` and the `stt-status` broadcast (`{available,
   reason, enabled, engine: 'local'|'remote'|null, phase:
   'off'|'starting'|'listening'|'paused'|'error', note, busy, waiting}`);
-  each transcribed over arrives as `stt-text` (`{id, time, durationSec,
-  text, words: [{w, p, low?}], callsigns, seconds}`), and a page that
+  each transcribed over (or piece of a long one) arrives as `stt-text`
+  (`{id, overId, part, time, durationSec, text, words: [{w, p, low?}],
+  callsigns, seconds}`; pieces of one over share `overId`), and a page that
   connects is sent `{replace: true, overs}`.
   `setJs8Active` (`{active, txHz?}`) starts and stops JS8 and sets the
   transmit offset every browser shows. `js8` (`{action:

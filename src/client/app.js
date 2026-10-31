@@ -5933,19 +5933,28 @@ function renderSttStatus(s) {
   sttStatusEl.textContent = text;
 }
 
-/** One transcribed over: "HH:MM:SSZ text [VK3TR]", doubtful words greyed. */
+/**
+ * One transcribed over: "HH:MM:SSZ text [VK3TR]", doubtful words greyed.
+ * A long over comes in pieces (part 1, 2, ...): each joins its over's line.
+ */
 function appendSttOver(o) {
   if (!o || typeof o.text !== 'string') return;
   const stick = sttRxTextEl.scrollTop + sttRxTextEl.clientHeight >= sttRxTextEl.scrollHeight - 8;
-  const line = document.createElement('div');
-  line.className = 'stt-rx__line';
-  const time = document.createElement('span');
-  time.className = 'stt-rx__time';
-  time.textContent = `${utcClock(o.time).slice(0, 8)}Z `;
-  line.appendChild(time);
-  const words = Array.isArray(o.words) && o.words.length ? o.words : o.text.split(' ').map((w) => ({ w }));
-  words.forEach((wd, i) => {
-    if (i) line.appendChild(document.createTextNode(' '));
+  let line = o.part > 0 && o.overId != null ? [...sttRxTextEl.children].reverse().find((l) => l.dataset.over === String(o.overId)) : null;
+  if (!line) {
+    line = document.createElement('div');
+    line.className = 'stt-rx__line';
+    if (o.overId != null) line.dataset.over = String(o.overId);
+    line.dataset.seconds = '0';
+    const time = document.createElement('span');
+    time.className = 'stt-rx__time';
+    time.textContent = `${utcClock(o.time).slice(0, 8)}Z`;
+    line.appendChild(time);
+    sttRxTextEl.appendChild(line);
+  }
+  const words = Array.isArray(o.words) && o.words.length ? o.words : o.text.split(' ').filter(Boolean).map((w) => ({ w }));
+  for (const wd of words) {
+    line.appendChild(document.createTextNode(' '));
     if (wd.low) {
       const span = document.createElement('span');
       span.className = 'stt-rx__low';
@@ -5953,7 +5962,7 @@ function appendSttOver(o) {
       span.textContent = wd.w;
       line.appendChild(span);
     } else line.appendChild(document.createTextNode(wd.w));
-  });
+  }
   for (const call of o.callsigns || []) {
     line.appendChild(document.createTextNode(' '));
     const c = document.createElement('span');
@@ -5962,8 +5971,9 @@ function appendSttOver(o) {
     c.title = `${call}: the callsign spelled in this over`;
     line.appendChild(c);
   }
-  line.title = `${o.durationSec ?? '?'} s over, transcribed in ${o.seconds ?? '?'} s`;
-  sttRxTextEl.appendChild(line);
+  const total = Number(line.dataset.seconds) + (o.durationSec || 0);
+  line.dataset.seconds = String(total);
+  line.title = `${Math.round(total * 10) / 10} s over${o.part > 0 ? `, ${o.part + 1} pieces` : ''}; the last transcribed in ${o.seconds ?? '?'} s`;
   while (sttRxTextEl.children.length > STT_MAX_LINES) sttRxTextEl.firstElementChild.remove();
   if (stick) sttRxTextEl.scrollTop = sttRxTextEl.scrollHeight;
 }

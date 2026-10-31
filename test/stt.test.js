@@ -80,7 +80,8 @@ const until = async (fn, ms = 4000) => {
   // --- config ---
   {
     const c = sttConfig({ STT_WHISPER_SERVER: '/opt/whisper.cpp/build/bin/whisper-server', STT_MODEL: '/opt/models/ggml-base.en-q5_1.bin', STT_THREADS: '3' });
-    check(c.serverBin.endsWith('whisper-server') && c.threads === 3 && c.port === 8178 && !c.url && c.warnings.length === 0, 'STT_WHISPER_SERVER, STT_MODEL and STT_THREADS are read');
+    check(c.serverBin.endsWith('whisper-server') && c.threads === 3 && c.port === 8178 && c.maxSegmentSec === 10 && !c.url && c.warnings.length === 0, 'STT_WHISPER_SERVER, STT_MODEL and STT_THREADS are read; long overs go in 10 s pieces by default');
+    check(sttConfig({ STT_MAX_SEGMENT_SEC: '15' }).maxSegmentSec === 15 && sttConfig({ STT_MAX_SEGMENT_SEC: '2' }).maxSegmentSec === 10 && sttConfig({ STT_MAX_SEGMENT_SEC: '2' }).warnings.length === 1, 'STT_MAX_SEGMENT_SEC is read (5 to 28 s)');
     check(sttConfig({ STT_MODEL: 'x' }).warnings.length === 1 && sttConfig({ STT_URL: 'ftp://x' }).warnings.length === 1, 'half a setup, or a bad URL, is reported');
   }
 
@@ -215,6 +216,51 @@ const until = async (fn, ms = 4000) => {
     spawned.at(-1).child.exitCode = 1;
     spawned.at(-1).child.emit('exit', 1, null);
     check(cs.state.stt.phase === 'error' && /exit 1.*failed to load model/.test(cs.state.stt.note), 'if whisper-server stops, the panel says so: ' + cs.state.stt.note);
+    await bridge.stop();
+  }
+
+  // A long over: sent in pieces, cut in a gap, with context, and a callsign across a cut found.
+  {
+    const capture = new EventEmitter();
+    const events = [];
+    const cs = new EventEmitter();
+    Object.assign(cs, {
+      state: { mode: { mode: 'USB' }, dataMode: false },
+      appModes: () => ({}),
+      broadcastJsonEvent: (type, data) => events.push({ type, data: JSON.parse(JSON.stringify(data)) }),
+    });
+    const posts = [];
+    const replies = [' CQ CQ this is Victor Kilo', ' Three Tango Romeo calling CQ', ' and standing by'];
+    const request = async (url, opts = {}) => {
+      if (opts.method !== 'POST') return { status: 200, text: '' };
+      const body = opts.body.toString('latin1');
+      const at = body.indexOf('RIFF');
+      posts.push({ body, seconds: opts.body.readUInt32LE(at + 40) / 2 / 16000 });
+      const text = replies[posts.length - 1] ?? '';
+      return { status: 200, text: JSON.stringify({ segments: [{ text, no_speech_prob: 0.05, avg_logprob: -0.3 }] }) };
+    };
+    const bridge = new SttBridge({ controlServer: cs, audioBridge: { sampleRate: R, capture }, config: { url: 'http://x:1', maxSegmentSec: 10 }, request, pollMs: 10 });
+    bridge.start();
+    await bridge.setEnabled(true);
+    // 1 s noise, voice 8.7 s, 0.4 s gap (shorter than the squelch's hang), voice 12 s, 3 s noise.
+    const n = bandNoise(25.1, 0.05);
+    const v1 = voice(8.7, 0.05);
+    const v2 = voice(12, 0.05, { f0: 140 });
+    for (let i = 0; i < v1.length; i++) n[1 * R + i] += v1[i];
+    const g = Math.round(10.1 * R);
+    for (let i = 0; i < v2.length; i++) n[g + i] += v2[i];
+    const pcm = toPcm(n);
+    for (let i = 0; i < pcm.length; i += 4800) capture.emit('data', pcm.subarray(i, Math.min(pcm.length, i + 4800)));
+    await until(() => posts.length >= 3 && !cs.state.stt.busy);
+    const lens = posts.map((p) => p.seconds.toFixed(2)).join(', ');
+    check(posts.length === 3, `a 21 s over goes in three pieces (${lens} s)`);
+    check(posts[0] && posts[0].seconds > 8.9 && posts[0].seconds < 9.5, `the first is cut in the gap between words, not at exactly 10 s (${posts[0]?.seconds.toFixed(2)} s)`);
+    check(posts.every((p) => p.seconds <= 10.05), 'no piece is longer than 10 s');
+    check(posts[1] && posts[1].body.includes('VK3ABC. You are five nine') && posts[1].body.includes('CQ CQ this is Victor Kilo') && !posts[0].body.includes('this is Victor Kilo\r'), "a later piece is sent with the earlier pieces' text as context");
+    const texts = events.filter((e) => e.type === EVENT.STT_TEXT).map((e) => e.data);
+    check(texts.length === 3 && texts.every((t) => t.overId === texts[0].overId) && texts.map((t) => t.part).join() === '0,1,2', 'the pieces are sent as parts of one over');
+    check(texts[0].callsigns.length === 0 && texts[1].callsigns.join() === 'VK3TR' && texts[2].callsigns.length === 0, 'a callsign spelled across a cut is found once, with the piece that completes it');
+    check(Math.abs(texts[1].time - texts[0].time - posts[0].seconds * 1000) < 50, "each piece's time is when it began");
     await bridge.stop();
   }
 
