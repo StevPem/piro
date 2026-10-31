@@ -7,9 +7,9 @@
  * Whisper was trained on clean, wideband speech. On HF SSB it does well on
  * strong signals, poorly near the noise floor, and on noise alone it can
  * make up text ("Thank you for watching."). So:
- * - a segment whisper.cpp itself thinks is not speech (no_speech_prob over
- *   0.6), or is unsure of overall (average log-probability under -1), is
- *   dropped;
+ * - a segment is dropped as silence by Whisper's own rule: no_speech_prob
+ *   over 0.6 *and* average log-probability under -1 (OpenAI's
+ *   transcribe(); either alone is common on real speech over SSB);
  * - text Whisper is known to invent from noise (captions, "subscribe",
  *   [BLANK_AUDIO], music marks) is dropped;
  * - a phrase repeated over and over (Whisper's decoding loop) is cut to one;
@@ -67,19 +67,23 @@ function collapseRepeats(text) {
 
 /**
  * The text to show from a verbose_json answer: {text, words: [{w, p}],
- * dropped} where dropped counts segments left out.
+ * dropped, why} where dropped counts segments left out and why says why
+ * (for the log).
  */
 function keepSegments(answer) {
   const segments = Array.isArray(answer?.segments) ? answer.segments : [];
   const parts = [];
   const words = [];
   let dropped = 0;
+  const why = []; // what was dropped and why, for the log
   for (const seg of segments) {
     const text = String(seg.text || '').trim();
     const noSpeech = Number(seg.no_speech_prob);
     const avg = Number(seg.avg_logprob);
-    if (isInvented(text) || (Number.isFinite(noSpeech) && noSpeech > NO_SPEECH_MAX) || (Number.isFinite(avg) && avg < AVG_LOGPROB_MIN)) {
+    const silence = Number.isFinite(noSpeech) && noSpeech > NO_SPEECH_MAX && Number.isFinite(avg) && avg < AVG_LOGPROB_MIN;
+    if (silence || isInvented(text)) {
       dropped++;
+      why.push(`${silence ? `silence (no_speech ${noSpeech.toFixed(2)}, avg_logprob ${avg.toFixed(2)})` : 'invented'}: "${text.slice(0, 60)}"`);
       continue;
     }
     parts.push(text);
@@ -102,7 +106,7 @@ function keepSegments(answer) {
   const text = collapseRepeats(raw);
   // If repeats were cut, the per-word list no longer lines up: show the words plain.
   const shown = text === raw && words.length ? words.filter((x) => x.w) : text ? text.split(' ').map((w) => ({ w, p: 1 })) : [];
-  return { text, words: shown.map((x) => (x.p < LOW_WORD_P ? { w: x.w, p: Math.round(x.p * 100) / 100, low: true } : { w: x.w, p: Math.round(x.p * 100) / 100 })), dropped };
+  return { why, text, words: shown.map((x) => (x.p < LOW_WORD_P ? { w: x.w, p: Math.round(x.p * 100) / 100, low: true } : { w: x.w, p: Math.round(x.p * 100) / 100 })), dropped };
 }
 
 const PHONETIC = {

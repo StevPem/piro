@@ -8,7 +8,7 @@
 
 const { EventEmitter } = require('events');
 const { keepSegments, phoneticCallsigns, isInvented, collapseRepeats } = require('../src/server/stt-text');
-const { SttBridge, sttConfig, encodeWav, multipart } = require('../src/server/stt-bridge');
+const { SttBridge, sttConfig, encodeWav, multipart, audioCtxFor } = require('../src/server/stt-bridge');
 const { EVENT } = require('../src/server/protocol');
 const { R, bandNoise, voice, toPcm } = require('./fixtures/radio-audio');
 
@@ -55,11 +55,13 @@ const until = async (fn, ms = 4000) => {
         ],
       },
       { text: ' Thanks for watching!', no_speech_prob: 0.1, avg_logprob: -0.2 },
-      { text: ' static words', no_speech_prob: 0.9, avg_logprob: -0.2 },
-      { text: ' mumble', no_speech_prob: 0.1, avg_logprob: -1.6 },
+      { text: ' static words', no_speech_prob: 0.9, avg_logprob: -1.3 },
     ],
   });
-  check(kept.text === 'Hello there, five nine.' && kept.dropped === 3, 'invented, not-speech and very unsure segments are dropped');
+  check(kept.text === 'Hello there, five nine.' && kept.dropped === 2, 'invented text, and silence by Whisper\'s rule (no_speech over 0.6 and avg_logprob under -1), are dropped');
+  check(kept.why.length === 2 && /invented/.test(kept.why[0]) && /silence \(no_speech 0\.90, avg_logprob -1\.30\)/.test(kept.why[1]), 'what was dropped, and why, is given for the log');
+  const either = keepSegments({ segments: [{ text: ' five nine', no_speech_prob: 0.9, avg_logprob: -0.4 }, { text: ' over', no_speech_prob: 0.1, avg_logprob: -1.6 }] });
+  check(either.text === 'five nine over' && either.dropped === 0, 'one of the two signs alone does not drop a segment (common on real SSB speech)');
   check(kept.words.map((w) => w.w).join(' ') === 'Hello there, five nine.' && kept.words[1].low && !kept.words[0].low && kept.words[3].p === 0.9, "words keep Whisper's probability; doubtful ones are marked low");
 
   // --- WAV and form ---
@@ -72,10 +74,14 @@ const until = async (fn, ms = 4000) => {
     check(type.startsWith('multipart/form-data') && b.includes('name="response_format"\r\n\r\nverbose_json') && b.includes('filename="over.wav"') && b.endsWith(`--${boundary}--\r\n`), 'the form carries the fields and the WAV, as whisper-server reads it');
   }
 
+  // --- audio_ctx ---
+  check(audioCtxFor(1) === 512 && audioCtxFor(5) === 512 && audioCtxFor(12) === 700 && audioCtxFor(28) === 1500, "Whisper's encoder is told the over's length (at least 512 frames, at most the full 1500)");
+
   // --- config ---
   {
     const c = sttConfig({ STT_WHISPER_SERVER: '/opt/whisper.cpp/build/bin/whisper-server', STT_MODEL: '/opt/models/ggml-base.en-q5_1.bin', STT_THREADS: '3' });
-    check(c.serverBin.endsWith('whisper-server') && c.threads === 3 && c.port === 8178 && !c.url && c.warnings.length === 0, 'STT_WHISPER_SERVER, STT_MODEL and STT_THREADS are read');
+    check(c.serverBin.endsWith('whisper-server') && c.threads === 3 && c.port === 8178 && c.maxSegmentSec === 10 && !c.url && c.warnings.length === 0, 'STT_WHISPER_SERVER, STT_MODEL and STT_THREADS are read; long overs go in 10 s pieces by default');
+    check(sttConfig({ STT_MAX_SEGMENT_SEC: '15' }).maxSegmentSec === 15 && sttConfig({ STT_MAX_SEGMENT_SEC: '2' }).maxSegmentSec === 10 && sttConfig({ STT_MAX_SEGMENT_SEC: '2' }).warnings.length === 1, 'STT_MAX_SEGMENT_SEC is read (5 to 28 s)');
     check(sttConfig({ STT_MODEL: 'x' }).warnings.length === 1 && sttConfig({ STT_URL: 'ftp://x' }).warnings.length === 1, 'half a setup, or a bad URL, is reported');
   }
 
@@ -149,9 +155,11 @@ const until = async (fn, ms = 4000) => {
     const wavAt = body.indexOf('RIFF');
     const wavLen = wavAt >= 0 ? post.body.readUInt32LE(wavAt + 40) / 2 / 16000 : 0;
     check(post && post.url === 'http://127.0.0.1:8178/inference' && body.includes('verbose_json') && body.includes('name="language"\r\n\r\nen') && body.includes('Victor Kilo'), 'sent as verbose_json, English, with the ham prompt');
+    check(body.includes('name="audio_ctx"\r\n\r\n512'), 'a short over is sent with audio_ctx 512, a third of the full encoder work');
     check(wavLen > 3 && wavLen < 5.5, `the WAV is the over, from just before the voice to the squelch's hang after it (${wavLen.toFixed(2)} s)`);
     const text = await until(() => events.find((e) => e.type === EVENT.STT_TEXT));
     const t = events.find((e) => e.type === EVENT.STT_TEXT)?.data;
+    check(cs.state.stt.last && cs.state.stt.last.kept && cs.state.stt.last.durationSec > 3, 'the status shows the last over');
     check(text && t.text === 'CQ CQ this is Victor Kilo Three Tango Romeo' && t.callsigns.join() === 'VK3TR' && t.words[6].low && t.durationSec > 3, 'the text is broadcast with its callsign and doubtful words');
     const joined = [];
     cs.emit('client-connected', joined);
@@ -193,7 +201,7 @@ const until = async (fn, ms = 4000) => {
     feed(over());
     await until(() => posts.length === 2);
     await sleep(100);
-    check(posts.length === 2 && events.filter((e) => e.type === EVENT.STT_TEXT).length === before, 'an over Whisper only invents text for shows nothing');
+    check(posts.length === 2 && events.filter((e) => e.type === EVENT.STT_TEXT).length === before && cs.state.stt.last.kept === false, 'an over Whisper only invents text for shows nothing (the status says nothing was kept)');
 
     // Unticked: the engine stops.
     cs.emit('stt-enabled', false);
@@ -208,6 +216,51 @@ const until = async (fn, ms = 4000) => {
     spawned.at(-1).child.exitCode = 1;
     spawned.at(-1).child.emit('exit', 1, null);
     check(cs.state.stt.phase === 'error' && /exit 1.*failed to load model/.test(cs.state.stt.note), 'if whisper-server stops, the panel says so: ' + cs.state.stt.note);
+    await bridge.stop();
+  }
+
+  // A long over: sent in pieces, cut in a gap, with context, and a callsign across a cut found.
+  {
+    const capture = new EventEmitter();
+    const events = [];
+    const cs = new EventEmitter();
+    Object.assign(cs, {
+      state: { mode: { mode: 'USB' }, dataMode: false },
+      appModes: () => ({}),
+      broadcastJsonEvent: (type, data) => events.push({ type, data: JSON.parse(JSON.stringify(data)) }),
+    });
+    const posts = [];
+    const replies = [' CQ CQ this is Victor Kilo', ' Three Tango Romeo calling CQ', ' and standing by'];
+    const request = async (url, opts = {}) => {
+      if (opts.method !== 'POST') return { status: 200, text: '' };
+      const body = opts.body.toString('latin1');
+      const at = body.indexOf('RIFF');
+      posts.push({ body, seconds: opts.body.readUInt32LE(at + 40) / 2 / 16000 });
+      const text = replies[posts.length - 1] ?? '';
+      return { status: 200, text: JSON.stringify({ segments: [{ text, no_speech_prob: 0.05, avg_logprob: -0.3 }] }) };
+    };
+    const bridge = new SttBridge({ controlServer: cs, audioBridge: { sampleRate: R, capture }, config: { url: 'http://x:1', maxSegmentSec: 10 }, request, pollMs: 10 });
+    bridge.start();
+    await bridge.setEnabled(true);
+    // 1 s noise, voice 8.7 s, 0.4 s gap (shorter than the squelch's hang), voice 12 s, 3 s noise.
+    const n = bandNoise(25.1, 0.05);
+    const v1 = voice(8.7, 0.05);
+    const v2 = voice(12, 0.05, { f0: 140 });
+    for (let i = 0; i < v1.length; i++) n[1 * R + i] += v1[i];
+    const g = Math.round(10.1 * R);
+    for (let i = 0; i < v2.length; i++) n[g + i] += v2[i];
+    const pcm = toPcm(n);
+    for (let i = 0; i < pcm.length; i += 4800) capture.emit('data', pcm.subarray(i, Math.min(pcm.length, i + 4800)));
+    await until(() => posts.length >= 3 && !cs.state.stt.busy);
+    const lens = posts.map((p) => p.seconds.toFixed(2)).join(', ');
+    check(posts.length === 3, `a 21 s over goes in three pieces (${lens} s)`);
+    check(posts[0] && posts[0].seconds > 8.9 && posts[0].seconds < 9.5, `the first is cut in the gap between words, not at exactly 10 s (${posts[0]?.seconds.toFixed(2)} s)`);
+    check(posts.every((p) => p.seconds <= 10.05), 'no piece is longer than 10 s');
+    check(posts[1] && posts[1].body.includes('VK3ABC. You are five nine') && posts[1].body.includes('CQ CQ this is Victor Kilo') && !posts[0].body.includes('this is Victor Kilo\r'), "a later piece is sent with the earlier pieces' text as context");
+    const texts = events.filter((e) => e.type === EVENT.STT_TEXT).map((e) => e.data);
+    check(texts.length === 3 && texts.every((t) => t.overId === texts[0].overId) && texts.map((t) => t.part).join() === '0,1,2', 'the pieces are sent as parts of one over');
+    check(texts[0].callsigns.length === 0 && texts[1].callsigns.join() === 'VK3TR' && texts[2].callsigns.length === 0, 'a callsign spelled across a cut is found once, with the piece that completes it');
+    check(Math.abs(texts[1].time - texts[0].time - posts[0].seconds * 1000) < 50, "each piece's time is when it began");
     await bridge.stop();
   }
 

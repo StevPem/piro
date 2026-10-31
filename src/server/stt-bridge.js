@@ -9,7 +9,16 @@ const { StreamDecimator } = require('../audio/decimator');
 const { keepSegments, phoneticCallsigns, HAM_PROMPT } = require('./stt-text');
 
 const RATE = 16000; // Whisper's sample rate
-const MAX_OVER_SEC = 28; // Whisper hears 30 s at a time; a longer over is sent in parts
+// A long over is sent in pieces, so its text comes as it goes. Each piece
+// is cut at the quietest moment of its last CUT_SEARCH_SEC (usually a gap
+// between words). STT_MAX_SEGMENT_SEC sets the length: 5 to 28 s (Whisper
+// hears 30 s at a time), 10 by default.
+const DEFAULT_SEGMENT_SEC = 10;
+const MIN_SEGMENT_SEC = 5;
+const MAX_SEGMENT_SEC = 28;
+const CUT_SEARCH_SEC = 2;
+const CUT_WINDOW = 320; // 20 ms at 16 kHz
+const CONTEXT_CHARS = 200; // of the previous piece's text, given to Whisper as context
 const MIN_OVER_SEC = 0.6; // shorter than this is a click, not an over
 const MAX_QUEUE = 2; // overs waiting while one is transcribed; older ones are dropped
 const HISTORY_MAX = 40;
@@ -17,6 +26,18 @@ const DEFAULT_PORT = 8178;
 const START_TIMEOUT_MS = 120 * 1000; // loading a model on a Pi takes a while
 const REQUEST_TIMEOUT_MS = 120 * 1000;
 const VOICE_MODES = ['LSB', 'USB', 'AM', 'FM', 'WFM'];
+// Whisper's encoder works on 30 s (1500 frames, 50 a second) whatever the
+// length of the audio, so a short over costs as much as a long one. Telling
+// it the over's length (audio_ctx), plus a little, cuts that: a 5 s over
+// is about three times faster. Not below 512 frames (about 10 s), where
+// whisper.cpp's accuracy starts to suffer.
+const MIN_AUDIO_CTX = 512;
+const FULL_AUDIO_CTX = 1500;
+
+/** whisper.cpp's audio_ctx for an over this long (seconds). */
+function audioCtxFor(durationSec) {
+  return Math.min(FULL_AUDIO_CTX, Math.max(MIN_AUDIO_CTX, Math.ceil((durationSec + 2) * 50)));
+}
 
 /** The STT settings from the environment. */
 function sttConfig(env = process.env) {
@@ -30,6 +51,12 @@ function sttConfig(env = process.env) {
     if (Number.isInteger(v) && v >= 1 && v <= 16) threads = v;
     else warnings.push(`STT_THREADS="${env.STT_THREADS}" must be 1 to 16; using 4.`);
   }
+  let maxSegmentSec = DEFAULT_SEGMENT_SEC;
+  if (env.STT_MAX_SEGMENT_SEC) {
+    const v = Number(env.STT_MAX_SEGMENT_SEC);
+    if (Number.isFinite(v) && v >= MIN_SEGMENT_SEC && v <= MAX_SEGMENT_SEC) maxSegmentSec = v;
+    else warnings.push(`STT_MAX_SEGMENT_SEC="${env.STT_MAX_SEGMENT_SEC}" must be ${MIN_SEGMENT_SEC} to ${MAX_SEGMENT_SEC}; using ${DEFAULT_SEGMENT_SEC}.`);
+  }
   let port = DEFAULT_PORT;
   if (env.STT_PORT) {
     const v = Number(env.STT_PORT);
@@ -38,7 +65,7 @@ function sttConfig(env = process.env) {
   }
   if (url && !/^https?:\/\//.test(url)) warnings.push(`STT_URL="${url}" must start with http:// or https://.`);
   if (!url && (serverBin || model) && !(serverBin && model)) warnings.push('STT needs both STT_WHISPER_SERVER and STT_MODEL (or STT_URL).');
-  return { url: /^https?:\/\//.test(url) ? url : '', serverBin, model, threads, port, warnings };
+  return { url: /^https?:\/\//.test(url) ? url : '', serverBin, model, threads, port, maxSegmentSec, warnings };
 }
 
 /** 16-bit mono WAV at `rate` from Float32 samples (-1..1). */
@@ -116,7 +143,9 @@ function httpRequest(url, { method = 'GET', body, type, timeoutMs = REQUEST_TIME
  * (audio/voice-squelch.js: the pitch of a voice, with 0.3 s before it and
  * 1.5 s after), on the raw received audio (not what the noise filters
  * leave). Each over, reduced to 16 kHz, is posted to /inference as a WAV;
- * an over longer than 28 s is sent in parts. One is transcribed at a time;
+ * an over longer than STT_MAX_SEGMENT_SEC (10 s) is sent in pieces as it
+ * goes, each cut at a quiet moment and transcribed with the text before it
+ * as context. One piece is transcribed at a time;
  * if the transcriber falls behind, the oldest waiting is dropped. Nothing
  * is transcribed while transmitting, or outside a voice mode (LSB, USB, AM,
  * FM with DATA mode off and no app mode). STT is unticked when the last
@@ -143,7 +172,7 @@ class SttBridge {
     if (!audioBridge) throw new Error('SttBridge requires opts.audioBridge');
     this.controlServer = controlServer;
     this.audioBridge = audioBridge;
-    this.config = { threads: 4, port: DEFAULT_PORT, ...config };
+    this.config = { threads: 4, port: DEFAULT_PORT, maxSegmentSec: DEFAULT_SEGMENT_SEC, ...config };
     this.request = request ?? httpRequest;
     this.spawnFn = spawnFn ?? spawn;
     this.now = now ?? Date.now;
@@ -168,7 +197,10 @@ class SttBridge {
     this._decimator = null;
     this._over = []; // 16 kHz chunks of the over now
     this._overLen = 0;
-    this._overStart = 0;
+    this._overStart = 0; // when the piece now being gathered began (epoch ms)
+    this._overId = 0; // which over the piece belongs to
+    this._part = 0; // which piece of it
+    this._overText = new Map(); // overId -> {text, callsigns}: what its pieces have said so far
     this._wasOpen = false;
     this._queue = [];
     this._busy = false;
@@ -200,6 +232,7 @@ class SttBridge {
       note: null, // why paused, or the error
       busy: false, // an over is being transcribed
       waiting: 0, // overs waiting
+      last: null, // the last over: {durationSec, seconds, kept}
     };
   }
 
@@ -335,7 +368,7 @@ class SttBridge {
     if (this._ptt) pause = 'transmitting';
     else if (!this._voiceMode()) pause = 'only in voice modes (SSB, AM, FM)';
     if (pause) {
-      if (this._attached) this._endOver(); // what was heard before still goes
+      if (this._attached) this._endOver(true); // what was heard before still goes
       this._detach();
       this._update({ phase: 'paused', note: pause });
     } else {
@@ -366,7 +399,12 @@ class SttBridge {
     if (!this._squelch) return;
     const gated = this._squelch.process(chunk);
     if (gated) {
-      if (!this._wasOpen) this._overStart = this.now() - 300; // the squelch runs 0.3 s behind
+      if (!this._wasOpen) {
+        // A new over (the squelch runs 0.3 s behind).
+        this._overStart = this.now() - 300;
+        this._overId++;
+        this._part = 0;
+      }
       this._wasOpen = true;
       const n = gated.length >> 1;
       const x = new Int16Array(n);
@@ -374,30 +412,57 @@ class SttBridge {
       const y = this._decimator.process(x);
       this._over.push(y);
       this._overLen += y.length;
-      if (this._overLen >= MAX_OVER_SEC * RATE) {
-        this._endOver();
-        this._wasOpen = true;
-        this._overStart = this.now();
-      }
+      if (this._overLen >= this.config.maxSegmentSec * RATE) this._cutPiece();
     } else if (this._wasOpen) {
       this._wasOpen = false;
-      this._endOver();
+      this._endOver(true);
     }
   }
 
-  _endOver() {
-    const len = this._overLen;
-    const parts = this._over;
-    this._over = [];
-    this._overLen = 0;
-    if (len < MIN_OVER_SEC * RATE) return;
-    const samples = new Float32Array(len);
+  /** The over now, as one array. */
+  _gathered() {
+    const samples = new Float32Array(this._overLen);
     let o = 0;
-    for (const p of parts) {
+    for (const p of this._over) {
       samples.set(p, o);
       o += p.length;
     }
-    this._queue.push({ samples, time: this._overStart, durationSec: Math.round((len / RATE) * 10) / 10 });
+    return samples;
+  }
+
+  /** A long over: send what it has so far, cut at its quietest moment near the end, and carry on. */
+  _cutPiece() {
+    const all = this._gathered();
+    const from = Math.max(0, all.length - CUT_SEARCH_SEC * RATE);
+    let best = all.length;
+    let bestEnergy = Infinity;
+    for (let i = from; i + CUT_WINDOW <= all.length; i += CUT_WINDOW / 2) {
+      let e = 0;
+      for (let j = i; j < i + CUT_WINDOW; j++) e += all[j] * all[j];
+      if (e < bestEnergy) {
+        bestEnergy = e;
+        best = i + CUT_WINDOW / 2;
+      }
+    }
+    const head = all.subarray(0, best);
+    const tail = all.slice(best);
+    this._over = [head];
+    this._overLen = head.length;
+    this._endOver(false);
+    this._over = tail.length ? [tail] : [];
+    this._overLen = tail.length;
+    this._overStart += Math.round((best / RATE) * 1000);
+    this._part++;
+  }
+
+  /** Queues the piece gathered so far; `last`: the over has ended. */
+  _endOver(last) {
+    const len = this._overLen;
+    const samples = this._gathered();
+    this._over = [];
+    this._overLen = 0;
+    if (len < MIN_OVER_SEC * RATE) return;
+    this._queue.push({ samples, time: this._overStart, durationSec: Math.round((len / RATE) * 10) / 10, overId: this._overId, part: this._part, last });
     while (this._queue.length > MAX_QUEUE) this._queue.shift();
     this._update({ waiting: this._queue.length });
     this._pump();
@@ -418,7 +483,9 @@ class SttBridge {
           temperature_inc: '0.0',
           suppress_nst: 'true',
           no_language_probabilities: 'true',
-          prompt: HAM_PROMPT,
+          audio_ctx: String(audioCtxFor(over.durationSec)),
+          // A later piece of an over: what the earlier ones said, so Whisper carries on the sentence.
+          prompt: over.part > 0 && this._overText.get(over.overId)?.text ? `${HAM_PROMPT} ${this._overText.get(over.overId).text.slice(-CONTEXT_CHARS)}` : HAM_PROMPT,
         },
         encodeWav(over.samples)
       );
@@ -427,15 +494,29 @@ class SttBridge {
       if (session !== this._session) return;
       if (res.status !== 200) throw new Error(`HTTP ${res.status}: ${res.text.slice(0, 120)}`);
       const kept = keepSegments(JSON.parse(res.text));
-      if (kept.text) {
+      const seconds = Math.round((this.now() - started) / 100) / 10;
+      // One line a over in the journal, so it can be seen what Whisper heard and what was kept.
+      console.log(`STT: ${over.durationSec} s ${over.part || !over.last ? `piece ${over.part + 1} of an over` : 'over'}, ${seconds} s to transcribe: ${kept.text ? `"${kept.text}"` : 'nothing kept'}${kept.why.length ? `; dropped ${kept.why.join('; ')}` : ''}`);
+      this._update({ last: { durationSec: over.durationSec, seconds, kept: !!kept.text } });
+      // Callsigns are looked for in the whole over so far, so one spelled across a cut is found.
+      const said = this._overText.get(over.overId) || { text: '', callsigns: [] };
+      if (kept.text) said.text = said.text ? `${said.text} ${kept.text}` : kept.text;
+      const callsigns = phoneticCallsigns(said.text).filter((c) => !said.callsigns.includes(c));
+      said.callsigns.push(...callsigns);
+      if (over.last) this._overText.delete(over.overId);
+      else this._overText.set(over.overId, said);
+      while (this._overText.size > 8) this._overText.delete(this._overText.keys().next().value);
+      if (kept.text || callsigns.length) {
         const entry = {
           id: this._nextId++,
+          overId: over.overId,
+          part: over.part,
           time: over.time,
           durationSec: over.durationSec,
           text: kept.text,
           words: kept.words,
-          callsigns: phoneticCallsigns(kept.text),
-          seconds: Math.round((this.now() - started) / 100) / 10,
+          callsigns,
+          seconds,
         };
         this._history.push(entry);
         if (this._history.length > HISTORY_MAX) this._history.shift();
@@ -457,4 +538,4 @@ class SttBridge {
   }
 }
 
-module.exports = { SttBridge, sttConfig, encodeWav, multipart, httpRequest };
+module.exports = { SttBridge, sttConfig, encodeWav, multipart, httpRequest, audioCtxFor };
