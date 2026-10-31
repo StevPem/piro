@@ -1071,6 +1071,7 @@ link.addEventListener('connected', (event) => {
   setEasypalTxInfo(data.easypalTx);
   renderVaraStatus(data.vara);
   renderJs8Status(data.js8);
+  renderSttStatus(data.stt);
   stationGrid = data.stationGrid || null;
   ft8Qso.configure({ myCall: stationCallsign, myGrid: stationGrid });
   if (data.frequency != null) updateFrequencyDisplay(data.frequency);
@@ -5868,6 +5869,114 @@ if (freeDvFilterControl && freeDvFilterControl.buttonEl) {
 } else {
   functionControlsEl.appendChild(freeDvSpotLabel);
 }
+
+// --- "STT" checkbox (directly below the Filter button) and the speech-to-text panel ---
+// A copy aid: while ticked, the server transcribes received speech in voice
+// modes with whisper.cpp (server/stt-bridge.js) and the text appears under
+// the S-meter. Off by default. The server holds the setting (every browser
+// shows the same), and turns it off when the last browser leaves.
+const sttRxEl = document.getElementById('stt-rx');
+const sttStatusEl = document.getElementById('stt-status');
+const sttRxTextEl = document.getElementById('stt-rx-text');
+const STT_MAX_LINES = 60;
+let sttStatus = null;
+
+const sttCheckbox = document.createElement('input');
+sttCheckbox.type = 'checkbox';
+sttCheckbox.id = 'stt-checkbox';
+sttCheckbox.checked = false;
+sttCheckbox.addEventListener('change', () => {
+  const enabled = sttCheckbox.checked;
+  sttRxEl.hidden = !enabled;
+  link.request('setSttEnabled', { enabled }).catch((err) => {
+    sttCheckbox.checked = !enabled;
+    sttRxEl.hidden = !sttCheckbox.checked;
+    showError(`Couldn't ${enabled ? 'start' : 'stop'} speech to text: ${err.message}`);
+  });
+});
+
+const sttLabel = document.createElement('label');
+sttLabel.className = 'chip function-control__button stt-toggle';
+sttLabel.title = 'Speech to text: show received speech as text, as a copy aid (voice modes only)';
+sttLabel.appendChild(sttCheckbox);
+sttLabel.appendChild(document.createTextNode('STT'));
+{
+  const filterControl = FUNCTION_CONTROLS.find((c) => c.key === 'filter');
+  if (filterControl && filterControl.buttonEl) filterControl.buttonEl.insertAdjacentElement('afterend', sttLabel);
+  else functionControlsEl.appendChild(sttLabel);
+}
+
+/** Shows speech-to-text's state: the checkbox, the panel, and its status line. */
+function renderSttStatus(s) {
+  sttStatus = s || null;
+  if (!s) {
+    sttCheckbox.checked = false;
+    sttCheckbox.disabled = true;
+    sttLabel.title = 'Speech to text is not running on the server (needs audio set up; restart PiRO after updating)';
+    sttRxEl.hidden = true;
+    return;
+  }
+  sttCheckbox.disabled = false;
+  sttCheckbox.checked = !!s.enabled;
+  sttRxEl.hidden = !s.enabled;
+  let text;
+  if (s.phase === 'error') text = s.note || s.reason || 'not available';
+  else if (s.phase === 'starting') text = s.note || 'starting…';
+  else if (s.phase === 'paused') text = `paused: ${s.note}`;
+  else if (s.phase === 'listening') {
+    text = s.busy ? 'transcribing…' : 'listening';
+    if (s.waiting) text += ` (${s.waiting} waiting)`;
+    if (s.note) text += ` · ${s.note}`;
+  } else text = 'off';
+  sttStatusEl.textContent = text;
+}
+
+/** One transcribed over: "HH:MM:SSZ text [VK3TR]", doubtful words greyed. */
+function appendSttOver(o) {
+  if (!o || typeof o.text !== 'string') return;
+  const stick = sttRxTextEl.scrollTop + sttRxTextEl.clientHeight >= sttRxTextEl.scrollHeight - 8;
+  const line = document.createElement('div');
+  line.className = 'stt-rx__line';
+  const time = document.createElement('span');
+  time.className = 'stt-rx__time';
+  time.textContent = `${utcClock(o.time).slice(0, 8)}Z `;
+  line.appendChild(time);
+  const words = Array.isArray(o.words) && o.words.length ? o.words : o.text.split(' ').map((w) => ({ w }));
+  words.forEach((wd, i) => {
+    if (i) line.appendChild(document.createTextNode(' '));
+    if (wd.low) {
+      const span = document.createElement('span');
+      span.className = 'stt-rx__low';
+      span.title = `Whisper wasn't sure of this word (${Math.round((wd.p ?? 0) * 100)}%)`;
+      span.textContent = wd.w;
+      line.appendChild(span);
+    } else line.appendChild(document.createTextNode(wd.w));
+  });
+  for (const call of o.callsigns || []) {
+    line.appendChild(document.createTextNode(' '));
+    const c = document.createElement('span');
+    c.className = 'stt-rx__call';
+    c.textContent = `[${call}]`;
+    c.title = `${call}: the callsign spelled in this over`;
+    line.appendChild(c);
+  }
+  line.title = `${o.durationSec ?? '?'} s over, transcribed in ${o.seconds ?? '?'} s`;
+  sttRxTextEl.appendChild(line);
+  while (sttRxTextEl.children.length > STT_MAX_LINES) sttRxTextEl.firstElementChild.remove();
+  if (stick) sttRxTextEl.scrollTop = sttRxTextEl.scrollHeight;
+}
+
+link.addEventListener('stt-status', (event) => renderSttStatus(event.detail));
+link.addEventListener('stt-text', (event) => {
+  const u = event.detail;
+  if (!u) return;
+  if (u.replace) {
+    sttRxTextEl.replaceChildren();
+    for (const o of u.overs || []) appendSttOver(o);
+    return;
+  }
+  appendSttOver(u);
+});
 
 // --- RTTY "Reverse" checkbox (lives inside the RTTY ticker section) ---
 // Swaps which tone (mark/space) the decoder treats as which — see

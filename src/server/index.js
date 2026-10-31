@@ -17,6 +17,7 @@ const { SstvTxBridge, DEFAULT_SSTV_TX_MODE } = require('./sstv-tx-bridge');
 const { EasypalTxBridge, easypalTxConfig } = require('./easypal-tx-bridge');
 const { VaraBridge, varaConfig } = require('./vara-bridge');
 const { Js8Bridge } = require('./js8-bridge');
+const { SttBridge, sttConfig } = require('./stt-bridge');
 const { WsprBridge, parseBandList, WSPR_DIAL_HZ } = require('./wspr-bridge');
 const { FaxDecoderBridge } = require('./fax-decoder-bridge');
 const { EasypalDecoderBridge } = require('./easypal-decoder-bridge');
@@ -294,6 +295,7 @@ let easypalDecoderBridge;
 let easypalTxBridge;
 let varaBridge;
 let js8Bridge;
+let sttBridge;
 let bandConditions;
 let radeBridge;
 let freeDvReporterBridge;
@@ -657,6 +659,18 @@ async function main() {
       console.log(js8Bridge.unavailable ? `JS8 unavailable: ${js8Bridge.unavailable}` : 'JS8 ready (decodes while JS8 is selected).');
     }
 
+    // Speech-to-text copy aid (the "STT" checkbox): whisper.cpp's
+    // whisper-server, started here from STT_WHISPER_SERVER and STT_MODEL
+    // while STT is ticked, or one already running at STT_URL. See
+    // server/stt-bridge.js.
+    {
+      const cfg = sttConfig(process.env);
+      for (const w of cfg.warnings) console.warn(w);
+      sttBridge = new SttBridge({ controlServer, audioBridge, config: cfg });
+      sttBridge.start();
+      console.log(sttBridge.unavailable ? `Speech-to-text unavailable: ${sttBridge.unavailable}` : `Speech-to-text ready (${sttBridge.local ? `whisper-server with ${cfg.model}` : cfg.url}; runs while STT is ticked).`);
+    }
+
     // WSPR receive and transmit (the third choice of the DIGI button).
     // WSPR_GRID is the Maidenhead locator sent and reported (defaults to
     // STATION_GRID); spots go to wsprnet.org unless WSPR_UPLOAD=off;
@@ -778,6 +792,7 @@ async function shutdown(signal) {
     if (easypalTxBridge) easypalTxBridge.stop();
     if (varaBridge) await varaBridge.stop();
     if (js8Bridge) await js8Bridge.stop();
+    if (sttBridge) await sttBridge.stop();
     if (easypalDecoderBridge) easypalDecoderBridge.stop();
     if (bandConditions) bandConditions.stop();
     if (radeBridge) radeBridge.stop();

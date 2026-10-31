@@ -1278,6 +1278,29 @@ async function run() {
     await jServer.close();
   }
 
+  // Speech to text: setSttEnabled (passed to the bridge), off when the last client leaves.
+  {
+    const tServer = new ControlServer({ civ: new StubCivDriver(), port: 0 });
+    const tPort = await tServer.listen();
+    const c = await connect(tPort);
+    const hello = await nextMessage(c);
+    check(hello.data.sttEnabled === false && hello.data.stt === null, 'connected snapshot reports sttEnabled=false and no STT state');
+    c.send(JSON.stringify({ id: 't1', type: 'setSttEnabled', enabled: true }));
+    const none = await nextMessage(c);
+    check(none.type === 'error' && /not set up/.test(none.error), 'setSttEnabled fails without an STT bridge');
+    const seen = [];
+    tServer.on('stt-enabled', (e) => seen.push(e));
+    c.send(JSON.stringify({ id: 't2', type: 'setSttEnabled', enabled: 'yes' }));
+    check((await nextMessage(c)).type === 'error', 'setSttEnabled rejects a non-boolean');
+    c.send(JSON.stringify({ id: 't3', type: 'setSttEnabled', enabled: true }));
+    const ok = await nextMessage(c);
+    check(ok.data.enabled === true && tServer.state.sttEnabled === true && seen[0] === true, 'setSttEnabled turns STT on');
+    c.close();
+    await new Promise((r) => setTimeout(r, 100));
+    check(tServer.state.sttEnabled === false && seen.at(-1) === false, 'last client disconnecting turns STT off');
+    await tServer.close();
+  }
+
   // SSTV: setSstvActive, endSstvPicture, getSstvPictures, release when the last client leaves.
   {
     const sServer = new ControlServer({ civ: new StubCivDriver(), port: 0 });

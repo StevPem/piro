@@ -4757,3 +4757,46 @@ model for how to approach that.
   cycle, band chips, offset shared, slots decoded and joined, reply by
   tap, send a frame a slot, Stop, CQ, the second browser following).
   Service-worker cache v120.
+
+### Speech to text, a copy aid (v121)
+
+- **New:** an **STT** checkbox directly below the Filter button (off by
+  default). Ticked, received speech in voice modes is transcribed by
+  whisper.cpp and shown in a panel right below the S-meter, like the
+  Olivia transcript: one line per over, starting with its UTC time;
+  doubtful words grey; callsigns spelled in the over added in letters
+  (`[VK3TR]`). A note under it says it is a copy aid and nothing is saved.
+- **Engine:** whisper.cpp's own HTTP server, `whisper-server`, called
+  directly (no npm wrapper, no Python). With `STT_WHISPER_SERVER` and
+  `STT_MODEL`, PiRO starts it (127.0.0.1:`STT_PORT`, `STT_THREADS`,
+  English) when STT is ticked and stops it when unticked, so the model's
+  memory is only used then; or `STT_URL` points at one already running
+  elsewhere. Without either, ticking shows why it can't run.
+- **Overs:** `server/stt-bridge.js` runs the voice squelch's detector
+  (pitch of a voice, 0.3 s pre-roll, 1.5 s hang) on the raw received
+  audio, so an over is what the squelch would open for. Each over is
+  reduced to 16 kHz and posted to `/inference` as a WAV (verbose_json,
+  English, temperature 0 with no fallback, non-speech tokens suppressed,
+  a short ham prompt). Overs over 28 s go in parts. One is transcribed at
+  a time; if it falls behind, the oldest waiting is dropped. Paused while
+  transmitting and outside voice modes (checked each second, as the mode,
+  DATA mode and app modes have no event of their own). STT is turned off
+  when the last browser leaves (ws-server.js).
+- **Keeping only what was said** (`server/stt-text.js`): segments
+  whisper.cpp scores as not speech (over 0.6) or very unsure (average
+  log-probability under −1) are dropped, as is text Whisper invents from
+  noise (captions, "subscribe", [BLANK_AUDIO], music marks), and its
+  repetition loops are cut to one. Words under 40% probability are marked
+  doubtful. Callsigns come from runs of phonetic words, number words,
+  digits and short capitals ("Victor Kilo 2 Papa Kilo Hotel" → VK2PKH;
+  said twice, found once), and from callsigns written as such.
+- **Checked against the real program:** whisper.cpp (commit `482279b`)
+  built here, `whisper-server` started by the bridge with whisper.cpp's
+  test model; it accepted the form and the WAV (HTTP 200, the over's
+  duration right), and was stopped on untick. A real model couldn't be
+  downloaded here, so recognition itself is not tested yet, nor on air.
+- Tests: stt.test.js (new; in npm test), ws-server.test.js
+  (setSttEnabled, off on the last disconnect), manual-tty-ui.js (the
+  checkbox below Filter, the panel below the S-meter, an over shown with
+  its callsign and a greyed word, PTT pausing it, untick, the second
+  browser following). Service-worker cache v121.

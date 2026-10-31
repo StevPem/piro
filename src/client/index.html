@@ -141,6 +141,19 @@
         <div class="meter__bar" id="meter-bar"></div>
       </section>
 
+      <!-- Speech to text: a copy aid, shown while the "STT" checkbox (below
+           Filter) is ticked. whisper.cpp's text of each received over, with
+           doubtful words greyed and the callsigns spelled in it picked out.
+           See renderSttStatus() and the 'stt-text' listener in app.js. -->
+      <section class="ft8-panel olivia-rx stt-rx" id="stt-rx" aria-label="Speech to text" hidden>
+        <div class="ft8-panel__header">
+          <span class="row-group__label">Speech to text</span>
+          <span class="ft8-panel__slot" id="stt-status" aria-live="polite">off</span>
+        </div>
+        <pre class="olivia-rx__text stt-rx__text" id="stt-rx-text" aria-live="polite" aria-label="Received speech as text"></pre>
+        <div class="stt-rx__hint">A copy aid: check by ear. Grey words are doubtful. Nothing is saved.</div>
+      </section>
+
       <!-- Radiofax stations: the Bureau of Meteorology's VMC (Charleville) and
            VMW (Wiluna) frequencies, in order of their broadcast hours (UTC).
            Shown while the Image button is on Fax; see app.js "Radiofax". -->

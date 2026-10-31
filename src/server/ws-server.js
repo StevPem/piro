@@ -181,6 +181,11 @@ class ControlServer extends EventEmitter {
       js8Active: false,
       js8TxHz: 1500,
       js8: null,
+      // Speech-to-text copy aid (REQUEST.SET_STT_ENABLED / server/stt-bridge.js):
+      // the "STT" checkbox, and its state (state.stt, kept by SttBridge; null
+      // when it isn't set up).
+      sttEnabled: false,
+      stt: null,
       // Whether the client has VARA chat selected (REQUEST.SET_VARA_ACTIVE /
       // server/vara-bridge.js), and the modem's state (state.vara, kept by
       // VaraBridge; null when it isn't set up).
@@ -422,6 +427,12 @@ class ControlServer extends EventEmitter {
     this.emit('olivia-active', { active, centreHz: this.state.oliviaCentreHz });
   }
 
+  _setSttEnabled(enabled) {
+    this.state.sttEnabled = enabled;
+    // Handled by SttBridge (internal-only event).
+    this.emit('stt-enabled', enabled);
+  }
+
   _setJs8Active(active, txHz) {
     this.state.js8Active = active;
     if (txHz !== undefined) this.state.js8TxHz = txHz;
@@ -482,6 +493,8 @@ class ControlServer extends EventEmitter {
     if (this.state.oliviaActive) this._setOliviaActive(false);
     // JS8 too: a message may be being sent.
     if (this.state.js8Active) this._setJs8Active(false);
+    // Speech-to-text: off until someone ticks it again (it starts a speech engine).
+    if (this.state.sttEnabled) this._setSttEnabled(false);
     if (this.state.hellActive) this._setHellActive(false);
     // VARA too: it transmits on its own (answering calls, acknowledging).
     if (this.state.varaActive) this._setVaraActive(false);
@@ -641,6 +654,13 @@ class ControlServer extends EventEmitter {
           this._setOliviaActive(msg.active, centreHz);
           ws.send(makeResult(id, { active: msg.active, centreHz: this.state.oliviaCentreHz }));
           this._broadcastAppModes(ws);
+          break;
+        }
+        case REQUEST.SET_STT_ENABLED: {
+          if (typeof msg.enabled !== 'boolean') throw new Error('"enabled" must be a boolean');
+          if (msg.enabled && !this.listenerCount('stt-enabled')) throw new Error('Speech-to-text is not set up on this server (it needs audio).');
+          this._setSttEnabled(msg.enabled);
+          ws.send(makeResult(id, { enabled: msg.enabled }));
           break;
         }
         case REQUEST.SET_JS8_ACTIVE: {
