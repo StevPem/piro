@@ -22,6 +22,8 @@ const { EasypalDecoderBridge } = require(PKG + '/src/server/easypal-decoder-brid
 const { EasypalTxBridge } = require(PKG + '/src/server/easypal-tx-bridge');
 const { VaraBridge } = require(PKG + '/src/server/vara-bridge');
 const { Js8Bridge } = require(PKG + '/src/server/js8-bridge');
+const { SttBridge } = require(PKG + '/src/server/stt-bridge');
+const radioAudio = require('./fixtures/radio-audio');
 const js8v = require(PKG + '/src/audio/js8/js8-varicode');
 const easypalFx = require('./fixtures/easypal-audio');
 const { encodeFax, FAX_WIDTH } = require(PKG + '/src/audio/fax-tx');
@@ -141,6 +143,21 @@ class Civ extends EventEmitter {
     },
   });
   js8.start();
+  // Speech to text, with a stand-in whisper-server (answered by the test)
+  const sttPosts = [];
+  const stt = new SttBridge({
+    controlServer: server,
+    audioBridge,
+    config: { url: 'http://192.0.2.1:8178' },
+    pollMs: 20,
+    request: async (url, opts = {}) => {
+      if (opts.method !== 'POST') return { status: 200, text: '' };
+      sttPosts.push(url);
+      const words = ['CQ', 'CQ', 'this', 'is', 'Victor', 'Kilo', 'Three', 'Tango', 'Romeo'];
+      return { status: 200, text: JSON.stringify({ segments: [{ text: ` ${words.join(' ')}`, no_speech_prob: 0.05, avg_logprob: -0.4, words: words.map((w) => ({ word: ` ${w}`, probability: w === 'Three' ? 0.25 : 0.9 })) }] }) };
+    },
+  });
+  stt.start();
   // "Current conditions", with wspr.live answered by hand
   const conditions = new BandConditions({ controlServer: server, grid: 'QF56', query: async () => [[1409, 'K1ABC', 16500, ['VK2IO']], [704, 'VK3TR', 700, ['VK2IO']]] });
   conditions.start();
@@ -875,6 +892,38 @@ class Civ extends EventEmitter {
   await sleep(200);
   check(civ.mode === 'LSB' && civ.dataMode === false && server.state.oliviaActive === false && (await vis('#ptt-btn')), 'Olivia -> SSB (LSB on 40 m): Olivia off, DATA MODE off, PTT back');
 
+  // Speech to text (copy aid), in LSB
+  {
+    check(await vis('.stt-toggle'), 'the STT checkbox is shown');
+    check((await page.locator('.stt-toggle').evaluate((e) => e.previousElementSibling?.textContent || '')).startsWith('Filter'), 'it sits directly below the Filter button');
+    check(!(await page.locator('#stt-checkbox').isChecked()) && !(await vis('#stt-rx')), 'off by default, with no text panel');
+    await page.locator('#stt-checkbox').check();
+    await page.waitForFunction(() => document.getElementById('stt-status').textContent === 'listening', null, { timeout: 4000 }).catch(() => {});
+    check(server.state.sttEnabled === true && (await vis('#stt-rx')) && (await page.locator('#stt-status').textContent()) === 'listening', 'ticked: the panel appears below the S-meter, listening');
+    check((await page.locator('#stt-rx').evaluate((e) => e.previousElementSibling?.classList.contains('meter'))), 'the panel is right below the S-meter');
+    check(await bFollows(() => document.getElementById('stt-checkbox').checked && !document.getElementById('stt-rx').hidden), 'the second browser shows it ticked, with the panel');
+    // A received over: noise, 3 s of voice, noise.
+    const n = radioAudio.bandNoise(8, 0.05);
+    const v = radioAudio.voice(3, 0.05);
+    for (let i = 0; i < v.length; i++) n[2 * radioAudio.R + i] += v[i];
+    const pcm = radioAudio.toPcm(n);
+    for (let i = 0; i < pcm.length; i += 4800) capture.emit('data', pcm.subarray(i, Math.min(pcm.length, i + 4800)));
+    await page.waitForFunction(() => document.querySelector('#stt-rx-text .stt-rx__line'), null, { timeout: 5000 }).catch(() => {});
+    const line = await page.locator('#stt-rx-text .stt-rx__line').first().textContent().catch(() => '');
+    check(sttPosts.length === 1 && /^\d\d:\d\d:\d\dZ CQ CQ this is Victor Kilo Three Tango Romeo \[VK3TR\]$/.test(line), 'the over is transcribed and shown with its time and callsign: ' + line);
+    check((await page.locator('#stt-rx-text .stt-rx__low').allTextContents()).join() === 'Three', 'a doubtful word is greyed');
+    check(await bFollows(() => /VK3TR/.test(document.getElementById('stt-rx-text').textContent)), 'the second browser shows the text too');
+    // PTT pauses it.
+    server.emit('ptt', true);
+    await page.waitForFunction(() => /^paused: transmitting/.test(document.getElementById('stt-status').textContent), null, { timeout: 3000 }).catch(() => {});
+    check(/^paused: transmitting/.test(await page.locator('#stt-status').textContent()), 'transmitting: paused');
+    server.emit('ptt', false);
+    await page.locator('#stt-checkbox').uncheck();
+    await sleep(200);
+    check(server.state.sttEnabled === false && !(await vis('#stt-rx')), 'unticked: off, and the panel goes');
+    check(await bFollows(() => !document.getElementById('stt-checkbox').checked && document.getElementById('stt-rx').hidden), 'in the second browser too');
+  }
+
   // JTTY -> FT8 and back
   await page.locator('#modes .chip', { hasText: /^TTY$/ }).click();
   await page.locator('#modes .chip', { hasText: /^RTTY$/ }).click();
@@ -1352,6 +1401,7 @@ class Civ extends EventEmitter {
   easypalTx.stop();
   easypalRx.stop();
   await js8.stop();
+  await stt.stop();
   await server.close();
   console.log(failures ? `\n${failures} FAILED` : '\nAll UI checks passed');
   process.exit(failures ? 1 : 0);
