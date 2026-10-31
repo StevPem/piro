@@ -12,7 +12,7 @@ Hamlib, no separate audio server and no extra apps.
 Written by VK3TR. Licensed AGPL-3.0-only (see
 [Licence](#licence)).
 
-**Current build: v121.** This is the version the app shows next to its title.
+**Current build: v122.** This is the version the app shows next to its title.
 It is the `CACHE_NAME` number in `src/client/sw.js`, which goes up with every
 change to the web app.
 
@@ -620,7 +620,10 @@ is saved. It needs whisper.cpp set up on the server (see
   a voice), and sends each over to Whisper when it ends: about 1.5 s after
   the speaker stops. The text appears a few seconds later (how long
   depends on the computer and the model). An over longer than 28 s is
-  sent in parts.
+  sent in parts. Whisper is told how long the over is, so a short over is
+  quicker (Whisper otherwise works on 30 s every time).
+- The status line shows the last over's length and how long it took, or
+  "nothing kept" if Whisper heard no words worth showing.
 - Each line starts with the UTC time the over began. Words Whisper wasn't
   sure of are grey. Callsigns spelled in the over ("Victor Kilo Three
   Tango Romeo") are added after it in letters, `[VK3TR]`.
@@ -633,9 +636,9 @@ is saved. It needs whisper.cpp set up on the server (see
 **What to expect.** Whisper was trained on clean speech. On a strong SSB
 signal it copies well; near the noise it gets words wrong, and that is
 when you need it most, so check by ear. On noise alone Whisper can make
-up text ("Thank you for watching."). PiRO drops what Whisper itself marks
-as not speech or very unsure, and text it is known to invent, but some
-will get through. It is given a short QSO-like prompt (the phonetic
+up text ("Thank you for watching."). PiRO drops what Whisper's own rule
+calls silence (likely not speech *and* unsure of its words) and text it is
+known to invent, but some will get through. It is given a short QSO-like prompt (the phonetic
 alphabet, "five nine", QTH, 73) so it expects radio talk.
 
 **How far it has been tested.** PiRO's side was checked with synthetic
@@ -1784,6 +1787,12 @@ one hard refresh (Ctrl+Shift+R, or Cmd+Shift+R on a Mac).
   computer's server answers at that address.
 - **STT says "paused".** It works only in SSB, AM and FM with DATA mode
   off and no app mode (FT8, JS8 and so on), and not while transmitting.
+- **STT shows no text.** The status line shows the last over: how long it
+  was, and how long Whisper took ("6.2 s to transcribe"), or "nothing
+  kept". The journal has a line for every over with what Whisper heard and
+  what was dropped and why: `journalctl -u piro -f | grep STT`. If
+  transcribing takes longer than the overs, Whisper falls behind and only
+  the latest two waiting overs are kept: use a smaller model.
 - **STT shows text that wasn't said.** Whisper makes things up on noise.
   Use it on signals you can mostly hear, and check by ear.
 - **JS8 decodes nothing.** Check that signals show on the audio spectrum,

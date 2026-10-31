@@ -8,7 +8,7 @@
 
 const { EventEmitter } = require('events');
 const { keepSegments, phoneticCallsigns, isInvented, collapseRepeats } = require('../src/server/stt-text');
-const { SttBridge, sttConfig, encodeWav, multipart } = require('../src/server/stt-bridge');
+const { SttBridge, sttConfig, encodeWav, multipart, audioCtxFor } = require('../src/server/stt-bridge');
 const { EVENT } = require('../src/server/protocol');
 const { R, bandNoise, voice, toPcm } = require('./fixtures/radio-audio');
 
@@ -55,11 +55,13 @@ const until = async (fn, ms = 4000) => {
         ],
       },
       { text: ' Thanks for watching!', no_speech_prob: 0.1, avg_logprob: -0.2 },
-      { text: ' static words', no_speech_prob: 0.9, avg_logprob: -0.2 },
-      { text: ' mumble', no_speech_prob: 0.1, avg_logprob: -1.6 },
+      { text: ' static words', no_speech_prob: 0.9, avg_logprob: -1.3 },
     ],
   });
-  check(kept.text === 'Hello there, five nine.' && kept.dropped === 3, 'invented, not-speech and very unsure segments are dropped');
+  check(kept.text === 'Hello there, five nine.' && kept.dropped === 2, 'invented text, and silence by Whisper\'s rule (no_speech over 0.6 and avg_logprob under -1), are dropped');
+  check(kept.why.length === 2 && /invented/.test(kept.why[0]) && /silence \(no_speech 0\.90, avg_logprob -1\.30\)/.test(kept.why[1]), 'what was dropped, and why, is given for the log');
+  const either = keepSegments({ segments: [{ text: ' five nine', no_speech_prob: 0.9, avg_logprob: -0.4 }, { text: ' over', no_speech_prob: 0.1, avg_logprob: -1.6 }] });
+  check(either.text === 'five nine over' && either.dropped === 0, 'one of the two signs alone does not drop a segment (common on real SSB speech)');
   check(kept.words.map((w) => w.w).join(' ') === 'Hello there, five nine.' && kept.words[1].low && !kept.words[0].low && kept.words[3].p === 0.9, "words keep Whisper's probability; doubtful ones are marked low");
 
   // --- WAV and form ---
@@ -71,6 +73,9 @@ const until = async (fn, ms = 4000) => {
     const boundary = type.split('boundary=')[1];
     check(type.startsWith('multipart/form-data') && b.includes('name="response_format"\r\n\r\nverbose_json') && b.includes('filename="over.wav"') && b.endsWith(`--${boundary}--\r\n`), 'the form carries the fields and the WAV, as whisper-server reads it');
   }
+
+  // --- audio_ctx ---
+  check(audioCtxFor(1) === 512 && audioCtxFor(5) === 512 && audioCtxFor(12) === 700 && audioCtxFor(28) === 1500, "Whisper's encoder is told the over's length (at least 512 frames, at most the full 1500)");
 
   // --- config ---
   {
@@ -149,9 +154,11 @@ const until = async (fn, ms = 4000) => {
     const wavAt = body.indexOf('RIFF');
     const wavLen = wavAt >= 0 ? post.body.readUInt32LE(wavAt + 40) / 2 / 16000 : 0;
     check(post && post.url === 'http://127.0.0.1:8178/inference' && body.includes('verbose_json') && body.includes('name="language"\r\n\r\nen') && body.includes('Victor Kilo'), 'sent as verbose_json, English, with the ham prompt');
+    check(body.includes('name="audio_ctx"\r\n\r\n512'), 'a short over is sent with audio_ctx 512, a third of the full encoder work');
     check(wavLen > 3 && wavLen < 5.5, `the WAV is the over, from just before the voice to the squelch's hang after it (${wavLen.toFixed(2)} s)`);
     const text = await until(() => events.find((e) => e.type === EVENT.STT_TEXT));
     const t = events.find((e) => e.type === EVENT.STT_TEXT)?.data;
+    check(cs.state.stt.last && cs.state.stt.last.kept && cs.state.stt.last.durationSec > 3, 'the status shows the last over');
     check(text && t.text === 'CQ CQ this is Victor Kilo Three Tango Romeo' && t.callsigns.join() === 'VK3TR' && t.words[6].low && t.durationSec > 3, 'the text is broadcast with its callsign and doubtful words');
     const joined = [];
     cs.emit('client-connected', joined);
@@ -193,7 +200,7 @@ const until = async (fn, ms = 4000) => {
     feed(over());
     await until(() => posts.length === 2);
     await sleep(100);
-    check(posts.length === 2 && events.filter((e) => e.type === EVENT.STT_TEXT).length === before, 'an over Whisper only invents text for shows nothing');
+    check(posts.length === 2 && events.filter((e) => e.type === EVENT.STT_TEXT).length === before && cs.state.stt.last.kept === false, 'an over Whisper only invents text for shows nothing (the status says nothing was kept)');
 
     // Unticked: the engine stops.
     cs.emit('stt-enabled', false);

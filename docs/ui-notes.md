@@ -4800,3 +4800,27 @@ model for how to approach that.
   checkbox below Filter, the panel below the S-meter, an over shown with
   its callsign and a greyed word, PTT pausing it, untick, the second
   browser following). Service-worker cache v121.
+
+### Speech to text: Whisper's own silence rule, shorter encodes, a log line an over (v122)
+
+- **Reported:** with STT ticked, whisper-server ran at full CPU but no text
+  appeared. The Pi transcribes whisper.cpp's 11 s sample in 8.9 s with
+  base.en, so it keeps up.
+- **Real bug:** v121 dropped a segment if whisper.cpp's no_speech_prob was
+  over 0.6 *or* its average log-probability was under −1. On SSB speech
+  either one alone is common, so most real text was probably thrown away,
+  silently. OpenAI's own rule (transcribe()) treats a segment as silence
+  only when both hold. PiRO now does the same; text Whisper is known to
+  invent is still dropped.
+- **Speed:** Whisper's encoder works on 30 s of audio whatever the over's
+  length, so every over cost a full pass. Each request now sets
+  whisper.cpp's `audio_ctx` from the over's length plus 2 s (50 frames a
+  second, at least 512, at most 1500): a short over costs about a third.
+- **Seeing what happens:** the journal gets one line an over ("STT: 6.2 s
+  over, 3.1 s to transcribe: "…"" or "nothing kept; dropped silence
+  (no_speech 0.82, avg_logprob -1.31): "…""), and the status line shows the
+  last over's length and time, or "nothing kept".
+- Checked against the real whisper-server (it accepts `audio_ctx`).
+  Recognition on air is still to be seen.
+- Tests: stt.test.js (Whisper's rule both ways, the reasons given,
+  audio_ctx, the last over in the status). Service-worker cache v122.

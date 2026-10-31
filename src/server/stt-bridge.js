@@ -17,6 +17,18 @@ const DEFAULT_PORT = 8178;
 const START_TIMEOUT_MS = 120 * 1000; // loading a model on a Pi takes a while
 const REQUEST_TIMEOUT_MS = 120 * 1000;
 const VOICE_MODES = ['LSB', 'USB', 'AM', 'FM', 'WFM'];
+// Whisper's encoder works on 30 s (1500 frames, 50 a second) whatever the
+// length of the audio, so a short over costs as much as a long one. Telling
+// it the over's length (audio_ctx), plus a little, cuts that: a 5 s over
+// is about three times faster. Not below 512 frames (about 10 s), where
+// whisper.cpp's accuracy starts to suffer.
+const MIN_AUDIO_CTX = 512;
+const FULL_AUDIO_CTX = 1500;
+
+/** whisper.cpp's audio_ctx for an over this long (seconds). */
+function audioCtxFor(durationSec) {
+  return Math.min(FULL_AUDIO_CTX, Math.max(MIN_AUDIO_CTX, Math.ceil((durationSec + 2) * 50)));
+}
 
 /** The STT settings from the environment. */
 function sttConfig(env = process.env) {
@@ -200,6 +212,7 @@ class SttBridge {
       note: null, // why paused, or the error
       busy: false, // an over is being transcribed
       waiting: 0, // overs waiting
+      last: null, // the last over: {durationSec, seconds, kept}
     };
   }
 
@@ -418,6 +431,7 @@ class SttBridge {
           temperature_inc: '0.0',
           suppress_nst: 'true',
           no_language_probabilities: 'true',
+          audio_ctx: String(audioCtxFor(over.durationSec)),
           prompt: HAM_PROMPT,
         },
         encodeWav(over.samples)
@@ -427,6 +441,10 @@ class SttBridge {
       if (session !== this._session) return;
       if (res.status !== 200) throw new Error(`HTTP ${res.status}: ${res.text.slice(0, 120)}`);
       const kept = keepSegments(JSON.parse(res.text));
+      const seconds = Math.round((this.now() - started) / 100) / 10;
+      // One line a over in the journal, so it can be seen what Whisper heard and what was kept.
+      console.log(`STT: ${over.durationSec} s over, ${seconds} s to transcribe: ${kept.text ? `"${kept.text}"` : 'nothing kept'}${kept.why.length ? `; dropped ${kept.why.join('; ')}` : ''}`);
+      this._update({ last: { durationSec: over.durationSec, seconds, kept: !!kept.text } });
       if (kept.text) {
         const entry = {
           id: this._nextId++,
@@ -435,7 +453,7 @@ class SttBridge {
           text: kept.text,
           words: kept.words,
           callsigns: phoneticCallsigns(kept.text),
-          seconds: Math.round((this.now() - started) / 100) / 10,
+          seconds,
         };
         this._history.push(entry);
         if (this._history.length > HISTORY_MAX) this._history.shift();
@@ -457,4 +475,4 @@ class SttBridge {
   }
 }
 
-module.exports = { SttBridge, sttConfig, encodeWav, multipart, httpRequest };
+module.exports = { SttBridge, sttConfig, encodeWav, multipart, httpRequest, audioCtxFor };
