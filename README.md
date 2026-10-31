@@ -422,7 +422,7 @@ cmake --build build -j4 --target whisper-server
 sh ./models/download-ggml-model.sh base.en-q5_1     # about 60 MB
 ```
 
-Then set, in PiRO's environment (`/etc/piro.env`, say):
+Then add these to `/etc/piro/piro.env` and restart PiRO (`sudo systemctl restart piro`):
 
 ```
 STT_WHISPER_SERVER=/opt/whisper.cpp/build/bin/whisper-server
