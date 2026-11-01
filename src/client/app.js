@@ -5897,7 +5897,8 @@ sttCheckbox.addEventListener('change', () => {
 
 const sttLabel = document.createElement('label');
 sttLabel.className = 'chip function-control__button stt-toggle';
-sttLabel.title = 'Speech to text: show received speech as text, as a copy aid (voice modes only)';
+sttLabel.title = 'Speech to text: show received speech as text, as a copy aid';
+sttLabel.hidden = true; // shown in voice modes only (the server says which, as stt.voice)
 sttLabel.appendChild(sttCheckbox);
 sttLabel.appendChild(document.createTextNode('STT'));
 {
@@ -5913,12 +5914,16 @@ function renderSttStatus(s) {
     sttCheckbox.checked = false;
     sttCheckbox.disabled = true;
     sttLabel.title = 'Speech to text is not running on the server (needs audio set up; restart PiRO after updating)';
+    sttLabel.hidden = false;
     sttRxEl.hidden = true;
     return;
   }
+  // Only in voice modes (LSB, USB, AM, FM, FreeDV). Left ticked in another
+  // mode, STT waits, hidden, and comes back with a voice mode.
+  sttLabel.hidden = !s.voice;
   sttCheckbox.disabled = false;
   sttCheckbox.checked = !!s.enabled;
-  sttRxEl.hidden = !s.enabled;
+  sttRxEl.hidden = !s.enabled || !s.voice;
   let text;
   if (s.phase === 'error') text = s.note || s.reason || 'not available';
   else if (s.phase === 'starting') text = s.note || 'starting…';

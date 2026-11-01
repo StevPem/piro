@@ -4839,3 +4839,30 @@ model for how to approach that.
   audio_ctx, the last over in the status; a 21 s over in three pieces,
   the first cut in a gap, context passed on, a callsign across a cut).
   Service-worker cache v122.
+
+### Speech to text: the STT checkbox only in voice modes, and FreeDV (v123)
+
+- The STT checkbox now shows only in voice modes: LSB, USB, AM and FM
+  with DATA mode off and no app mode, and FreeDV. The server decides
+  (it already paused STT outside them) and sends it as `stt.voice`,
+  ticked or not, so every browser agrees. ControlServer now emits an
+  internal `mode-changed` (mode, DATA mode, app modes), so this follows
+  straight away; a check each second still catches anything else.
+- Left ticked in another mode, STT stays on, paused, with its checkbox
+  and panel hidden. whisper-server keeps running, so going back to a
+  voice mode needs no reload of the model.
+- FreeDV is new as a voice mode. The radio's audio there is the modem
+  tones, so STT hears RadeBridge's `decoded-speech` instead, the same
+  audio the page plays. Moving between FreeDV and SSB switches the
+  source and ends any over in progress.
+- Test fix: one stt.test.js check needed the first cut of a long over at
+  9.2 s. Where the quietest moment falls depends on the test's synthetic
+  syllables (one shared random stream), so the new FreeDV checks moved it
+  to 8.1 s, still a quiet moment in the last 2 s. The check now takes the
+  last 2 s range.
+- Tests: stt.test.js (`voice` in and out of voice modes, ticked or not;
+  FreeDV hears the decoded speech and not the radio's audio, and goes
+  back to the radio on USB). manual-tty-ui.js: in CW the checkbox and
+  panel go in both browsers while STT stays ticked, and come back in SSB.
+  Hiding the checkbox moves the CW controls up, so the CW layout check
+  now waits for that first.

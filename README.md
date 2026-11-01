@@ -12,7 +12,7 @@ Hamlib, no separate audio server and no extra apps.
 Written by VK3TR. Licensed AGPL-3.0-only (see
 [Licence](#licence)).
 
-**Current build: v122.** This is the version the app shows next to its title.
+**Current build: v123.** This is the version the app shows next to its title.
 It is the `CACHE_NAME` number in `src/client/sw.js`, which goes up with every
 change to the web app.
 
@@ -634,9 +634,13 @@ is saved. It needs whisper.cpp set up on the server (see
 - Each line starts with the UTC time the over began. Words Whisper wasn't
   sure of are grey. Callsigns spelled in the over ("Victor Kilo Three
   Tango Romeo") are added after it in letters, `[VK3TR]`.
-- It works only in voice modes: SSB, AM and FM, with DATA mode off and no
-  app mode on. It pauses while you transmit (your own speech is never
-  sent).
+- It works only in voice modes: SSB, AM and FM with DATA mode off and no
+  app mode on, and FreeDV. The STT checkbox and panel show only in those
+  modes. Left ticked in another mode, STT waits, hidden, and carries on
+  when you go back to a voice mode. It pauses while you transmit (your own
+  speech is never sent).
+- In FreeDV, STT hears the decoded speech (what you hear from the
+  speaker), not the modem tones.
 - Every browser sees the same text, and the setting. STT is off by
   default, and turns off when the last browser leaves.
 
@@ -1793,8 +1797,10 @@ one hard refresh (Ctrl+Shift+R, or Cmd+Shift+R on a Mac).
   are full paths that exist, and try the command by hand:
   `whisper-server -m <model> --port 8178`. With `STT_URL`, check the other
   computer's server answers at that address.
-- **STT says "paused".** It works only in SSB, AM and FM with DATA mode
-  off and no app mode (FT8, JS8 and so on), and not while transmitting.
+- **The STT checkbox is missing.** It shows only in voice modes: SSB, AM
+  and FM with DATA mode off and no app mode (FT8, JS8 and so on), and
+  FreeDV.
+- **STT says "paused".** It pauses while you transmit.
 - **STT shows no text.** The status line shows the last over: how long it
   was, and how long Whisper took ("6.2 s to transcribe"), or "nothing
   kept". The journal has a line for every over with what Whisper heard and
@@ -2371,7 +2377,9 @@ shapes.
   `setSttEnabled` (`{enabled}`) is the STT checkbox. The state is the
   connect snapshot's `stt` and the `stt-status` broadcast (`{available,
   reason, enabled, engine: 'local'|'remote'|null, phase:
-  'off'|'starting'|'listening'|'paused'|'error', note, busy, waiting}`);
+  'off'|'starting'|'listening'|'paused'|'error', note, busy, waiting,
+  voice, last}`; `voice` is true in a voice mode, where the page shows the
+  checkbox);
   each transcribed over (or piece of a long one) arrives as `stt-text`
   (`{id, overId, part, time, durationSec, text, words: [{w, p, low?}],
   callsigns, seconds}`; pieces of one over share `overId`), and a page that

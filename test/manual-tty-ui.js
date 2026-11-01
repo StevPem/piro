@@ -862,6 +862,8 @@ class Civ extends EventEmitter {
   }
   // CW text: a box and Send above DOT/WPM/DASH, sent by the radio's keyer at the WPM set
   {
+    // The STT checkbox leaves the function column in CW; let the layout settle.
+    await page.waitForFunction(() => document.querySelector('.stt-toggle').hidden, null, { timeout: 3000 }).catch(() => {});
     const box = await page.locator('#cw-composer').boundingBox();
     const paddle = await page.locator('#cw-paddle').boundingBox();
     check((await vis('#cw-composer')) && box.y + box.height <= paddle.y + 1, 'CW: a text box and Send above the DOT/WPM/DASH buttons');
@@ -894,7 +896,8 @@ class Civ extends EventEmitter {
 
   // Speech to text (copy aid), in LSB
   {
-    check(await vis('.stt-toggle'), 'the STT checkbox is shown');
+    await page.waitForFunction(() => !document.querySelector('.stt-toggle').hidden, null, { timeout: 3000 }).catch(() => {});
+    check(await vis('.stt-toggle'), 'the STT checkbox is shown in LSB');
     check((await page.locator('.stt-toggle').evaluate((e) => e.previousElementSibling?.textContent || '')).startsWith('Filter'), 'it sits directly below the Filter button');
     check(!(await page.locator('#stt-checkbox').isChecked()) && !(await vis('#stt-rx')), 'off by default, with no text panel');
     await page.locator('#stt-checkbox').check();
@@ -918,6 +921,15 @@ class Civ extends EventEmitter {
     await page.waitForFunction(() => /^paused: transmitting/.test(document.getElementById('stt-status').textContent), null, { timeout: 3000 }).catch(() => {});
     check(/^paused: transmitting/.test(await page.locator('#stt-status').textContent()), 'transmitting: paused');
     server.emit('ptt', false);
+    // Not a voice mode: the checkbox and the panel go, STT waits.
+    await chip('CW').click();
+    await page.waitForFunction(() => document.querySelector('.stt-toggle').hidden, null, { timeout: 3000 }).catch(() => {});
+    check(!(await vis('.stt-toggle')) && !(await vis('#stt-rx')) && server.state.sttEnabled === true && server.state.stt.phase === 'paused', 'CW: no STT checkbox or panel; STT stays ticked, paused');
+    check(await bFollows(() => document.querySelector('.stt-toggle').hidden && document.getElementById('stt-rx').hidden), 'the second browser hides them too');
+    await chip('SSB').click();
+    await page.waitForFunction(() => !document.querySelector('.stt-toggle').hidden && /^listening/.test(document.getElementById('stt-status').textContent), null, { timeout: 3000 }).catch(() => {});
+    const back = { toggle: await vis('.stt-toggle'), ticked: await page.locator('#stt-checkbox').isChecked(), panel: await vis('#stt-rx'), status: await page.locator('#stt-status').textContent(), mode: civ.mode, data: civ.dataMode };
+    check(back.toggle && back.ticked && back.panel && /^listening/.test(back.status), 'back to SSB: the checkbox, ticked, and the panel, listening: ' + JSON.stringify(back));
     await page.locator('#stt-checkbox').uncheck();
     await sleep(200);
     check(server.state.sttEnabled === false && !(await vis('#stt-rx')), 'unticked: off, and the panel goes');

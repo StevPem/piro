@@ -131,6 +131,12 @@ const until = async (fn, ms = 4000) => {
     bridge.start();
     check(cs.state.stt.available && !cs.state.stt.enabled && cs.state.stt.phase === 'off' && cs.state.stt.engine === 'local', 'STT starts available and off');
     check(spawned.length === 0, 'no speech engine runs until STT is ticked');
+    check(cs.state.stt.voice === true, 'LSB is a voice mode, so the page shows the checkbox');
+    cs.state.mode = { mode: 'CW' };
+    bridge._syncAudio();
+    check(cs.state.stt.voice === false && cs.state.stt.phase === 'off', 'CW is not: the checkbox is hidden, even unticked');
+    cs.state.mode = { mode: 'LSB' };
+    bridge._syncAudio();
 
     cs.emit('stt-enabled', true);
     check(await until(() => cs.state.stt.phase === 'listening'), 'ticked: the local whisper-server is started, and once it answers STT listens');
@@ -190,18 +196,47 @@ const until = async (fn, ms = 4000) => {
     modes = {};
     cs.state.mode = { mode: 'CW' };
     bridge._syncAudio();
-    check(cs.state.stt.phase === 'paused', 'CW pauses it');
+    check(cs.state.stt.phase === 'paused' && cs.state.stt.voice === false, 'CW pauses it, and the checkbox is hidden');
     cs.state.mode = { mode: 'USB' };
     bridge._syncAudio();
-    check(cs.state.stt.phase === 'listening', 'USB: listening again');
+    check(cs.state.stt.phase === 'listening' && cs.state.stt.voice === true, 'USB: listening again');
+
+    // FreeDV (USB with DATA mode on): the decoded speech is heard, not the modem tones.
+    cs.state.dataMode = true;
+    modes = { freeDvActive: true };
+    bridge._syncAudio();
+    check(cs.state.stt.phase === 'paused' && !cs.state.stt.voice, 'FreeDV with no RADE decoder: not a voice mode');
+    const rade = new EventEmitter();
+    bridge.radeBridge = rade;
+    bridge._syncAudio();
+    check(cs.state.stt.phase === 'listening' && cs.state.stt.voice === true, 'FreeDV is a voice mode');
+    check(rade.listenerCount('decoded-speech') === 1 && capture.listenerCount('data') === 0, "in FreeDV STT hears RadeBridge's decoded speech, not the radio's audio");
+    const fdvBefore = posts.length;
+    feed(over());
+    await sleep(200);
+    check(posts.length === fdvBefore, "the radio's audio (the modem tones) is not transcribed in FreeDV");
+    {
+      const pcm = toPcm(over());
+      for (let i = 0; i < pcm.length; i += 4800) rade.emit('decoded-speech', pcm.subarray(i, Math.min(pcm.length, i + 4800)));
+    }
+    check(await until(() => posts.length === fdvBefore + 1), 'an over of decoded FreeDV speech is transcribed');
+    modes = { freeDvActive: true, js8Active: true };
+    bridge._syncAudio();
+    check(cs.state.stt.phase === 'paused' && !cs.state.stt.voice, 'another app mode: paused');
+    modes = {};
+    cs.state.dataMode = false;
+    bridge._syncAudio();
+    check(cs.state.stt.phase === 'listening' && rade.listenerCount('decoded-speech') === 0 && capture.listenerCount('data') === 1, 'back to USB: the radio again');
+    await until(() => !cs.state.stt.busy && !cs.state.stt.waiting);
 
     // An answer with only invented text: nothing shown.
     answer = () => ({ segments: [{ text: ' Thank you for watching!', no_speech_prob: 0.2, avg_logprob: -0.3 }] });
     const before = events.filter((e) => e.type === EVENT.STT_TEXT).length;
+    const postsBefore = posts.length;
     feed(over());
-    await until(() => posts.length === 2);
+    await until(() => posts.length === postsBefore + 1);
     await sleep(100);
-    check(posts.length === 2 && events.filter((e) => e.type === EVENT.STT_TEXT).length === before && cs.state.stt.last.kept === false, 'an over Whisper only invents text for shows nothing (the status says nothing was kept)');
+    check(posts.length === postsBefore + 1 && events.filter((e) => e.type === EVENT.STT_TEXT).length === before && cs.state.stt.last.kept === false, 'an over Whisper only invents text for shows nothing (the status says nothing was kept)');
 
     // Unticked: the engine stops.
     cs.emit('stt-enabled', false);
@@ -254,7 +289,8 @@ const until = async (fn, ms = 4000) => {
     await until(() => posts.length >= 3 && !cs.state.stt.busy);
     const lens = posts.map((p) => p.seconds.toFixed(2)).join(', ');
     check(posts.length === 3, `a 21 s over goes in three pieces (${lens} s)`);
-    check(posts[0] && posts[0].seconds > 8.9 && posts[0].seconds < 9.5, `the first is cut in the gap between words, not at exactly 10 s (${posts[0]?.seconds.toFixed(2)} s)`);
+    // Where the quietest moment falls depends on the synthetic syllables, so only its range is checked.
+    check(posts[0] && posts[0].seconds >= 8 && posts[0].seconds < 9.95, `the first is cut at a quiet moment in its last 2 s, not at exactly 10 s (${posts[0]?.seconds.toFixed(2)} s)`);
     check(posts.every((p) => p.seconds <= 10.05), 'no piece is longer than 10 s');
     check(posts[1] && posts[1].body.includes('VK3ABC. You are five nine') && posts[1].body.includes('CQ CQ this is Victor Kilo') && !posts[0].body.includes('this is Victor Kilo\r'), "a later piece is sent with the earlier pieces' text as context");
     const texts = events.filter((e) => e.type === EVENT.STT_TEXT).map((e) => e.data);
