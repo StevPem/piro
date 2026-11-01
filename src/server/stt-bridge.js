@@ -147,9 +147,11 @@ function httpRequest(url, { method = 'GET', body, type, timeoutMs = REQUEST_TIME
  * goes, each cut at a quiet moment and transcribed with the text before it
  * as context. One piece is transcribed at a time;
  * if the transcriber falls behind, the oldest waiting is dropped. Nothing
- * is transcribed while transmitting, or outside a voice mode (LSB, USB, AM,
- * FM with DATA mode off and no app mode). STT is unticked when the last
- * browser leaves.
+ * is transcribed while transmitting, or outside a voice mode: LSB, USB, AM
+ * or FM with DATA mode off and no app mode, or FreeDV (RADE), where it
+ * hears RadeBridge's decoded speech, not the modem tones. state.stt.voice
+ * says whether this is a voice mode, ticked or not, and the page shows the
+ * STT checkbox only then. STT is unticked when the last browser leaves.
  *
  * What comes back is filtered (stt-text.js keepSegments(): no text Whisper
  * makes up from noise) and broadcast as EVENT.STT_TEXT, with the
@@ -161,17 +163,19 @@ class SttBridge {
    * @param {object} opts
    * @param {import('./ws-server').ControlServer} opts.controlServer
    * @param {import('./audio-bridge').AudioBridge} opts.audioBridge
+   * @param {import('events').EventEmitter} [opts.radeBridge] - FreeDV's RadeBridge: its 'decoded-speech' is heard in FreeDV
    * @param {{url?: string, serverBin?: string, model?: string, threads?: number, port?: number}} [opts.config] - see sttConfig()
    * @param {Function} [opts.request] - injectable httpRequest(url, opts)
    * @param {Function} [opts.spawnFn] - injectable child_process.spawn
    * @param {() => number} [opts.now]
    * @param {number} [opts.pollMs=500] - how often a starting server is checked
    */
-  constructor({ controlServer, audioBridge, config = {}, request, spawnFn, now, pollMs = 500 } = {}) {
+  constructor({ controlServer, audioBridge, radeBridge = null, config = {}, request, spawnFn, now, pollMs = 500 } = {}) {
     if (!controlServer) throw new Error('SttBridge requires opts.controlServer');
     if (!audioBridge) throw new Error('SttBridge requires opts.audioBridge');
     this.controlServer = controlServer;
     this.audioBridge = audioBridge;
+    this.radeBridge = radeBridge;
     this.config = { threads: 4, port: DEFAULT_PORT, maxSegmentSec: DEFAULT_SEGMENT_SEC, ...config };
     this.request = request ?? httpRequest;
     this.spawnFn = spawnFn ?? spawn;
@@ -192,6 +196,7 @@ class SttBridge {
     this._child = null;
     this._ready = false;
     this._attached = false;
+    this._source = null; // what is heard: audioBridge.capture, or radeBridge in FreeDV
     this._ptt = false;
     this._squelch = null;
     this._decimator = null;
@@ -215,6 +220,7 @@ class SttBridge {
       this._syncAudio();
     };
     this._onPcm = (chunk) => this._handlePcm(chunk);
+    this._onModeChanged = () => setImmediate(() => this._syncAudio());
     this._onClientJoined = (ws) => {
       if (this._history.length && typeof this.controlServer.sendJsonEvent === 'function') {
         this.controlServer.sendJsonEvent(ws, EVENT.STT_TEXT, { replace: true, overs: this._history });
@@ -232,6 +238,7 @@ class SttBridge {
       note: null, // why paused, or the error
       busy: false, // an over is being transcribed
       waiting: 0, // overs waiting
+      voice: false, // a voice mode now (the page shows the checkbox only then)
       last: null, // the last over: {durationSec, seconds, kept}
     };
   }
@@ -256,8 +263,10 @@ class SttBridge {
     this.controlServer.on('stt-enabled', this._onEnabled);
     this.controlServer.on('ptt', this._onPtt);
     this.controlServer.on('client-connected', this._onClientJoined);
-    this._modeTimer = setInterval(() => this._syncAudio(), 1000); // the mode, DATA mode and app modes have no event of their own
+    this.controlServer.on('mode-changed', this._onModeChanged);
+    this._modeTimer = setInterval(() => this._syncAudio(), 1000); // and a check each second, in case a change has no event
     this._modeTimer.unref?.();
+    this._syncAudio();
     this.controlServer.broadcastJsonEvent(EVENT.STT_STATUS, this.state);
     if (this.controlServer.state.sttEnabled) this.setEnabled(true).catch(() => {});
   }
@@ -266,6 +275,7 @@ class SttBridge {
     this.controlServer.off('stt-enabled', this._onEnabled);
     this.controlServer.off('ptt', this._onPtt);
     this.controlServer.off('client-connected', this._onClientJoined);
+    this.controlServer.off('mode-changed', this._onModeChanged);
     clearInterval(this._modeTimer);
     await this.setEnabled(false);
   }
@@ -352,44 +362,54 @@ class SttBridge {
     }
   }
 
-  /** Voice mode: LSB/USB/AM/FM, DATA mode off, no app mode. */
-  _voiceMode() {
+  /**
+   * Where speech is heard now: the radio's audio in LSB/USB/AM/FM with DATA
+   * mode off and no app mode, FreeDV's decoded speech in FreeDV (RADE), or
+   * null (not a voice mode).
+   */
+  _voiceSource() {
     const cs = this.controlServer.state;
-    const mode = cs.mode?.mode ?? cs.mode;
-    if (!VOICE_MODES.includes(mode)) return false;
-    if (cs.dataMode) return false;
     const m = this.controlServer.appModes?.() ?? {};
-    return !Object.entries(m).some(([k, v]) => k.endsWith('Active') && v === true);
+    if (Object.entries(m).some(([k, v]) => k.endsWith('Active') && k !== 'freeDvActive' && v === true)) return null;
+    if (m.freeDvActive) return this.radeBridge && cs.freeDvVariant !== '700E' ? this.radeBridge : null;
+    const mode = cs.mode?.mode ?? cs.mode;
+    if (!VOICE_MODES.includes(mode) || cs.dataMode) return null;
+    return this.audioBridge.capture;
   }
 
   _syncAudio() {
+    const source = this._voiceSource();
+    this._update({ voice: !!source });
     if (!this._enabled || !this._ready) return;
     let pause = null;
     if (this._ptt) pause = 'transmitting';
-    else if (!this._voiceMode()) pause = 'only in voice modes (SSB, AM, FM)';
-    if (pause) {
-      if (this._attached) this._endOver(true); // what was heard before still goes
+    else if (!source) pause = 'only in voice modes (SSB, AM, FM, FreeDV)';
+    if (this._attached && (pause || source !== this._source)) {
+      this._endOver(true); // what was heard before still goes
       this._detach();
-      this._update({ phase: 'paused', note: pause });
-    } else {
-      if (!this._attached) this._attach();
+    }
+    if (pause) this._update({ phase: 'paused', note: pause });
+    else {
+      if (!this._attached) this._attach(source);
       this._update({ phase: 'listening', note: null });
     }
   }
 
-  _attach() {
+  _attach(source) {
     this._squelch = new VoiceSquelch({ sampleRate: this.audioBridge.sampleRate, makeResampler: (a, b) => new StreamDecimator(a, b, { cutoffHz: 3500 }) });
     this._decimator = new StreamDecimator(this.audioBridge.sampleRate, RATE);
     this._over = [];
     this._overLen = 0;
     this._wasOpen = false;
-    this.audioBridge.capture.on('data', this._onPcm);
+    this._source = source;
+    source.on(source === this.radeBridge ? 'decoded-speech' : 'data', this._onPcm);
     this._attached = true;
   }
 
   _detach() {
     if (!this._attached) return;
-    this.audioBridge.capture.off('data', this._onPcm);
+    this._source.off(this._source === this.radeBridge ? 'decoded-speech' : 'data', this._onPcm);
+    this._source = null;
     this._attached = false;
     this._squelch = null;
     this._decimator = null;

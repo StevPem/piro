@@ -331,6 +331,8 @@ class ControlServer extends EventEmitter {
     this.civ.on('mode', (value) => {
       this.state.mode = value;
       this._broadcast(makeEvent(EVENT.MODE, { value }));
+      // Internal: the radio's mode, DATA mode or an app mode changed (STT follows it).
+      this.emit('mode-changed');
     });
     this.civ.on('error', (err) => {
       this._broadcast(makeEvent(EVENT.RIG_ERROR, { message: err.message }));
@@ -412,6 +414,7 @@ class ControlServer extends EventEmitter {
   /** Tells every browser except `except` (which has its own reply) about the app modes now. */
   _broadcastAppModes(except) {
     this._broadcast(makeEvent(EVENT.APP_MODES, this.appModes()), except);
+    this.emit('mode-changed');
   }
 
   _setJttyActive(active) {
@@ -582,6 +585,7 @@ class ControlServer extends EventEmitter {
           await this.civ.setMode(msg.mode, msg.filter);
           const value = { mode: msg.mode, filter: msg.filter ?? 1 };
           this.state.mode = value;
+          this.emit('mode-changed');
           ws.send(makeResult(id, { value }));
           this._broadcast(makeEvent(EVENT.MODE, { value }), ws);
           break;
@@ -592,6 +596,7 @@ class ControlServer extends EventEmitter {
           }
           await this.civ.setDataMode(msg.on);
           this.state.dataMode = msg.on;
+          this.emit('mode-changed');
           ws.send(makeResult(id, { on: msg.on }));
           this._broadcast(makeEvent(EVENT.DATA_MODE, { on: msg.on }), ws);
           break;

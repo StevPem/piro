@@ -729,6 +729,7 @@ async function main() {
       txGain: RADE_TX_GAIN,
     });
     radeBridge.start();
+    if (sttBridge) sttBridge.radeBridge = radeBridge; // STT hears FreeDV's decoded speech
     console.log(
       `RADE bridge ready (RADE ${RADE_VERSION}; activates when a client's FreeDV mode is set to the ` +
         'RADE variant — 700E has no codec wired up, see docs/ui-notes.md).'
