@@ -12,7 +12,7 @@ Hamlib, no separate audio server and no extra apps.
 Written by VK3TR. Licensed AGPL-3.0-only (see
 [Licence](#licence)).
 
-**Current build: v125.** This is the version the app shows next to its title.
+**Current build: v126.** This is the version the app shows next to its title.
 It is the `CACHE_NAME` number in `src/client/sw.js`, which goes up with every
 change to the web app.
 
@@ -700,12 +700,20 @@ calls silence (likely not speech *and* unsure of its words) and text it is
 known to invent, but some will get through. It is given a short QSO-like prompt (the phonetic
 alphabet, "five nine", QTH, 73) so it expects radio talk.
 
+With Deepgram, the same holds: strong signals copy well, weak ones less
+so. Deepgram rarely makes up text from noise, but the same filters
+apply. It is given keyterms instead of a prompt (see
+[Deepgram](#deepgram-stt-in-the-cloud)), and it writes numbers as
+figures ("Victor Kilo 3 Tango Romeo"); callsigns are still found.
+
 **How far it has been tested.** PiRO's side was checked with synthetic
 voices in noise and a stand-in for Whisper, and against a real
 `whisper-server` (started, sent overs, stopped) loaded with whisper.cpp's
 small test model, which answers but transcribes nothing. It has not yet
 been tried with a real Whisper model or on air, so how well it copies SSB
-is still to be seen.
+is still to be seen. Deepgram support was checked against a stand-in for
+its API (the request, the keyterms, the key, its answer), not yet against
+the real service or on air.
 
 ##### Compressed audio for remote use
 
@@ -1855,11 +1863,13 @@ one hard refresh (Ctrl+Shift+R, or Cmd+Shift+R on a Mac).
   FreeDV.
 - **STT says "paused".** It pauses while you transmit.
 - **STT shows no text.** The status line shows the last over: how long it
-  was, and how long Whisper took ("6.2 s to transcribe"), or "nothing
-  kept". The journal has a line for every over with what Whisper heard and
-  what was dropped and why: `journalctl -u piro -f | grep STT`. If
-  transcribing takes longer than the overs, Whisper falls behind and only
-  the latest two waiting overs are kept: use a smaller model.
+  was, and how long it took to transcribe ("6.2 s to transcribe"), or
+  "nothing kept". The journal has a line for every over with what was
+  heard and what was dropped and why: `journalctl -u piro -f | grep STT`.
+  If transcribing takes longer than the overs, whisper.cpp falls behind
+  and only the latest two waiting overs are kept: use a smaller model, a
+  faster computer (`STT_URL`), or Deepgram. With Deepgram, a time of more
+  than a second or two means a slow internet connection.
 - **STT shows text that wasn't said.** Whisper makes things up on noise.
   Use it on signals you can mostly hear, and check by ear.
 - **STT with Deepgram says "Transcription failed: Deepgram: HTTP 401".**
@@ -1973,10 +1983,11 @@ browser. There is no build step: the browser loads plain ES modules.
 - **Workers.** Heavy decoding and encoding (FT8, JTTY, Olivia, JS8, SSTV, WSPR,
   EasyPal) and the VARA modem run in worker threads, so the main thread stays free for CI-V,
   audio and the WebSocket.
-- **Separate programs.** FreeDV RADE (`rade_c`), RNNoise (`rnnoise_demo`)
-  and speech to text (whisper.cpp's `whisper-server`) run as their own
-  processes, started by their bridges. If one fails, PiRO reports it and
-  carries on.
+- **Separate programs and services.** FreeDV RADE (`rade_c`), RNNoise
+  (`rnnoise_demo`) and speech to text (whisper.cpp's `whisper-server`) run
+  as their own processes, started by their bridges. Speech to text can use
+  Deepgram's cloud service over HTTPS instead. If one fails, PiRO reports
+  it and carries on.
 - **The client** (`src/client/`): `app.js` is the whole UI. `rpc.js`
   (RigLink) wraps the WebSocket and re-dispatches every server event as a
   DOM event. `audio.js` plays and records with Web Audio. `scope.js` draws
@@ -2040,7 +2051,8 @@ src/
               radio-setup.js (NR, notch and filter for fax and EasyPal),
               band-conditions.js, wsprnet.js, freedv-reporter.js, png.js,
               varac.js (VarAC's messages and CQ slots),
-              stt-text.js (what is kept of Whisper's text, callsigns)
+              stt-text.js (what is kept of Whisper's or Deepgram's text,
+              callsigns)
   audio/      ALSA (alsa.js, mixer.js), Opus (opus-codec.js), PCM framing,
               resampling (resample.js, decimator.js), FFT (fft.js),
               noise reduction (rnnoise-filter.js, hamnoise-filter.js),
