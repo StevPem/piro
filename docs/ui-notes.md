@@ -4932,3 +4932,17 @@ model for how to approach that.
   request, the text and callsign, a rejected key, the key kept private).
   Not tried against the real service: this environment can't reach it.
 
+### Docs and diagram: Deepgram everywhere STT is described (v126)
+
+- README: "What to expect" says how Deepgram copies (and that it writes
+  numbers as figures), "How far it has been tested" says Deepgram was
+  checked against a stand-in only, the "no text" troubleshooting entry
+  covers both engines, the architecture section names Deepgram as a
+  service, and the file layout says stt-text.js reads both answers.
+- `piro.env.example`: the STT heading names both engines.
+- Architecture diagram: the SttBridge box shows `engine: whisper |
+  deepgram` and `_whisper()` / `_deepgram()`; the stt-text box shows
+  `keepDeepgram()`. The title and sw.js box say v126.
+  `docs/architecture.png` made again.
+- No code changed. Service-worker cache v126.
+
