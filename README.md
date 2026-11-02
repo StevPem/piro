@@ -12,7 +12,7 @@ Hamlib, no separate audio server and no extra apps.
 Written by VK3TR. Licensed AGPL-3.0-only (see
 [Licence](#licence)).
 
-**Current build: v123.** This is the version the app shows next to its title.
+**Current build: v124.** This is the version the app shows next to its title.
 It is the `CACHE_NAME` number in `src/client/sw.js`, which goes up with every
 change to the web app.
 
@@ -1914,6 +1914,10 @@ browser. There is no build step: the browser loads plain ES modules.
 - **Workers.** Heavy decoding and encoding (FT8, JTTY, Olivia, JS8, SSTV, WSPR,
   EasyPal) and the VARA modem run in worker threads, so the main thread stays free for CI-V,
   audio and the WebSocket.
+- **Separate programs.** FreeDV RADE (`rade_c`), RNNoise (`rnnoise_demo`)
+  and speech to text (whisper.cpp's `whisper-server`) run as their own
+  processes, started by their bridges. If one fails, PiRO reports it and
+  carries on.
 - **The client** (`src/client/`): `app.js` is the whole UI. `rpc.js`
   (RigLink) wraps the WebSocket and re-dispatches every server event as a
   DOM event. `audio.js` plays and records with Web Audio. `scope.js` draws
@@ -1921,7 +1925,8 @@ browser. There is no build step: the browser loads plain ES modules.
 
 [`docs/architecture.drawio`](docs/architecture.drawio) is a UML diagram of
 the main classes and how they connect: browser client, server, feature
-bridges, CI-V and audio. Its second page lists which events each server
+bridges, CI-V and audio, and the programs and services outside PiRO. Its
+second page lists which events each server
 part listens to and sends. Open it in [draw.io](https://app.diagrams.net/)
 or the draw.io desktop app. [`docs/architecture.png`](docs/architecture.png)
 is a preview of the first page.

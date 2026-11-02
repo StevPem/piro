@@ -4866,3 +4866,30 @@ model for how to approach that.
   panel go in both browsers while STT stays ticked, and come back in SSB.
   Hiding the checkbox moves the CW controls up, so the CW layout check
   now waits for that first.
+
+### Architecture diagram and install guide brought up to date (v124)
+
+- `docs/architecture.drawio` was last updated at v104. It now has the
+  parts added since:
+  - bridges: Js8Bridge, VaraBridge and SttBridge, with SttBridge's link
+    to RadeBridge (FreeDV's decoded speech, routed above the bridges);
+  - server modules: varac, stt-text, audio-codecs, net-options;
+  - audio: js8-worker and the js8/ codec, decoder and modulator,
+    vara-worker and XaraModem, VoiceSquelch, HellTextReader (hell-ocr),
+    fax-tx;
+  - CI-V: data-mode-guard (ensureDataMode, watchDataMode);
+  - client: audio-codec (shared with the server), CallAlert, meter-modes;
+  - outside: whisper.cpp's whisper-server.
+- Page 2 (event wiring) has rows for JS8, VARA and STT. The ControlServer
+  row has the internal `mode-changed`, AudioBridge the voice squelch and
+  compressed audio, RadeBridge `decoded-speech`, HellDecoderBridge
+  `hell-text`. The notes say STT runs as its own program.
+- The title and the sw.js box name the build. The server and audio areas
+  grew to the right (the diagram is about 7100 units wide).
+  `docs/architecture.png` was made again from page 1 with draw.io's own
+  viewer in headless Chromium, at 0.45 scale (3188 x 918), in 128 colours.
+- `docs/install-debian.md` has a new step 12, "Extra components": what
+  RADE, STT and RNNoise need, and a link to the README's steps. The README's
+  architecture section names the separate programs.
+- No code changed. Service-worker cache v124.
+
