@@ -169,7 +169,7 @@ ones you want:
 | Feature | What it needs |
 |---|---|
 | FreeDV RADE mode | `rade_c` built and installed (`radae_tx`, `radae_rx`, `lpcnet_demo`) |
-| STT checkbox (speech to text) | whisper.cpp's `whisper-server` built, and a Whisper model, or one running on another computer (`STT_URL`) |
+| STT checkbox (speech to text) | whisper.cpp's `whisper-server` built, and a Whisper model, or one running on another computer (`STT_URL`); or a Deepgram API key (in the cloud, paid) |
 | RNN button (hidden for now) | a patched `rnnoise_demo` |
 
 The steps for each are in the main README under

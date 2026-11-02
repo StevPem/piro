@@ -661,14 +661,15 @@ async function main() {
 
     // Speech-to-text copy aid (the "STT" checkbox): whisper.cpp's
     // whisper-server, started here from STT_WHISPER_SERVER and STT_MODEL
-    // while STT is ticked, or one already running at STT_URL. See
+    // while STT is ticked, or one already running at STT_URL; or Deepgram
+    // in the cloud (STT_ENGINE=deepgram, DEEPGRAM_API_KEY). See
     // server/stt-bridge.js.
     {
       const cfg = sttConfig(process.env);
       for (const w of cfg.warnings) console.warn(w);
       sttBridge = new SttBridge({ controlServer, audioBridge, config: cfg });
       sttBridge.start();
-      console.log(sttBridge.unavailable ? `Speech-to-text unavailable: ${sttBridge.unavailable}` : `Speech-to-text ready (${sttBridge.local ? `whisper-server with ${cfg.model}` : cfg.url}; runs while STT is ticked).`);
+      console.log(sttBridge.unavailable ? `Speech-to-text unavailable: ${sttBridge.unavailable}` : `Speech-to-text ready (${sttBridge.engine === 'deepgram' ? `Deepgram ${cfg.deepgram.model}, ${cfg.deepgram.keyterms.length} keyterms` : sttBridge.local ? `whisper-server with ${cfg.model}` : cfg.url}; runs while STT is ticked).`);
     }
 
     // WSPR receive and transmit (the third choice of the DIGI button).

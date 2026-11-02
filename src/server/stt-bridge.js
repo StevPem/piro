@@ -6,7 +6,8 @@ const https = require('https');
 const { EVENT } = require('./protocol');
 const { VoiceSquelch } = require('../audio/voice-squelch');
 const { StreamDecimator } = require('../audio/decimator');
-const { keepSegments, phoneticCallsigns, HAM_PROMPT } = require('./stt-text');
+const { keepSegments, keepDeepgram, phoneticCallsigns, HAM_PROMPT } = require('./stt-text');
+const { CONNECT_OPTIONS } = require('./net-options');
 
 const RATE = 16000; // Whisper's sample rate
 // A long over is sent in pieces, so its text comes as it goes. Each piece
@@ -24,6 +25,18 @@ const MAX_QUEUE = 2; // overs waiting while one is transcribed; older ones are d
 const HISTORY_MAX = 40;
 const DEFAULT_PORT = 8178;
 const START_TIMEOUT_MS = 120 * 1000; // loading a model on a Pi takes a while
+const DEEPGRAM_START_TIMEOUT_MS = 30 * 1000; // reaching api.deepgram.com
+const DEEPGRAM_URL = 'https://api.deepgram.com';
+const DEEPGRAM_MODEL = 'nova-3';
+const DEEPGRAM_MAX_KEYTERMS = 100; // Deepgram allows 500 tokens of keyterms a request
+// What Deepgram is told to listen for (DEEPGRAM_KEYTERMS replaces it):
+// the phonetic alphabet, numbers as said on air, and the usual words of a QSO.
+const DEEPGRAM_KEYTERMS = [
+  'Alpha', 'Bravo', 'Charlie', 'Delta', 'Echo', 'Foxtrot', 'Golf', 'Hotel', 'India', 'Juliet', 'Kilo', 'Lima', 'Mike',
+  'November', 'Oscar', 'Papa', 'Quebec', 'Romeo', 'Sierra', 'Tango', 'Uniform', 'Victor', 'Whiskey', 'X-ray', 'Yankee', 'Zulu',
+  'zero', 'one', 'two', 'three', 'four', 'five', 'six', 'seven', 'eight', 'nine', 'niner',
+  'five nine', 'five and nine', 'CQ', 'QSL', 'QRZ', 'QTH', 'QSY', 'seventy three', 'over', 'roger', 'copy',
+];
 const REQUEST_TIMEOUT_MS = 120 * 1000;
 const VOICE_MODES = ['LSB', 'USB', 'AM', 'FM', 'WFM'];
 // Whisper's encoder works on 30 s (1500 frames, 50 a second) whatever the
@@ -63,9 +76,54 @@ function sttConfig(env = process.env) {
     if (Number.isInteger(v) && v > 0 && v < 65536) port = v;
     else warnings.push(`STT_PORT="${env.STT_PORT}" is not a port; using ${DEFAULT_PORT}.`);
   }
+  // Deepgram, in the cloud: STT_ENGINE=deepgram, or DEEPGRAM_API_KEY with no whisper.cpp set up.
+  const unquote = (v) => String(v ?? '').trim().replace(/^(["'])(.*)\1$/, '$2').trim();
+  const deepgramKey = unquote(env.DEEPGRAM_API_KEY);
+  const deepgramModel = unquote(env.DEEPGRAM_MODEL) || DEEPGRAM_MODEL;
+  const deepgramLanguage = unquote(env.DEEPGRAM_LANGUAGE) || 'en';
+  let deepgramUrl = unquote(env.DEEPGRAM_URL).replace(/\/+$/, '') || DEEPGRAM_URL;
+  if (!/^https?:\/\//.test(deepgramUrl)) {
+    warnings.push(`DEEPGRAM_URL="${deepgramUrl}" must start with https://; using ${DEEPGRAM_URL}.`);
+    deepgramUrl = DEEPGRAM_URL;
+  }
+  let deepgramKeyterms = DEEPGRAM_KEYTERMS;
+  if (unquote(env.DEEPGRAM_KEYTERMS) !== '') {
+    deepgramKeyterms = unquote(env.DEEPGRAM_KEYTERMS)
+      .split(',')
+      .map((t) => {
+        try {
+          return decodeURIComponent(t).trim(); // "five%20nine" works as well as "five nine"
+        } catch {
+          return t.trim();
+        }
+      })
+      .filter(Boolean);
+    if (deepgramKeyterms.length > DEEPGRAM_MAX_KEYTERMS) {
+      warnings.push(`DEEPGRAM_KEYTERMS has ${deepgramKeyterms.length} terms; using the first ${DEEPGRAM_MAX_KEYTERMS}.`);
+      deepgramKeyterms = deepgramKeyterms.slice(0, DEEPGRAM_MAX_KEYTERMS);
+    }
+  }
+  const whisperSet = !!(url || serverBin || model);
+  let engine = unquote(env.STT_ENGINE).toLowerCase();
+  if (engine && engine !== 'whisper' && engine !== 'deepgram') {
+    warnings.push(`STT_ENGINE="${env.STT_ENGINE}" must be whisper or deepgram.`);
+    engine = '';
+  }
+  if (!engine) engine = deepgramKey && !whisperSet ? 'deepgram' : 'whisper';
+  if (engine === 'deepgram' && !deepgramKey) warnings.push('STT_ENGINE=deepgram needs DEEPGRAM_API_KEY.');
   if (url && !/^https?:\/\//.test(url)) warnings.push(`STT_URL="${url}" must start with http:// or https://.`);
-  if (!url && (serverBin || model) && !(serverBin && model)) warnings.push('STT needs both STT_WHISPER_SERVER and STT_MODEL (or STT_URL).');
-  return { url: /^https?:\/\//.test(url) ? url : '', serverBin, model, threads, port, maxSegmentSec, warnings };
+  if (engine === 'whisper' && !url && (serverBin || model) && !(serverBin && model)) warnings.push('STT needs both STT_WHISPER_SERVER and STT_MODEL (or STT_URL).');
+  return {
+    engine,
+    url: /^https?:\/\//.test(url) ? url : '',
+    serverBin,
+    model,
+    threads,
+    port,
+    maxSegmentSec,
+    deepgram: { key: deepgramKey, model: deepgramModel, language: deepgramLanguage, url: deepgramUrl, keyterms: deepgramKeyterms },
+    warnings,
+  };
 }
 
 /** 16-bit mono WAV at `rate` from Float32 samples (-1..1). */
@@ -105,14 +163,26 @@ function multipart(fields, wav) {
   return { body: Buffer.concat(parts), type: `multipart/form-data; boundary=${boundary}` };
 }
 
+/**
+ * Deepgram's pre-recorded endpoint for one over: the model, punctuation
+ * and number formatting, and the keyterms (one parameter each; Nova-3 and
+ * Flux take "keyterm", older models "keywords").
+ */
+function deepgramListenUrl({ url = DEEPGRAM_URL, model = DEEPGRAM_MODEL, language = 'en', keyterms = DEEPGRAM_KEYTERMS } = {}) {
+  const q = new URLSearchParams({ model, language, punctuate: 'true', smart_format: 'true' });
+  const name = /^(nova-3|flux)/i.test(model) ? 'keyterm' : 'keywords';
+  for (const t of keyterms) q.append(name, t);
+  return `${url}/v1/listen?${q.toString().replace(/\+/g, '%20')}`;
+}
+
 /** POST (or GET without a body) to a URL; resolves {status, text}. */
-function httpRequest(url, { method = 'GET', body, type, timeoutMs = REQUEST_TIMEOUT_MS } = {}) {
+function httpRequest(url, { method = 'GET', body, type, headers = {}, timeoutMs = REQUEST_TIMEOUT_MS } = {}) {
   return new Promise((resolve, reject) => {
     const u = new URL(url);
     const lib = u.protocol === 'https:' ? https : http;
     const req = lib.request(
       u,
-      { method, headers: body ? { 'Content-Type': type, 'Content-Length': body.length } : {}, timeout: timeoutMs },
+      { ...CONNECT_OPTIONS, method, headers: { ...headers, ...(body ? { 'Content-Type': type, 'Content-Length': body.length } : {}) }, timeout: timeoutMs },
       (res) => {
         const chunks = [];
         res.on('data', (c) => chunks.push(c));
@@ -137,7 +207,11 @@ function httpRequest(url, { method = 'GET', body, type, timeoutMs = REQUEST_TIME
  * - STT_WHISPER_SERVER and STT_MODEL: PiRO starts it on this machine
  *   (127.0.0.1:STT_PORT, STT_THREADS threads) when STT is ticked, and stops
  *   it when it is unticked, so the model's memory is only used then;
- * - or STT_URL: one already running (on a faster computer, say).
+ * - or STT_URL: one already running (on a faster computer, say);
+ * - or Deepgram, in the cloud (STT_ENGINE=deepgram, DEEPGRAM_API_KEY): each
+ *   over is posted to its /v1/listen with the keyterms DEEPGRAM_KEYTERMS
+ *   (phonetics and numbers by default). Nothing runs on this machine, but
+ *   the audio leaves it, and it needs the internet and a paid key.
  *
  * Overs are found with the voice squelch's speech detector
  * (audio/voice-squelch.js: the pitch of a voice, with 0.3 s before it and
@@ -183,13 +257,17 @@ class SttBridge {
     this.pollMs = pollMs;
 
     const rate = audioBridge.sampleRate;
-    const local = !this.config.url && this.config.serverBin && this.config.model;
+    this.engine = this.config.engine === 'deepgram' ? 'deepgram' : 'whisper';
+    this.deepgram = { key: '', model: DEEPGRAM_MODEL, language: 'en', url: DEEPGRAM_URL, keyterms: DEEPGRAM_KEYTERMS, ...this.config.deepgram };
+    const local = this.engine === 'whisper' && !this.config.url && this.config.serverBin && this.config.model;
     let unavailable = null;
-    if (!this.config.url && !local) unavailable = 'Speech-to-text is not set up on this server: set STT_WHISPER_SERVER and STT_MODEL (or STT_URL). See the README.';
+    if (this.engine === 'deepgram') {
+      if (!this.deepgram.key) unavailable = 'Speech-to-text with Deepgram needs DEEPGRAM_API_KEY. See the README.';
+    } else if (!this.config.url && !local) unavailable = 'Speech-to-text is not set up on this server: set STT_WHISPER_SERVER and STT_MODEL (or STT_URL), or DEEPGRAM_API_KEY. See the README.';
     else if (!Number.isInteger(rate / 8000) || rate < RATE) unavailable = `Speech-to-text needs an audio rate that is a multiple of 16 kHz (this server uses ${rate} Hz).`;
     this.unavailable = unavailable;
     this.local = !!local;
-    this.baseUrl = this.config.url || `http://127.0.0.1:${this.config.port}`;
+    this.baseUrl = this.engine === 'deepgram' ? this.deepgram.url : this.config.url || `http://127.0.0.1:${this.config.port}`;
 
     this._enabled = false;
     this._session = 0;
@@ -233,7 +311,7 @@ class SttBridge {
       available: !this.unavailable,
       reason: this.unavailable,
       enabled: false,
-      engine: this.local ? 'local' : this.config.url ? 'remote' : null,
+      engine: this.engine === 'deepgram' ? 'deepgram' : this.local ? 'local' : this.config.url ? 'remote' : null,
       phase: 'off', // 'off' | 'starting' | 'listening' | 'paused' | 'error'
       note: null, // why paused, or the error
       busy: false, // an over is being transcribed
@@ -297,7 +375,7 @@ class SttBridge {
       this._update({ enabled: true, phase: 'error', note: this.unavailable });
       return;
     }
-    this._update({ enabled: true, phase: 'starting', note: this.local ? 'loading the speech model…' : `connecting to ${this.baseUrl}…` });
+    this._update({ enabled: true, phase: 'starting', note: this.local ? 'loading the speech model…' : this.engine === 'deepgram' ? 'connecting to Deepgram…' : `connecting to ${this.baseUrl}…` });
     try {
       if (this.local) this._startChild(session);
       await this._waitReady(session);
@@ -346,7 +424,7 @@ class SttBridge {
 
   /** Waits until the engine answers (GET / on whisper-server). */
   async _waitReady(session) {
-    const deadline = this.now() + START_TIMEOUT_MS;
+    const deadline = this.now() + (this.engine === 'deepgram' ? DEEPGRAM_START_TIMEOUT_MS : START_TIMEOUT_MS);
     let lastErr = null;
     while (session === this._session) {
       try {
@@ -495,27 +573,11 @@ class SttBridge {
     this._busy = true;
     this._update({ busy: true, waiting: this._queue.length });
     try {
-      const { body, type } = multipart(
-        {
-          response_format: 'verbose_json',
-          language: 'en',
-          temperature: '0.0',
-          temperature_inc: '0.0',
-          suppress_nst: 'true',
-          no_language_probabilities: 'true',
-          audio_ctx: String(audioCtxFor(over.durationSec)),
-          // A later piece of an over: what the earlier ones said, so Whisper carries on the sentence.
-          prompt: over.part > 0 && this._overText.get(over.overId)?.text ? `${HAM_PROMPT} ${this._overText.get(over.overId).text.slice(-CONTEXT_CHARS)}` : HAM_PROMPT,
-        },
-        encodeWav(over.samples)
-      );
       const started = this.now();
-      const res = await this.request(`${this.baseUrl}/inference`, { method: 'POST', body, type });
+      const kept = this.engine === 'deepgram' ? await this._deepgram(over) : await this._whisper(over);
       if (session !== this._session) return;
-      if (res.status !== 200) throw new Error(`HTTP ${res.status}: ${res.text.slice(0, 120)}`);
-      const kept = keepSegments(JSON.parse(res.text));
       const seconds = Math.round((this.now() - started) / 100) / 10;
-      // One line a over in the journal, so it can be seen what Whisper heard and what was kept.
+      // One line an over in the journal, so it can be seen what was heard and what was kept.
       console.log(`STT: ${over.durationSec} s ${over.part || !over.last ? `piece ${over.part + 1} of an over` : 'over'}, ${seconds} s to transcribe: ${kept.text ? `"${kept.text}"` : 'nothing kept'}${kept.why.length ? `; dropped ${kept.why.join('; ')}` : ''}`);
       this._update({ last: { durationSec: over.durationSec, seconds, kept: !!kept.text } });
       // Callsigns are looked for in the whole over so far, so one spelled across a cut is found.
@@ -556,6 +618,47 @@ class SttBridge {
       }
     }
   }
+
+  /** One over to whisper-server's /inference; resolves what to show (keepSegments()). */
+  async _whisper(over) {
+    const { body, type } = multipart(
+      {
+        response_format: 'verbose_json',
+        language: 'en',
+        temperature: '0.0',
+        temperature_inc: '0.0',
+        suppress_nst: 'true',
+        no_language_probabilities: 'true',
+        audio_ctx: String(audioCtxFor(over.durationSec)),
+        // A later piece of an over: what the earlier ones said, so Whisper carries on the sentence.
+        prompt: over.part > 0 && this._overText.get(over.overId)?.text ? `${HAM_PROMPT} ${this._overText.get(over.overId).text.slice(-CONTEXT_CHARS)}` : HAM_PROMPT,
+      },
+      encodeWav(over.samples)
+    );
+    const res = await this.request(`${this.baseUrl}/inference`, { method: 'POST', body, type });
+    if (res.status !== 200) throw new Error(`HTTP ${res.status}: ${res.text.slice(0, 120)}`);
+    return keepSegments(JSON.parse(res.text));
+  }
+
+  /** One over to Deepgram's /v1/listen; resolves what to show (keepDeepgram()). The key is never logged. */
+  async _deepgram(over) {
+    const res = await this.request(deepgramListenUrl(this.deepgram), {
+      method: 'POST',
+      body: encodeWav(over.samples),
+      type: 'audio/wav',
+      headers: { Authorization: `Token ${this.deepgram.key}` },
+    });
+    if (res.status !== 200) {
+      let why = res.text.slice(0, 120);
+      try {
+        const e = JSON.parse(res.text);
+        why = e.err_msg || e.message || why;
+      } catch {}
+      const hint = res.status === 401 ? ' (check DEEPGRAM_API_KEY)' : res.status === 402 ? ' (no credit left)' : '';
+      throw new Error(`Deepgram: HTTP ${res.status}${hint}: ${why}`);
+    }
+    return keepDeepgram(JSON.parse(res.text));
+  }
 }
 
-module.exports = { SttBridge, sttConfig, encodeWav, multipart, httpRequest, audioCtxFor };
+module.exports = { SttBridge, sttConfig, encodeWav, multipart, httpRequest, audioCtxFor, deepgramListenUrl, DEEPGRAM_KEYTERMS };
