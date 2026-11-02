@@ -159,6 +159,24 @@ http://<the-machine's-hostname-or-IP>:8080
 You should see the app, with the frequency display populated and the
 LED status indicator showing "Connected."
 
+## 12. (Optional) Extra components
+
+Everything above gives you rig control, audio, the scope and most modes.
+A few features need something extra, built or installed separately. Each
+one switches itself off cleanly if its part is missing, so add only the
+ones you want:
+
+| Feature | What it needs |
+|---|---|
+| FreeDV RADE mode | `rade_c` built and installed (`radae_tx`, `radae_rx`, `lpcnet_demo`) |
+| STT checkbox (speech to text) | whisper.cpp's `whisper-server` built, and a Whisper model, or one running on another computer (`STT_URL`) |
+| RNN button (hidden for now) | a patched `rnnoise_demo` |
+
+The steps for each are in the main README under
+[Optional components](../README.md#optional-components). JS8, VARA chat,
+FT8, WSPR, SSTV, EasyPal, Radiofax and the CW decoders need nothing extra:
+`npm install` covers them.
+
 ---
 
 ## Running it permanently (systemd service)
