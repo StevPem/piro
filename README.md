@@ -12,7 +12,7 @@ Hamlib, no separate audio server and no extra apps.
 Written by VK3TR. Licensed AGPL-3.0-only (see
 [Licence](#licence)).
 
-**Current build: v124.** This is the version the app shows next to its title.
+**Current build: v125.** This is the version the app shows next to its title.
 It is the `CACHE_NAME` number in `src/client/sw.js`, which goes up with every
 change to the web app.
 
@@ -36,7 +36,8 @@ Note that it DOES NOT include any form of login or password - so don't present i
 2. [What you need](#what-you-need)
 3. [Installing PiRO](#installing-piro)
 4. [Running PiRO as a systemd service](#running-piro-as-a-systemd-service)
-5. [Optional components](#optional-components) (RNNoise, HamNoise, DeepCW, FreeDV RADE)
+5. [Optional components](#optional-components) (RNNoise, HamNoise, DeepCW, FreeDV RADE,
+   whisper.cpp, Deepgram)
 6. [Using PiRO](#using-piro): the screen, sharing the radio, voice, CW,
    the text modes, FT8 and FT4, WSPR, FreeDV, the picture modes
 7. [Configuration reference](#configuration-reference)
@@ -71,8 +72,9 @@ Note that it DOES NOT include any form of login or password - so don't present i
   frame a slot. See [JS8](#js8).
 - **Speech to text** (copy aid): the **STT** checkbox below Filter shows
   received speech as text under the S-meter, using
-  [whisper.cpp](https://github.com/ggml-org/whisper.cpp), with the
-  callsigns spelled in it picked out. An aid to copying, not a log. See
+  [whisper.cpp](https://github.com/ggml-org/whisper.cpp) on the Pi (or
+  another computer) or [Deepgram](https://deepgram.com) in the cloud, with
+  the callsigns spelled in it picked out. An aid to copying, not a log. See
   [Speech to text](#speech-to-text-copy-aid).
 - **VARA chat**: the TTY button's fifth choice is a VARA HF modem for
   keyboard QSOs with VARA Chat and VarAC users. It runs
@@ -295,6 +297,7 @@ nothing and an error is shown) if its part is missing.
 | "RNN" button (hidden for now) | A patched `rnnoise_demo` that you build | [RNNoise](#rnnoise-rnn-button) |
 | FreeDV RADE mode | `rade_c` built and installed | [FreeDV RADE](#freedv-rade) |
 | "STT" checkbox (speech to text) | whisper.cpp's `whisper-server` built, and a Whisper model (or one running on another computer) | [whisper.cpp](#whispercpp-stt-checkbox) |
+| "STT" checkbox, in the cloud instead | A Deepgram account and API key, and an internet connection | [Deepgram](#deepgram-stt-in-the-cloud) |
 
 #### RNNoise ("RNN" button)
 
@@ -443,6 +446,48 @@ computer instead. The `.en` models are English only, and better at it.
 with `whisper-server -m models/ggml-base.en-q5_1.bin --host 0.0.0.0 --port
 8178 -l en`, and set `STT_URL=http://that-computer:8178` instead of the two
 settings above. The audio of each over is sent to it over your network.
+
+#### Deepgram (STT, in the cloud)
+
+Instead of whisper.cpp, speech to text can use
+[Deepgram](https://deepgram.com), a paid speech-to-text service. Nothing
+runs on the Pi, so it never falls behind, and its Nova-3 model copies
+better than the Whisper models a Pi can run. But:
+
+- **The received audio leaves your station.** Each over is sent to
+  Deepgram's servers (in the USA) over the internet.
+- **It costs money.** Deepgram charges by the minute of audio sent, so
+  only by the overs heard while STT is ticked, not the silence between.
+  See Deepgram's pricing page.
+- **It needs the internet.** Without it, STT shows an error; untick it, or
+  set up whisper.cpp as well and switch back.
+
+Create an account at [deepgram.com](https://deepgram.com), make an API key
+in its console, and add it to `/etc/piro/piro.env`, then restart PiRO
+(`sudo systemctl restart piro`):
+
+```
+DEEPGRAM_API_KEY=your-key
+```
+
+With only a key set, PiRO uses Deepgram. If whisper.cpp is set up too,
+add `STT_ENGINE=deepgram` to choose Deepgram (or `STT_ENGINE=whisper` to
+go back). The status line ends with "Deepgram (cloud)" while it is used.
+
+Optional settings:
+
+- `DEEPGRAM_MODEL`: `nova-3` by default.
+- `DEEPGRAM_KEYTERMS`: words and phrases Deepgram listens out for,
+  separated by commas. By default: the phonetic alphabet, the numbers
+  (with "niner"), "five nine", and CQ, QSL, QRZ, QTH, QSY, "seventy
+  three", over, roger and copy. Your own list replaces it. Up to 100;
+  spaces in a phrase can be written as spaces or `%20`. Nova-3 calls these
+  keyterms; older models get them as keywords.
+- `DEEPGRAM_LANGUAGE`: `en` by default. See Deepgram's documentation for
+  the languages each model takes.
+
+Keep the key private: anyone with it can spend your credit. PiRO only
+sends it to Deepgram, never to browsers or the log.
 
 ### Using PiRO
 
@@ -614,7 +659,10 @@ Tick **STT** (below the Filter button) to show received speech as text,
 in a panel under the S-meter. It is a copy aid: something to glance at
 when a word or a callsign is hard to catch. It is not a log, and nothing
 is saved. It needs whisper.cpp set up on the server (see
-[whisper.cpp](#whispercpp-stt-checkbox)); otherwise the panel says so.
+[whisper.cpp](#whispercpp-stt-checkbox)), or a Deepgram key (see
+[Deepgram](#deepgram-stt-in-the-cloud)); otherwise the panel says so.
+Below, "Whisper" is whisper.cpp; with Deepgram the overs are found and
+cut the same way, and each one takes well under a second.
 
 - PiRO listens for speech with the voice squelch's detector (the pitch of
   a voice), and sends each over to Whisper when it ends: about 1.5 s after
@@ -1666,6 +1714,11 @@ All settings are environment variables. For the systemd service they go in
 | `STT_THREADS` | `4` | Threads `whisper-server` uses (1 to 16). |
 | `STT_PORT` | `8178` | The local port `whisper-server` is started on (127.0.0.1 only). |
 | `STT_MAX_SEGMENT_SEC` | `10` | A long over is sent in pieces this long (5 to 28 s), so its text appears as it goes. Longer: a little more accurate, but later. |
+| `STT_ENGINE` | see text | `whisper` or `deepgram`. Without it: Deepgram if `DEEPGRAM_API_KEY` is set and whisper.cpp is not, otherwise whisper.cpp. |
+| `DEEPGRAM_API_KEY` | none | A Deepgram API key: speech to text in the cloud instead of whisper.cpp. See [Deepgram](#deepgram-stt-in-the-cloud). |
+| `DEEPGRAM_MODEL` | `nova-3` | The Deepgram model. |
+| `DEEPGRAM_KEYTERMS` | phonetics, numbers, Q-codes | Words Deepgram listens out for, separated by commas (up to 100). Replaces the built-in list. |
+| `DEEPGRAM_LANGUAGE` | `en` | The language Deepgram expects. |
 | `STT_URL` | none | A `whisper-server` already running (on another computer, say), e.g. `http://192.168.1.20:8178`. Used instead of the two above. |
 | `VARA_AUDIO_LATENCY_MS` | `500` | How far VARA's transmit audio lags what is written to the sound card, in ms (0 to 2000). The modem holds PTT that much longer and times its replies to suit. JS8 uses it too, to start its frames 0.5 s into the slot. |
 | `OLIVIA_SQUELCH` | on | `off` turns off PiRO's filtering of junk characters and decodes exactly as fldigi does with its squelch off. See [Olivia](#rtty-jtty-olivia-and-feld-hell). |
@@ -1809,6 +1862,12 @@ one hard refresh (Ctrl+Shift+R, or Cmd+Shift+R on a Mac).
   the latest two waiting overs are kept: use a smaller model.
 - **STT shows text that wasn't said.** Whisper makes things up on noise.
   Use it on signals you can mostly hear, and check by ear.
+- **STT with Deepgram says "Transcription failed: Deepgram: HTTP 401".**
+  The key is wrong or was deleted: check `DEEPGRAM_API_KEY` in
+  `/etc/piro/piro.env` (no spaces or quotes around it). HTTP 402 means the
+  account has no credit left. "connecting to Deepgram…" that ends in an
+  error means the Pi can't reach `api.deepgram.com`: check its internet
+  connection.
 - **JS8 decodes nothing.** Check that signals show on the audio spectrum,
   and that the Pi's clock is right: JS8 needs it within a
   second or so of UTC (`timedatectl` should say "System clock synchronized:
@@ -2381,7 +2440,7 @@ shapes.
   time}`, a block of up to three characters at a time).
   `setSttEnabled` (`{enabled}`) is the STT checkbox. The state is the
   connect snapshot's `stt` and the `stt-status` broadcast (`{available,
-  reason, enabled, engine: 'local'|'remote'|null, phase:
+  reason, enabled, engine: 'local'|'remote'|'deepgram'|null, phase:
   'off'|'starting'|'listening'|'paused'|'error', note, busy, waiting,
   voice, last}`; `voice` is true in a voice mode, where the page shows the
   checkbox);
@@ -2690,7 +2749,9 @@ The test files:
                            and the bridge with a stand-in whisper-server: an
                            over cut and sent, noise not sent, PTT and
                            non-voice modes pause it, the local server started
-                           and stopped, its failure shown
+                           and stopped, its failure shown; Deepgram: the
+                           settings, the request (keyterms, key, WAV), its
+                           answer, a rejected key, the key kept out of logs
   js8.test.js             JS8: the FFT, CRC-12 and LDPC code, the word list,
                            the message layer as JS8Call shows it, the
                            receiver on simulated slots (four signals, one
@@ -2897,7 +2958,7 @@ Several of the cooler features in this app are built on the work of others:
 - SSTV receiver = Ported to JS from slowrx by Oona Räisänen (OH2EIQ), https://github.com/windytan/slowrx
 - EasyPal (HamDRM) receiver and transmitter = Ported to JS from QSSTV by Johan Maes (ON4QZ) and M. Bos (PA0MBO), https://github.com/ON4QZ/QSSTV, whose transmitter builds on Dream by Volker Fischer (TU Darmstadt)
 - WSPR support = Ported to JS from wsprd and wsprsim (K1JT, K9AN) in WSJT-X, https://wsjtx.github.io/wsjtx/index.html
-- Speech to text = whisper.cpp by Georgi Gerganov and contributors (MIT), https://github.com/ggml-org/whisper.cpp, running OpenAI's Whisper models (MIT); used as a separate program, not bundled
+- Speech to text = whisper.cpp by Georgi Gerganov and contributors (MIT), https://github.com/ggml-org/whisper.cpp, running OpenAI's Whisper models (MIT); used as a separate program, not bundled. Or Deepgram (https://deepgram.com), a paid cloud service, used through its HTTP API with your own key
 - VarAC messages and slots = Ported to JS from hfmodem by Saul St John (W9SSJ), https://github.com/sstjohn/hfmodem
 - JS8 = Ported to JS from JS8Call-improved by Jordan Sherer (KN4CRD) and the JS8Call-improved team, https://github.com/JS8Call-improved/JS8Call-improved
 - VARA chat = Xara, an open-source VARA-compatible modem by x0rro (MIT), compiled to WebAssembly, https://github.com/x0rro/xara. VARA is by Jose Alberto Nieto Ros (EA5HVK).

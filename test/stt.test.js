@@ -7,8 +7,8 @@
 'use strict';
 
 const { EventEmitter } = require('events');
-const { keepSegments, phoneticCallsigns, isInvented, collapseRepeats } = require('../src/server/stt-text');
-const { SttBridge, sttConfig, encodeWav, multipart, audioCtxFor } = require('../src/server/stt-bridge');
+const { keepSegments, keepDeepgram, phoneticCallsigns, isInvented, collapseRepeats } = require('../src/server/stt-text');
+const { SttBridge, sttConfig, encodeWav, multipart, audioCtxFor, deepgramListenUrl, DEEPGRAM_KEYTERMS } = require('../src/server/stt-bridge');
 const { EVENT } = require('../src/server/protocol');
 const { R, bandNoise, voice, toPcm } = require('./fixtures/radio-audio');
 
@@ -310,6 +310,118 @@ const until = async (fn, ms = 4000) => {
     check(cs.state.stt.enabled && cs.state.stt.phase === 'error' && /STT_WHISPER_SERVER/.test(cs.state.stt.note), 'ticking it anyway shows the reason in the panel');
     const remote = new SttBridge({ controlServer: cs, audioBridge: { sampleRate: R, capture: new EventEmitter() }, config: { url: 'http://192.168.1.20:8178' } });
     check(remote.state.available && remote.state.engine === 'remote' && remote.baseUrl === 'http://192.168.1.20:8178', 'STT_URL uses a whisper-server already running elsewhere');
+  }
+
+  // Deepgram: settings.
+  {
+    const KEY = 'dg-secret-key-123';
+    const c = sttConfig({ DEEPGRAM_API_KEY: KEY });
+    check(c.engine === 'deepgram' && c.deepgram.key === KEY && c.deepgram.model === 'nova-3' && c.deepgram.keyterms === DEEPGRAM_KEYTERMS && !c.warnings.length, 'DEEPGRAM_API_KEY alone: Deepgram, nova-3, the built-in keyterms');
+    check(sttConfig({ DEEPGRAM_API_KEY: KEY, STT_WHISPER_SERVER: '/w', STT_MODEL: '/m' }).engine === 'whisper', 'with whisper.cpp set up too, whisper.cpp is used unless STT_ENGINE says');
+    check(sttConfig({ DEEPGRAM_API_KEY: KEY, STT_WHISPER_SERVER: '/w', STT_MODEL: '/m', STT_ENGINE: 'Deepgram' }).engine === 'deepgram', 'STT_ENGINE=deepgram picks it');
+    const noKey = sttConfig({ STT_ENGINE: 'deepgram' });
+    check(noKey.engine === 'deepgram' && noKey.warnings.some((w) => /DEEPGRAM_API_KEY/.test(w)), 'STT_ENGINE=deepgram without a key is warned about');
+    check(sttConfig({ STT_ENGINE: 'google' }).warnings.some((w) => /whisper or deepgram/.test(w)), 'an unknown STT_ENGINE is warned about');
+    // The user's old settings: quoted, commas, %20 for spaces.
+    const old = sttConfig({ DEEPGRAM_API_KEY: KEY, DEEPGRAM_MODEL: '"nova-3"', DEEPGRAM_KEYTERMS: '"Alpha,Bravo, X-ray,five%20nine,five and nine,niner"' });
+    check(old.deepgram.model === 'nova-3' && old.deepgram.keyterms.join('|') === 'Alpha|Bravo|X-ray|five nine|five and nine|niner', 'keyterms: commas, quotes, %20 and plain spaces all work: ' + old.deepgram.keyterms.join('|'));
+    const many = sttConfig({ DEEPGRAM_API_KEY: KEY, DEEPGRAM_KEYTERMS: Array.from({ length: 120 }, (_, i) => `t${i}`).join(',') });
+    check(many.deepgram.keyterms.length === 100 && many.warnings.some((w) => /120 terms/.test(w)), 'more than 100 keyterms: the first 100, with a warning');
+    const u = new URL(deepgramListenUrl(old.deepgram));
+    check(u.origin + u.pathname === 'https://api.deepgram.com/v1/listen' && u.searchParams.get('model') === 'nova-3' && u.searchParams.get('smart_format') === 'true', 'the URL: /v1/listen, the model, smart formatting');
+    check(u.searchParams.getAll('keyterm').join('|') === 'Alpha|Bravo|X-ray|five nine|five and nine|niner' && /keyterm=five%20nine/.test(u.search) && !u.searchParams.has('keywords'), 'one keyterm parameter a term, spaces as %20');
+    const n2 = new URL(deepgramListenUrl({ ...old.deepgram, model: 'nova-2' }));
+    check(n2.searchParams.getAll('keywords').length === 6 && !n2.searchParams.has('keyterm'), 'an older model gets them as keywords');
+  }
+
+  // Deepgram: what is kept of its answer.
+  {
+    const ans = (transcript, words) => ({ results: { channels: [{ alternatives: [{ transcript, confidence: 0.9, words }] }] } });
+    const k = keepDeepgram(
+      ans('CQ, this is Victor Kilo 3 Tango Romeo.', [
+        { word: 'cq', punctuated_word: 'CQ,', confidence: 0.98 },
+        { word: 'this', punctuated_word: 'this', confidence: 0.99 },
+        { word: 'is', punctuated_word: 'is', confidence: 0.99 },
+        { word: 'victor', punctuated_word: 'Victor', confidence: 0.95 },
+        { word: 'kilo', punctuated_word: 'Kilo', confidence: 0.93 },
+        { word: '3', punctuated_word: '3', confidence: 0.31 },
+        { word: 'tango', punctuated_word: 'Tango', confidence: 0.9 },
+        { word: 'romeo', punctuated_word: 'Romeo.', confidence: 0.88 },
+      ])
+    );
+    check(k.text === 'CQ, this is Victor Kilo 3 Tango Romeo.' && k.words.length === 8 && k.words[0].w === 'CQ,' && k.words[5].low && !k.words[4].low, 'Deepgram: the transcript, punctuated words, and doubtful ones marked');
+    check(phoneticCallsigns(k.text).join() === 'VK3TR', 'its "Victor Kilo 3 Tango Romeo" still gives the callsign');
+    check(keepDeepgram(ans('', [])).text === '' && keepDeepgram({}).text === '', 'no speech: nothing kept');
+    check(keepDeepgram(ans('Thank you for watching.', [])).text === '' && keepDeepgram(ans('Thank you for watching.', [])).why.length === 1, 'invented text is dropped as for Whisper');
+  }
+
+  // Deepgram: the bridge.
+  {
+    const capture = new EventEmitter();
+    const events = [];
+    const cs = new EventEmitter();
+    Object.assign(cs, {
+      state: { mode: { mode: 'USB' }, dataMode: false },
+      appModes: () => ({}),
+      broadcastJsonEvent: (type, data) => events.push({ type, data: JSON.parse(JSON.stringify(data)) }),
+    });
+    const KEY = 'dg-secret-key-123';
+    const posts = [];
+    let gets = 0;
+    let status = 200;
+    const logs = [];
+    const realLog = console.log;
+    const realWarn = console.warn;
+    const request = async (url, opts = {}) => {
+      if (opts.method !== 'POST') {
+        gets++;
+        return { status: 404, text: '' };
+      }
+      posts.push({ url, opts });
+      if (status !== 200) return { status, text: JSON.stringify({ err_code: 'INVALID_AUTH', err_msg: 'Invalid credentials.' }) };
+      return {
+        status: 200,
+        text: JSON.stringify({ results: { channels: [{ alternatives: [{ transcript: 'Victor Kilo 2 Papa Kilo Hotel, over.', words: [{ word: 'victor', punctuated_word: 'Victor', confidence: 0.9 }, { word: 'kilo', punctuated_word: 'Kilo', confidence: 0.9 }, { word: '2', punctuated_word: '2', confidence: 0.9 }, { word: 'papa', punctuated_word: 'Papa', confidence: 0.9 }, { word: 'kilo', punctuated_word: 'Kilo', confidence: 0.9 }, { word: 'hotel', punctuated_word: 'Hotel,', confidence: 0.9 }, { word: 'over', punctuated_word: 'over.', confidence: 0.9 }] }] }] } }),
+      };
+    };
+    const cfg = sttConfig({ DEEPGRAM_API_KEY: KEY, DEEPGRAM_KEYTERMS: 'Kilo,five nine' });
+    const spawned = [];
+    const bridge = new SttBridge({ controlServer: cs, audioBridge: { sampleRate: R, capture }, config: cfg, request, spawnFn: () => spawned.push(1), pollMs: 10 });
+    check(cs.state.stt.available && cs.state.stt.engine === 'deepgram', 'with a key, STT is available, engine "deepgram"');
+    bridge.start();
+    console.log = (...a) => logs.push(a.join(' '));
+    console.warn = (...a) => logs.push(a.join(' '));
+    try {
+      await bridge.setEnabled(true);
+      check(cs.state.stt.phase === 'listening' && spawned.length === 0 && gets >= 1, 'ticked: Deepgram is checked for, nothing is started here, and it listens');
+      const n = bandNoise(8, 0.05);
+      const v = voice(3, 0.05);
+      for (let i = 0; i < v.length; i++) n[2 * R + i] += v[i];
+      const pcm = toPcm(n);
+      for (let i = 0; i < pcm.length; i += 4800) capture.emit('data', pcm.subarray(i, Math.min(pcm.length, i + 4800)));
+      await until(() => events.some((e) => e.type === EVENT.STT_TEXT));
+      const p = posts[0];
+      const u = p && new URL(p.url);
+      check(p && u.origin === 'https://api.deepgram.com' && u.pathname === '/v1/listen' && u.searchParams.getAll('keyterm').join('|') === 'Kilo|five nine', 'an over goes to Deepgram with its keyterms');
+      check(p && p.opts.headers.Authorization === `Token ${KEY}` && p.opts.type === 'audio/wav' && p.opts.body.toString('latin1', 0, 4) === 'RIFF', 'as a WAV, with the key in the Authorization header');
+      const t = events.find((e) => e.type === EVENT.STT_TEXT)?.data;
+      check(t && t.text === 'Victor Kilo 2 Papa Kilo Hotel, over.' && t.callsigns.join() === 'VK2PKH' && t.words[5].w === 'Hotel,', 'the text is shown, with its callsign');
+      check(logs.some((l) => /^STT: .* "Victor Kilo 2 Papa Kilo Hotel, over\."/.test(l)), 'and logged, one line an over');
+      // A bad key: the panel says so, and the key is not in the message or the log.
+      status = 401;
+      for (let i = 0; i < pcm.length; i += 4800) capture.emit('data', pcm.subarray(i, Math.min(pcm.length, i + 4800)));
+      await until(() => /Transcription failed/.test(cs.state.stt.note || ''));
+      check(/Deepgram: HTTP 401 \(check DEEPGRAM_API_KEY\): Invalid credentials/.test(cs.state.stt.note || ''), 'a rejected key is reported: ' + cs.state.stt.note);
+      check(!logs.some((l) => l.includes(KEY)) && !JSON.stringify(events).includes(KEY) && !JSON.stringify(cs.state.stt).includes(KEY), 'the key never appears in the log, the status or anything sent to browsers');
+    } finally {
+      console.log = realLog;
+      console.warn = realWarn;
+      await bridge.stop();
+    }
+    const cs2 = new EventEmitter();
+    Object.assign(cs2, { state: {}, broadcastJsonEvent() {} });
+    const none = new SttBridge({ controlServer: cs2, audioBridge: { sampleRate: R, capture: new EventEmitter() }, config: sttConfig({ STT_ENGINE: 'deepgram' }) });
+    check(!none.state.available && /DEEPGRAM_API_KEY/.test(none.state.reason), 'Deepgram without a key: unavailable, and says why');
   }
 
   if (failures) {

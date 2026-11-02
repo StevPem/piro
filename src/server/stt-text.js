@@ -109,6 +109,28 @@ function keepSegments(answer) {
   return { why, text, words: shown.map((x) => (x.p < LOW_WORD_P ? { w: x.w, p: Math.round(x.p * 100) / 100, low: true } : { w: x.w, p: Math.round(x.p * 100) / 100 })), dropped };
 }
 
+/**
+ * The text to show from Deepgram's answer (POST /v1/listen): the same
+ * {why, text, words, dropped} as keepSegments(). Deepgram gives one
+ * transcript and a confidence for each word; it rarely makes text up from
+ * noise, but the same filters apply.
+ */
+function keepDeepgram(answer) {
+  const alt = answer?.results?.channels?.[0]?.alternatives?.[0] || {};
+  const raw = String(alt.transcript || '').replace(/\s+/g, ' ').trim();
+  if (!raw) return { why: [], text: '', words: [], dropped: 0 };
+  if (isInvented(raw)) return { why: [`invented: "${raw.slice(0, 60)}"`], text: '', words: [], dropped: 1 };
+  const text = collapseRepeats(raw);
+  const list = Array.isArray(alt.words) ? alt.words : [];
+  const words =
+    text === raw && list.length
+      ? list
+          .map((x) => ({ w: String(x.punctuated_word ?? x.word ?? '').trim(), p: Number.isFinite(x.confidence) ? x.confidence : 1 }))
+          .filter((x) => x.w)
+      : text.split(' ').map((w) => ({ w, p: 1 }));
+  return { why: [], text, words: words.map((x) => (x.p < LOW_WORD_P ? { w: x.w, p: Math.round(x.p * 100) / 100, low: true } : { w: x.w, p: Math.round(x.p * 100) / 100 })), dropped: 0 };
+}
+
 const PHONETIC = {
   alpha: 'A',
   alfa: 'A',
@@ -204,4 +226,4 @@ function phoneticCallsigns(text) {
   return found;
 }
 
-module.exports = { keepSegments, phoneticCallsigns, isInvented, collapseRepeats, HAM_PROMPT, NO_SPEECH_MAX, AVG_LOGPROB_MIN, LOW_WORD_P };
+module.exports = { keepSegments, keepDeepgram, phoneticCallsigns, isInvented, collapseRepeats, HAM_PROMPT, NO_SPEECH_MAX, AVG_LOGPROB_MIN, LOW_WORD_P };

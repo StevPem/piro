@@ -5934,6 +5934,8 @@ function renderSttStatus(s) {
     // The last over, so it is clear something is happening even when nothing is shown.
     if (s.last) text += ` · last over ${s.last.durationSec} s, ${s.last.kept ? `${s.last.seconds} s to transcribe` : 'nothing kept'}`;
     if (s.note) text += ` · ${s.note}`;
+    // The audio leaves the station: say so.
+    if (s.engine === 'deepgram') text += ' · Deepgram (cloud)';
   } else text = 'off';
   sttStatusEl.textContent = text;
 }

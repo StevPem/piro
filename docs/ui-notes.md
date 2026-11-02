@@ -4893,3 +4893,42 @@ model for how to approach that.
   architecture section names the separate programs.
 - No code changed. Service-worker cache v124.
 
+### Speech to text with Deepgram, in the cloud (v125)
+
+- STT can now use Deepgram instead of whisper.cpp: `DEEPGRAM_API_KEY`,
+  and `STT_ENGINE=deepgram` if whisper.cpp is set up too. An earlier copy
+  of PiRO had this, but it never reached the repository, so this is new
+  code. The old settings carry over.
+- Overs are found and cut exactly as for whisper.cpp (VoiceSquelch, 10 s
+  pieces). Each one goes to `POST /v1/listen` as a 16 kHz WAV, with
+  `Authorization: Token <key>`, `model` (nova-3), `language` (en),
+  `punctuate` and `smart_format`. One request at a time, as before; each
+  should take well under a second, so nothing waits.
+- Keyterms (`DEEPGRAM_KEYTERMS`): one `keyterm` parameter for each term,
+  as Deepgram asks (a comma list would be one literal term and boost
+  nothing). Older models get `keywords` instead. Terms may use spaces or
+  `%20` (the old settings used `%20`); quotes are taken off. Up to 100
+  (Deepgram's limit is 500 tokens). The built-in list: the phonetic
+  alphabet, numbers with "niner", "five nine", "five and nine", CQ, QSL,
+  QRZ, QTH, QSY, "seventy three", over, roger, copy.
+- stt-text.js `keepDeepgram()` reads the answer
+  (`results.channels[0].alternatives[0]`): the transcript, each word's
+  `punctuated_word` and confidence (under 0.4 is greyed, as for Whisper),
+  and the same filters for invented text and repeats. smart_format writes
+  numbers as figures ("Victor Kilo 3 Tango Romeo"); the callsign finder
+  already takes figures.
+- Ticking checks `api.deepgram.com` answers (up to 30 s), so no internet
+  shows as an error at once. A rejected key shows "Deepgram: HTTP 401
+  (check DEEPGRAM_API_KEY)"; 402 says no credit. The key goes only in the
+  request header: never in the log, the status or browser events (tested).
+- The status line ends "· Deepgram (cloud)", so it is clear the audio
+  leaves the station. `stt.engine` can now be `'deepgram'`.
+- HTTP requests from the STT bridge now use net-options (5 s for each
+  address), like the other outgoing requests: Deepgram is in the USA.
+- The architecture diagram has Deepgram beside whisper-server (title and
+  sw.js box v125); `docs/architecture.png` made again.
+- Tests: stt.test.js (the settings, including the old quoted, `%20` form;
+  the URL; `keepDeepgram()`; the bridge with a stand-in Deepgram: the
+  request, the text and callsign, a rejected key, the key kept private).
+  Not tried against the real service: this environment can't reach it.
+
