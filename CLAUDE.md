@@ -22,7 +22,9 @@ operators, so frequency tables follow the WIA band plans.
 
 ## Testing
 - `npm test` runs everything that needs no hardware. It must pass before
-  a commit.
+  a commit. CI (`.github/workflows/test.yml`) runs the same files on every
+  PR through `test/run-all.js`, retrying a failed file once; a new test
+  file goes in the `npm test` script, and CI picks it up from there.
 - `test/manual-tty-ui.js` drives the real client in headless Chromium
   against a real ControlServer with a stub radio, with several browsers
   at once. It isn't in `npm test`; run it for any UI change. It needs

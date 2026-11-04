@@ -1,0 +1,40 @@
+# Runs the tests that need no hardware (the same files as `npm test`) on
+# every push to main and every pull request. A test file that fails is run
+# once more; if it then passes it is reported as flaky (a warning), not a
+# failure. See test/run-all.js.
+name: Tests
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: tests-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  test:
+    name: Node ${{ matrix.node }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    strategy:
+      fail-fast: false
+      matrix:
+        node: [20, 22]
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: ${{ matrix.node }}
+          cache: npm
+      # onnxruntime-node's install script downloads CUDA (GPU) binaries on
+      # Linux x64. DeepCW only needs the CPU build, which is in the package.
+      - run: npm ci
+        env:
+          ONNXRUNTIME_NODE_INSTALL: skip
+      - run: npm run test:ci
