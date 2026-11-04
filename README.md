@@ -2635,6 +2635,13 @@ shapes.
 
 - `npm test` runs every test that needs no hardware. It must pass before
   a commit.
+- GitHub Actions runs the same tests on every pull request and every push
+  to `main`, on Node 20 and 22 (`.github/workflows/test.yml`). It uses
+  `npm run test:ci` (`test/run-all.js`), which runs the files listed in
+  `npm test` but carries on after a failure and runs a failed file once
+  more. A file that passes the second time is shown as a "flaky" warning;
+  one that fails both times fails the check. `TEST_RETRIES=0` turns the
+  retry off.
 - `test/manual-tty-ui.js` drives the real web app in headless Chromium
   against a real ControlServer with a stub radio, with several browsers at
   once. It is not part of `npm test`; run it for any UI change. It needs
@@ -2695,6 +2702,8 @@ The test files:
                            server keeps running)
   tls-server.test.js      confirms the server actually works over
                            HTTPS/WSS when TLS_CERT_PATH/TLS_KEY_PATH are set
+  run-all.js              not a test: runs the files in `npm test` for CI,
+                           retrying a failed file once (npm run test:ci)
   readme-version.test.js  checks the README's "Current build" number matches
                            CACHE_NAME in src/client/sw.js
   scope-display.test.mjs  unit tests for the client's waterfall color
