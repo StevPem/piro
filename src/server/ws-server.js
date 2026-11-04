@@ -21,6 +21,16 @@ const NOTES_EMPTY_GRACE_MS = 2 * 60 * 1000; // ...or two minutes after the last 
 // network is noticed in 15-30 s, not when TCP gives up many minutes later.
 const HEARTBEAT_MS = 15 * 1000;
 
+// The largest WebSocket message accepted from a browser. The biggest the
+// protocol allows is REQUEST.SEND_EASYPAL: a JPEG of up to 4 MB, about
+// 5.6 MB as base64 (SEND_SSTV's RGB is at most 3 MB, 4 MB as base64).
+// Bigger messages are refused and the socket closed (code 1009), so one
+// browser can't make the Pi hold ws's default of 100 MiB.
+const MAX_MESSAGE_BYTES = 8 * 1024 * 1024;
+
+// CI-V carries a frequency as 10 BCD digits.
+const MAX_FREQUENCY_HZ = 9999999999;
+
 /**
  * Whether a WebSocket upgrade may go ahead, judged by its Origin header.
  * A browser always sends Origin; another web page open in the operator's
@@ -97,6 +107,7 @@ class ControlServer extends EventEmitter {
     sourceCodeUrl,
     pttWatchdogMs = 10 * 60 * 1000,
     heartbeatMs = HEARTBEAT_MS,
+    maxMessageBytes = MAX_MESSAGE_BYTES,
     allowedOrigins = [],
     notesIdleMs = NOTES_IDLE_MS,
     notesEmptyGraceMs = NOTES_EMPTY_GRACE_MS,
@@ -161,6 +172,7 @@ class ControlServer extends EventEmitter {
       : http.createServer(requestHandler);
     this.wss = new WebSocketServer({
       server: this.httpServer,
+      maxPayload: maxMessageBytes,
       verifyClient: ({ origin, req }) => {
         if (originAllowed(origin, req.headers.host, this.allowedOrigins)) return true;
         console.warn(`[ws] refused a connection from origin ${origin} (Host: ${req.headers.host}); see ALLOWED_ORIGINS`);
@@ -662,17 +674,24 @@ class ControlServer extends EventEmitter {
           if (typeof msg.value !== 'number') {
             throw new Error('"value" must be a number (Hz)');
           }
-          await this.civ.setFrequency(msg.value);
-          this.state.frequency = msg.value;
-          ws.send(makeResult(id, { value: msg.value }));
-          this._broadcast(makeEvent(EVENT.FREQUENCY, { value: msg.value }), ws);
+          // Above zero and within CI-V's 10 digits, rounded to whole Hz as
+          // the radio is set. Whether the radio covers it is up to the
+          // radio: it answers NG if not.
+          const hz = Math.round(msg.value);
+          if (!Number.isFinite(msg.value) || hz < 1 || hz > MAX_FREQUENCY_HZ) {
+            throw new Error(`"value" must be a frequency in Hz from 1 to ${MAX_FREQUENCY_HZ}`);
+          }
+          await this.civ.setFrequency(hz);
+          this.state.frequency = hz;
+          ws.send(makeResult(id, { value: hz }));
+          this._broadcast(makeEvent(EVENT.FREQUENCY, { value: hz }), ws);
           // Client-requested frequency changes (e.g. FT8's auto-tune)
           // don't necessarily round-trip back through civ's own
           // 'frequency' event in time for internal listeners (that
           // depends on the radio auto-transceiving) — emit directly here
           // too so bridges that track frequency (see 'frequency' in this
           // class's own doc comment) see it immediately either way.
-          this.emit('frequency', msg.value);
+          this.emit('frequency', hz);
           break;
         }
         case REQUEST.GET_MODE: {
@@ -1519,4 +1538,4 @@ class ControlServer extends EventEmitter {
   }
 }
 
-module.exports = { ControlServer, originAllowed, parseAllowedOrigins, HEARTBEAT_MS };
+module.exports = { ControlServer, originAllowed, parseAllowedOrigins, HEARTBEAT_MS, MAX_MESSAGE_BYTES, MAX_FREQUENCY_HZ };

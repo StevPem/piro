@@ -12,7 +12,7 @@ Hamlib, no separate audio server and no extra apps.
 Written by VK3TR. Licensed AGPL-3.0-only (see
 [Licence](#licence)).
 
-**Current build: v128.** This is the version the app shows next to its title.
+**Current build: v129.** This is the version the app shows next to its title.
 It is the `CACHE_NAME` number in `src/client/sw.js`, which goes up with every
 change to the web app.
 
@@ -1742,6 +1742,7 @@ All settings are environment variables. For the systemd service they go in
 | `DEEPGRAM_MODEL` | `nova-3` | The Deepgram model. |
 | `DEEPGRAM_KEYTERMS` | phonetics, numbers, Q-codes | Words Deepgram listens out for, separated by commas (up to 100). Replaces the built-in list. |
 | `DEEPGRAM_LANGUAGE` | `en` | The language Deepgram expects. |
+| `DEEPGRAM_URL` | `https://api.deepgram.com` | Only for testing against another Deepgram-compatible server. Must start with `https://`, since the API key goes with every request; anything else is refused with a warning and the default used. |
 | `STT_URL` | none | A `whisper-server` already running (on another computer, say), e.g. `http://192.168.1.20:8178`. Used instead of the two above. |
 | `VARA_AUDIO_LATENCY_MS` | `500` | How far VARA's transmit audio lags what is written to the sound card, in ms (0 to 2000). The modem holds PTT that much longer and times its replies to suit. JS8 uses it too, to start its frames 0.5 s into the slot. |
 | `OLIVIA_SQUELCH` | on | `off` turns off PiRO's filtering of junk characters and decodes exactly as fldigi does with its squelch off. See [Olivia](#rtty-jtty-olivia-and-feld-hell). |
@@ -2442,7 +2443,12 @@ audio and scope data (tagged, see `docs/ui-notes.md`), multiplexed on the
 same connection. The server pings each browser every 15 seconds and drops
 one that didn't answer the last ping (browsers answer pings by
 themselves). Only the page PiRO serves may connect (the `Origin` header
-must match the `Host`), plus any `ALLOWED_ORIGINS`. See `src/server/protocol.js` for the full JSON message
+must match the `Host`), plus any `ALLOWED_ORIGINS`. A message from a
+browser may be at most 8 MiB (the largest real one, an EasyPal picture,
+is under 6 MB); a bigger one closes that browser's connection (code 1009).
+`setFrequency` takes a frequency in Hz from 1 to 9,999,999,999 (CI-V's 10
+digits), rounded to whole Hz; whether the radio covers it is up to the
+radio. See `src/server/protocol.js` for the full JSON message
 shapes.
 
 - **Control (JSON, text frames)**: requests (`getFrequency`,
@@ -2656,7 +2662,8 @@ shapes.
 The test files:
 
 ```
-  frame.test.js           unit tests for CI-V framing/BCD, no hardware needed
+  frame.test.js           unit tests for CI-V framing/BCD, no hardware needed;
+                           numbers that would encode as garbage are refused
   scope.test.js           unit tests for scope waveform decoding/reassembly,
                            synthetic frames, no hardware needed
   civ-driver.test.js      CivDriver integration tests against a fake serial
@@ -2672,7 +2679,8 @@ The test files:
   ws-server.test.js       integration test for the control layer, stubbed
                            CivDriver, no hardware needed; also PTT released
                            when its browser disconnects or misses pings,
-                           and the WebSocket Origin check
+                           the WebSocket Origin check, the message size
+                           limit, and setFrequency refusing bad numbers
   pcm-framer.test.js      unit tests for PCM frame accumulation
   opus-codec.test.js      real Opus encode/decode round-trip tests (WASM,
                            no hardware needed)
@@ -2814,7 +2822,8 @@ The test files:
                            non-voice modes pause it, the local server started
                            and stopped, its failure shown; Deepgram: the
                            settings, the request (keyterms, key, WAV), its
-                           answer, a rejected key, the key kept out of logs
+                           answer, a rejected key, the key kept out of logs,
+                           DEEPGRAM_URL https:// only
   js8.test.js             JS8: the FFT, CRC-12 and LDPC code, the word list,
                            the message layer as JS8Call shows it, the
                            receiver on simulated slots (four signals, one

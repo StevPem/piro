@@ -327,6 +327,14 @@ const until = async (fn, ms = 4000) => {
     check(old.deepgram.model === 'nova-3' && old.deepgram.keyterms.join('|') === 'Alpha|Bravo|X-ray|five nine|five and nine|niner', 'keyterms: commas, quotes, %20 and plain spaces all work: ' + old.deepgram.keyterms.join('|'));
     const many = sttConfig({ DEEPGRAM_API_KEY: KEY, DEEPGRAM_KEYTERMS: Array.from({ length: 120 }, (_, i) => `t${i}`).join(',') });
     check(many.deepgram.keyterms.length === 100 && many.warnings.some((w) => /120 terms/.test(w)), 'more than 100 keyterms: the first 100, with a warning');
+    // The API key goes with every request, so only https:// is accepted.
+    for (const bad of ['http://api.deepgram.com', 'HTTP://example.net', 'ftp://x', 'api.deepgram.com', 'https://']) {
+      const c2 = sttConfig({ DEEPGRAM_API_KEY: KEY, DEEPGRAM_URL: bad });
+      check(c2.deepgram.url === 'https://api.deepgram.com' && c2.warnings.some((w) => /must start with https:/.test(w)), `DEEPGRAM_URL=${bad} is refused, with a warning, for the default`);
+    }
+    const own = sttConfig({ DEEPGRAM_API_KEY: KEY, DEEPGRAM_URL: 'https://dg.example.net/' });
+    check(own.deepgram.url === 'https://dg.example.net' && !own.warnings.length, 'an https:// DEEPGRAM_URL is used');
+    check(sttConfig({ STT_URL: 'http://192.168.1.20:8178' }).url === 'http://192.168.1.20:8178', 'a whisper-server on the LAN (STT_URL) can still be http://');
     const u = new URL(deepgramListenUrl(old.deepgram));
     check(u.origin + u.pathname === 'https://api.deepgram.com/v1/listen' && u.searchParams.get('model') === 'nova-3' && u.searchParams.get('smart_format') === 'true', 'the URL: /v1/listen, the model, smart formatting');
     check(u.searchParams.getAll('keyterm').join('|') === 'Alpha|Bravo|X-ray|five nine|five and nine|niner' && /keyterm=five%20nine/.test(u.search) && !u.searchParams.has('keywords'), 'one keyterm parameter a term, spaces as %20');

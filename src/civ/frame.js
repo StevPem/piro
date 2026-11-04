@@ -134,10 +134,17 @@ function parseSingleFrame(raw) {
  * @param {number} [byteLen=5] number of BCD bytes (5 = up to 10 digits / 9.999999999 GHz)
  */
 function freqToBCD(freqHz, byteLen = 5) {
-  const digits = Math.round(freqHz).toString().padStart(byteLen * 2, '0');
-  if (digits.length > byteLen * 2) {
+  // Checked first: a negative number would encode its minus sign, and
+  // toString() writes big numbers as "1e+21", which is short enough to
+  // pass the length check below. Both turned into garbage bytes.
+  if (typeof freqHz !== 'number' || !Number.isFinite(freqHz) || freqHz < 0) {
+    throw new Error(`Frequency ${freqHz} is not a positive number`);
+  }
+  const rounded = Math.round(freqHz);
+  if (rounded >= 10 ** (byteLen * 2)) {
     throw new Error(`Frequency ${freqHz} does not fit in ${byteLen} BCD bytes`);
   }
+  const digits = rounded.toString().padStart(byteLen * 2, '0');
   const bytes = [];
   for (let i = digits.length; i > 0; i -= 2) {
     const pair = digits.slice(Math.max(0, i - 2), i).padStart(2, '0');

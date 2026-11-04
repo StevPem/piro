@@ -82,8 +82,9 @@ function sttConfig(env = process.env) {
   const deepgramModel = unquote(env.DEEPGRAM_MODEL) || DEEPGRAM_MODEL;
   const deepgramLanguage = unquote(env.DEEPGRAM_LANGUAGE) || 'en';
   let deepgramUrl = unquote(env.DEEPGRAM_URL).replace(/\/+$/, '') || DEEPGRAM_URL;
-  if (!/^https?:\/\//.test(deepgramUrl)) {
-    warnings.push(`DEEPGRAM_URL="${deepgramUrl}" must start with https://; using ${DEEPGRAM_URL}.`);
+  // https only: the API key goes in a request header, and the audio leaves the station.
+  if (!/^https:\/\/[^/\s]+/i.test(deepgramUrl)) {
+    warnings.push(`DEEPGRAM_URL="${deepgramUrl}" must start with https:// (the API key is sent with every request); using ${DEEPGRAM_URL}.`);
     deepgramUrl = DEEPGRAM_URL;
   }
   let deepgramKeyterms = DEEPGRAM_KEYTERMS;
