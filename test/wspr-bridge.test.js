@@ -3,7 +3,7 @@
 
 const { EventEmitter } = require('events');
 const { WsprBridge, wsprDialFor, WSPR_DIAL_HZ, nextWsprBand, parseBandList } = require('../src/server/wspr-bridge');
-const { spotBodies, slotDateTime } = require('../src/server/wsprnet');
+const { spotBodies, slotDateTime, WsprNetClient, httpsNotTaken, WSPRNET_URL, WSPRNET_HTTP_URL } = require('../src/server/wsprnet');
 const { EVENT } = require('../src/server/protocol');
 const codec = require('../src/audio/wspr-codec');
 const { decodeWspr } = require('../src/audio/wspr-rx');
@@ -451,6 +451,59 @@ function feed(capture, pcm, chunk = 19200) {
     await sleep(100);
     check(!bridge.attached && civ.log.length === 0, 'a browser connecting within the 10 minutes cancels unattended receive');
     bridge.stop();
+  }
+
+  // wsprnet.org: HTTPS first, HTTP only if HTTPS clearly wasn't taken
+  {
+    const slot = { rcall: 'VK3TR', rgrid: 'QF22', dialHz: 14095600, slotStartMs: 0, decodes: [{ callsign: 'K1ABC', grid: 'FN42', dbm: 37, snr: -20, dt: 0.1, drift: 0, audioHz: 1500 }, { callsign: 'G4XYZ', grid: 'IO91', dbm: 30, snr: -25, dt: 0.2, drift: 0, audioHz: 1520 }] };
+    const client = (behaviour) => {
+      const posts = [];
+      const lines = [];
+      const c = new WsprNetClient({
+        post: async (body, { url }) => {
+          posts.push(url);
+          const r = behaviour(url, posts.length);
+          if (r) throw r;
+        },
+        log: { log: (m) => lines.push(m), warn: (m) => lines.push(m) },
+      });
+      return { c, posts, lines };
+    };
+    check(WSPRNET_URL === 'https://wsprnet.org/post/' && WSPRNET_HTTP_URL === 'http://wsprnet.org/post/', 'HTTPS is the first choice');
+
+    let t = client(() => null);
+    let r = await t.c.upload(slot);
+    check(r.sent === 2 && t.posts.every((u) => u === WSPRNET_URL) && t.c.scheme === 'https', 'HTTPS taken: both spots over HTTPS');
+    check(t.lines.length === 1 && /over HTTPS/.test(t.lines[0]), 'logged once');
+
+    t = client((url) => (url.startsWith('https') ? Object.assign(new Error('refused'), { code: 'ECONNREFUSED' }) : null));
+    r = await t.c.upload(slot);
+    check(r.sent === 2 && t.posts.join(' ') === `${WSPRNET_URL} ${WSPRNET_HTTP_URL} ${WSPRNET_HTTP_URL}`, 'HTTPS refused: falls back to HTTP, and stays on it (no HTTPS try for the second spot)');
+    check(/didn't take HTTPS \(ECONNREFUSED\).*over HTTP/.test(t.lines[0] || ''), 'the fallback is logged, with the reason');
+    await t.c.upload(slot);
+    check(t.posts.length === 5 && t.posts.slice(3).every((u) => u === WSPRNET_HTTP_URL), 'later slots go straight over HTTP');
+
+    t = client((url) => (url.startsWith('https') ? Object.assign(new Error('wsprnet.org answered 404'), { statusCode: 404 }) : null));
+    r = await t.c.upload(slot);
+    check(r.sent === 2 && t.c.scheme === 'http', 'HTTPS answered 404: falls back to HTTP');
+
+    t = client((url) => (url.startsWith('https') ? Object.assign(new Error('bad cert'), { code: 'ERR_TLS_CERT_ALTNAME_INVALID' }) : null));
+    r = await t.c.upload(slot);
+    check(r.sent === 2 && t.c.scheme === 'http', 'a TLS certificate error: falls back to HTTP');
+
+    t = client((url) => (url.startsWith('https') ? new Error('wsprnet.org did not answer') : null));
+    r = await t.c.upload(slot);
+    check(r.sent === 0 && /did not answer/.test(r.error) && t.posts.length === 1 && t.c.scheme === null, 'a timeout: no HTTP retry (the spot may have been taken; it would be posted twice), HTTPS tried again next slot');
+
+    t = client((url) => (url.startsWith('https') ? Object.assign(new Error('wsprnet.org answered 503'), { statusCode: 503 }) : null));
+    r = await t.c.upload(slot);
+    check(r.sent === 0 && t.posts.length === 1, 'a 5xx: no HTTP retry either');
+
+    t = client((url, n) => (n === 2 ? Object.assign(new Error('refused'), { code: 'ECONNREFUSED' }) : null));
+    r = await t.c.upload(slot);
+    check(r.sent === 1 && t.posts.length === 2 && t.c.scheme === 'https', 'once HTTPS has worked, a later HTTPS failure is reported, not switched to HTTP');
+
+    check(httpsNotTaken({ statusCode: 301 }) && !httpsNotTaken({ statusCode: 200 }) && !httpsNotTaken({ code: 'ETIMEDOUT' }) && !httpsNotTaken({ code: 'ECONNRESET' }), 'only failures where nothing was taken allow HTTP (not a reset or timeout)');
   }
 
   if (failures) {

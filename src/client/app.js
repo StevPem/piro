@@ -463,7 +463,7 @@ const WSPR_MAX_ROWS = 100;
 // --- DOM refs ---
 const panelTitleEl = document.querySelector('.panel__title');
 const appVersionEl = document.getElementById('app-version');
-const appSourceLinkEl = document.getElementById('app-source-link');
+const appTitleLinkEl = document.getElementById('app-title-link');
 const ledDot = document.getElementById('led-dot');
 const ledText = document.getElementById('led-text');
 const errorLine = document.getElementById('error-line');
@@ -1043,24 +1043,17 @@ link.addEventListener('connected', (event) => {
 
   if (data.screenTitle) {
     document.title = data.screenTitle;
-    if (panelTitleEl) panelTitleEl.textContent = data.screenTitle;
+    if (appTitleLinkEl) appTitleLinkEl.textContent = data.screenTitle;
+    else if (panelTitleEl) panelTitleEl.textContent = data.screenTitle;
   }
   // Small version number to the right of the title, matching the
   // "Connected" led text's size/color (.app-version reuses .led's
   // font-size) per explicit request — see docs/ui-notes.md.
   if (appVersionEl) appVersionEl.textContent = data.appVersion ? `v${data.appVersion}` : '';
-  // AGPL-3.0-only §13 compliance link — see README.md's "Licence" section
-  // and server/index.js's SOURCE_CODE_URL doc comment. Hidden entirely
-  // (not just empty) when unset, same "hide, don't just blank" pattern
-  // as other optional-feature UI elsewhere in this file.
-  if (appSourceLinkEl) {
-    if (data.sourceCodeUrl) {
-      appSourceLinkEl.href = data.sourceCodeUrl;
-      appSourceLinkEl.hidden = false;
-    } else {
-      appSourceLinkEl.hidden = true;
-    }
-  }
+  // The title links to the source (AGPL-3.0-only §13; README.md's
+  // "Licence"): the server's SOURCE_CODE_URL, or PiRO's repository, which
+  // is already in the page.
+  if (appTitleLinkEl && data.sourceCodeUrl) appTitleLinkEl.href = data.sourceCodeUrl;
   // Static for the server's process lifetime, same as screenTitle — see
   // docs/ui-notes.md. Configuring the sequencer here (rather than only
   // once at page load) means a server restart with newly-set

@@ -64,9 +64,9 @@ const WS_PORT = process.env.WS_PORT ? parseInt(process.env.WS_PORT, 10) : 8080;
 // Displayed as both the browser tab title and the on-screen heading —
 // see docs/ui-notes.md for why this is sent to the client at connect
 // time rather than baked into the served HTML.
-const SCREEN_TITLE = process.env.SCREEN_TITLE || 'SPARC PiRO';
+const SCREEN_TITLE = process.env.SCREEN_TITLE || 'PiRO';
 // The app's own version, shown next to SCREEN_TITLE — see docs/ui-notes.md.
-// Read from src/client/sw.js's own CACHE_NAME ("icom-rig-pwa-shell-v62"
+// Read from src/client/sw.js's own CACHE_NAME ("piro-shell-v62"
 // -> "62") rather than package.json's version field: CACHE_NAME is the
 // number that actually has to be bumped on every client-affecting change
 // (see docs/pwa-notes.md's "bump this on every client change" section) —
@@ -101,18 +101,13 @@ const APP_VERSION = readAppVersion();
 const STATION_CALLSIGN = process.env.STATION_CALLSIGN || null;
 const STATION_GRID = process.env.STATION_GRID || null;
 
-// Where this exact running instance's corresponding source is published —
-// a fork, a tarball, whatever actually matches what's running. PiRO is
-// AGPL-3.0-only (see README.md's "Licence" section, and models/deepcw/
-// NOTICE.md for why), so anyone who interacts with it over the network is
-// entitled to that source; since this project has no single canonical
-// public repository URL of its own to hardcode, the operator configures
-// wherever they're actually hosting their copy, and the client shows it
-// as a "Source" link in the footer whenever it's set. Left unset, no link
-// is shown — operators not distributing/running this for others (e.g.
-// purely local personal use) have no §13 obligation to satisfy in the
-// first place.
-const SOURCE_CODE_URL = process.env.SOURCE_CODE_URL || null;
+// Where the source of this running copy is. PiRO is AGPL-3.0-only (see
+// README.md's "Licence" section, and models/deepcw/NOTICE.md for why), so
+// everyone who uses it over the network may have its source. The page's
+// title links here. Unset, it is PiRO's own repository, which is right for
+// an unchanged copy; a copy with changes must point at its own source.
+const PIRO_REPOSITORY_URL = 'https://github.com/StevPem/piro';
+const SOURCE_CODE_URL = (process.env.SOURCE_CODE_URL || '').trim() || PIRO_REPOSITORY_URL;
 
 // FreeDV Reporter (https://qso.freedv.org) — reports this station's
 // presence/frequency/TX state to the live FreeDV activity map whenever the

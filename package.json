@@ -1,8 +1,8 @@
 {
-  "name": "icom-rig-pwa",
+  "name": "piro",
   "version": "0.1.0",
   "license": "AGPL-3.0-only",
-  "description": "PWA-based remote control for Icom transceivers over CI-V, running on a Raspberry Pi connected to the radio via USB.",
+  "description": "PiRO: remote control for Icom transceivers over CI-V, running on a Raspberry Pi connected to the radio by USB.",
   "private": true,
   "type": "commonjs",
   "main": "src/server/index.js",

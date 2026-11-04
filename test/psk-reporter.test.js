@@ -77,7 +77,7 @@ function run() {
       exportTimeSec: 0x11223344,
       rxCall: 'VK3XYZ',
       rxGrid: 'QF22',
-      progId: 'SPARC-PiRO',
+      progId: 'PiRO',
       rxAntenna: '',
       spots: [],
     });
@@ -115,7 +115,7 @@ function run() {
     const rxGridField = readLenPrefixedString(rxCallField.next);
     check(rxGridField.value === 'QF22', 'Rx Info Data Set: Rx Grid round-trips correctly');
     const rxSoftField = readLenPrefixedString(rxGridField.next);
-    check(rxSoftField.value === 'SPARC-PiRO', 'Rx Info Data Set: Rx Software (progId) round-trips correctly');
+    check(rxSoftField.value === 'PiRO', 'Rx Info Data Set: Rx Software (progId) round-trips correctly');
     const rxAntField = readLenPrefixedString(rxSoftField.next);
     check(rxAntField.value === '', 'Rx Info Data Set: Rx Antenna round-trips correctly (empty string)');
     check(rxDataOffset + rxDataLen === rxAntField.next + 2, 'Rx Info Data Set: declared length accounts for the trailing 2-byte padding');

@@ -3,7 +3,7 @@
 <head>
   <meta charset="utf-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover" />
-  <title>SPARC PiRO</title>
+  <title>PiRO</title>
   <meta name="theme-color" content="#14171a" />
   <meta name="description" content="Remote control for an Icom transceiver over CI-V." />
 
@@ -18,14 +18,13 @@
   <main class="panel">
     <header class="panel__header">
       <div class="panel__title-group">
-        <h1 class="panel__title">SPARC PiRO</h1>
+        <!-- The title links to PiRO's source: AGPL-3.0-only §13 asks a
+             running copy to offer its source to everyone who uses it over
+             the network. The server's SOURCE_CODE_URL replaces this link
+             once connected (app.js's 'connected' handler); see README.md's
+             "Licence" section. -->
+        <h1 class="panel__title"><a class="panel__title-link" id="app-title-link" href="https://github.com/StevPem/piro" target="_blank" rel="noopener" title="PiRO's source code (AGPL-3.0)">PiRO</a></h1>
         <span class="app-version" id="app-version"></span>
-        <!-- Hidden unless the server has SOURCE_CODE_URL configured — see
-             app.js's 'connected' handler and README.md's "Licence"
-             section (AGPL-3.0-only §13: this link is how a running
-             instance offers its corresponding source to anyone
-             interacting with it over the network). -->
-        <a class="app-source-link" id="app-source-link" href="#" target="_blank" rel="noopener" hidden>Source</a>
       </div>
       <span class="led">
         <span class="led__dot" id="led-dot" data-state="connecting"></span>
