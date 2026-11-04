@@ -7,7 +7,7 @@ const http = require('http');
 const https = require('https');
 const { EventEmitter } = require('events');
 const { WebSocketServer } = require('ws');
-const { REQUEST, EVENT, makeResult, makeError, makeEvent } = require('./protocol');
+const { REQUEST, EVENT, BINARY_TYPE, makeResult, makeError, makeEvent } = require('./protocol');
 const { createStaticHandler } = require('./static-server');
 
 // Operator notes (REQUEST.POST_NOTE)
@@ -27,6 +27,28 @@ const HEARTBEAT_MS = 15 * 1000;
 // Bigger messages are refused and the socket closed (code 1009), so one
 // browser can't make the Pi hold ws's default of 100 MiB.
 const MAX_MESSAGE_BYTES = 8 * 1024 * 1024;
+
+// Backpressure. A browser that can't keep up (a phone on weak mobile data)
+// would otherwise have audio, scope and spectrum frames pile up in the
+// Pi's memory, and hear the band later and later. When more than this is
+// waiting to go to one browser, its live frames are skipped until the
+// backlog is under a quarter of it: a short gap instead of growing delay.
+// Raw PCM is about 96 kB/s, so 128 kB is a little over a second of it;
+// compressed audio is 3 to 6 kB/s, so 32 kB is several seconds. (Data
+// already handed to the network stack isn't counted; this is on top.)
+const LIVE_BACKLOG_BYTES = { pcm: 128 * 1024, compressed: 32 * 1024 };
+
+// Binary frames that are only worth showing now, so may be skipped for a
+// browser that is behind. Picture data (SSTV and fax lines, Feld-Hell
+// columns) is never skipped: a lost line would leave a hole in the picture.
+// JSON (state, decoded text) is never skipped either.
+const LIVE_FRAME_TYPES = new Set([
+  BINARY_TYPE.AUDIO,
+  BINARY_TYPE.AUDIO_OPUS,
+  BINARY_TYPE.AUDIO_ADPCM,
+  BINARY_TYPE.SCOPE_LINE,
+  BINARY_TYPE.FT8_SPECTRUM,
+]);
 
 // CI-V carries a frequency as 10 BCD digits.
 const MAX_FREQUENCY_HZ = 9999999999;
@@ -108,6 +130,7 @@ class ControlServer extends EventEmitter {
     pttWatchdogMs = 10 * 60 * 1000,
     heartbeatMs = HEARTBEAT_MS,
     maxMessageBytes = MAX_MESSAGE_BYTES,
+    liveBacklogBytes = LIVE_BACKLOG_BYTES,
     allowedOrigins = [],
     notesIdleMs = NOTES_IDLE_MS,
     notesEmptyGraceMs = NOTES_EMPTY_GRACE_MS,
@@ -139,6 +162,11 @@ class ControlServer extends EventEmitter {
     // Ping every heartbeatMs (0 turns it off); see HEARTBEAT_MS.
     this.heartbeatMs = heartbeatMs;
     this._heartbeatTimer = null;
+    // Backpressure limits (see LIVE_BACKLOG_BYTES), and each browser's
+    // limit (by its audio format) and whether it's skipping frames now.
+    this.liveBacklogBytes = { ...LIVE_BACKLOG_BYTES, ...liveBacklogBytes };
+    this._liveLimit = new WeakMap();
+    this._lagging = new WeakMap(); // ws -> {since, dropped}
     // Origins allowed besides this server's own page; see originAllowed().
     this.allowedOrigins = parseAllowedOrigins(allowedOrigins);
     // Operator notes (REQUEST.POST_NOTE): cleared after notesIdleMs with no
@@ -961,6 +989,7 @@ class ControlServer extends EventEmitter {
           // per browser, not shared: AudioBridge keeps it (setClientAudioCodec)
           if (!this.setClientAudioCodec) throw new Error('Audio is not enabled on this server');
           const codec = this.setClientAudioCodec(ws, msg.codec);
+          this._liveLimit.set(ws, codec === 'pcm' ? this.liveBacklogBytes.pcm : this.liveBacklogBytes.compressed);
           ws.send(makeResult(id, { codec }));
           break;
         }
@@ -1396,15 +1425,51 @@ class ControlServer extends EventEmitter {
 
   /** Send a raw binary payload (e.g. an Opus packet) to one client. */
   sendBinary(ws, buffer) {
-    if (ws.readyState === ws.OPEN) ws.send(buffer);
+    if (LIVE_FRAME_TYPES.has(buffer[0])) this.sendLive(ws, buffer);
+    else if (ws.readyState === ws.OPEN) ws.send(buffer);
   }
 
   /** Send a raw binary payload to all clients except `except`. */
   broadcastBinary(buffer, except) {
+    const live = LIVE_FRAME_TYPES.has(buffer[0]);
     for (const client of this.clients) {
       if (client === except) continue;
-      if (client.readyState === client.OPEN) client.send(buffer);
+      if (live) this.sendLive(client, buffer);
+      else if (client.readyState === client.OPEN) client.send(buffer);
     }
+  }
+
+  /**
+   * Sends a live frame (audio, scope, spectrum) to one browser unless it
+   * is too far behind (see LIVE_BACKLOG_BYTES). Once over its limit it
+   * skips live frames until its backlog is under a quarter of the limit,
+   * so it doesn't flip on and off each frame. One log line when it starts
+   * skipping and one when it catches up. Returns whether it was sent.
+   */
+  sendLive(ws, buffer) {
+    if (ws.readyState !== ws.OPEN) return false;
+    const limit = this._liveLimit.get(ws) ?? this.liveBacklogBytes.pcm;
+    const backlog = ws.bufferedAmount;
+    const lag = this._lagging.get(ws);
+    if (lag) {
+      if (backlog > limit / 4) {
+        lag.dropped++;
+        return false;
+      }
+      this._lagging.delete(ws);
+      console.log(`[ws] a browser caught up after ${((Date.now() - lag.since) / 1000).toFixed(1)} s; ${lag.dropped} audio/scope frames were skipped`);
+    } else if (backlog > limit) {
+      this._lagging.set(ws, { since: Date.now(), dropped: 1 });
+      console.warn(`[ws] a browser is falling behind (${Math.round(backlog / 1024)} kB waiting); skipping its audio and scope frames until it catches up`);
+      return false;
+    }
+    ws.send(buffer);
+    return true;
+  }
+
+  /** Whether `ws` is skipping live frames because it is behind. */
+  isLagging(ws) {
+    return this._lagging.has(ws);
   }
 
   /**
@@ -1538,4 +1603,4 @@ class ControlServer extends EventEmitter {
   }
 }
 
-module.exports = { ControlServer, originAllowed, parseAllowedOrigins, HEARTBEAT_MS, MAX_MESSAGE_BYTES, MAX_FREQUENCY_HZ };
+module.exports = { ControlServer, originAllowed, parseAllowedOrigins, HEARTBEAT_MS, MAX_MESSAGE_BYTES, MAX_FREQUENCY_HZ, LIVE_BACKLOG_BYTES, LIVE_FRAME_TYPES };

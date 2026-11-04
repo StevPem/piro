@@ -12,7 +12,7 @@ Hamlib, no separate audio server and no extra apps.
 Written by VK3TR. Licensed AGPL-3.0-only (see
 [Licence](#licence)).
 
-**Current build: v129.** This is the version the app shows next to its title.
+**Current build: v130.** This is the version the app shows next to its title.
 It is the `CACHE_NAME` number in `src/client/sw.js`, which goes up with every
 change to the web app.
 
@@ -754,6 +754,14 @@ compressed. A choice made with the button is remembered by that browser.
 Compressed audio plays 0.2 s behind, so short network delays don't break
 it up. On any audio, if more than half a second more than that builds up
 (after the network stalls), the backlog is skipped.
+
+The server does the same at its end. If a browser's connection can't keep
+up, the server stops sending it audio, scope and spectrum until it has
+caught up (about a second of full audio waiting, or a few seconds of
+compressed), so you hear a short gap rather than the band falling further
+and further behind. Decoded text, pictures and the radio's settings are
+never skipped. If this happens often, switch that browser to compressed
+audio.
 
 The decoders (FT8, CW, RTTY and the rest) always work from the radio's
 full-quality audio on the Pi, whatever the browsers receive. Compression
@@ -1822,6 +1830,12 @@ one hard refresh (Ctrl+Shift+R, or Cmd+Shift+R on a Mac).
   can't be taken for the answer to the next request. Now and then is
   harmless; often means the CI-V link is slow or overloaded (check the
   baud rate, and try with the scope off).
+- **Audio on a phone has gaps, and the log says "a browser is falling
+  behind".** That browser's connection couldn't keep up, so the server
+  skipped some of its audio and scope frames instead of letting them pile
+  up (see [Compressed audio for remote use](#compressed-audio-for-remote-use)).
+  "caught up after ... s" says how long it lasted. Switch that browser to
+  Opus or ADPCM with the Audio button, or turn the scope off on it.
 - **The page loads but never connects, and the log says "refused a
   connection from origin".** PiRO only accepts its WebSocket from its own
   page. Behind a reverse proxy that changes the `Host` header, add the
@@ -2448,7 +2462,10 @@ browser may be at most 8 MiB (the largest real one, an EasyPal picture,
 is under 6 MB); a bigger one closes that browser's connection (code 1009).
 `setFrequency` takes a frequency in Hz from 1 to 9,999,999,999 (CI-V's 10
 digits), rounded to whole Hz; whether the radio covers it is up to the
-radio. See `src/server/protocol.js` for the full JSON message
+radio. Live binary frames (audio, scope lines, spectra) are skipped for a
+browser with more than `LIVE_BACKLOG_BYTES` waiting (128 kB on raw audio,
+32 kB on compressed) until it is under a quarter of that; picture frames
+(SSTV, fax, Feld-Hell) and JSON are always sent. See `src/server/protocol.js` for the full JSON message
 shapes.
 
 - **Control (JSON, text frames)**: requests (`getFrequency`,
@@ -2680,7 +2697,11 @@ The test files:
                            CivDriver, no hardware needed; also PTT released
                            when its browser disconnects or misses pings,
                            the WebSocket Origin check, the message size
-                           limit, and setFrequency refusing bad numbers
+                           limit, setFrequency refusing bad numbers, and
+                           backpressure (live frames skipped for a browser
+                           that is behind, pictures and JSON never; a real
+                           stalled client keeps the server's backlog at the
+                           limit while another gets every frame)
   pcm-framer.test.js      unit tests for PCM frame accumulation
   opus-codec.test.js      real Opus encode/decode round-trip tests (WASM,
                            no hardware needed)
@@ -2699,7 +2720,8 @@ The test files:
   audio-bridge.test.js    integration test for the audio bridge: raw PCM,
                            per-browser Opus and ADPCM (sizes, the tone
                            decoded back, mic audio decoded and resampled,
-                           encoders only while wanted, RADE's muted path),
+                           encoders only while wanted, RADE's muted path,
+                           all three formats sent through backpressure),
                            and the startup volume-maximizing behavior: real
                            WebSocket, fake ALSA I/O, tagged binary frame format
   scope-bridge.test.js    integration test for the scope bridge: real
