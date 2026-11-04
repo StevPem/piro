@@ -62,7 +62,7 @@ const IPFIX_VERSION = 0x000a;
 const RX_TEMPLATE_ID = 0x50e2;
 const TX_TEMPLATE_ID = 0x50e3;
 const REPORTER_SOURCE_AUTOMATIC = 1;
-const DEFAULT_PROG_ID = 'SPARC-PiRO';
+const DEFAULT_PROG_ID = 'PiRO';
 
 // Fixed-format Options/regular Template Sets — see the module doc
 // comment above for what each field is. These never change (no operator

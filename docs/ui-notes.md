@@ -5222,3 +5222,56 @@ transmission.
   on a pseudo-terminal prints where it found the key line and tries to
   drop it (a pseudo-terminal has no DTR, so that is reported as an error).
 - Service-worker cache v132.
+
+### wsprnet over HTTPS, systemd hardening, "PiRO" everywhere, title links to the source (v133)
+
+Items 8 and 15 from the code review, and two requests. Not tested on air
+(no transmitting change).
+
+- **wsprnet.org over HTTPS (item 8).** Spots went to
+  `http://wsprnet.org/post/`, as WSJT-X does (its current source still
+  does). `WsprNetClient` now tries `https://wsprnet.org/post/` first and
+  falls back to HTTP only if wsprnet.org clearly didn't take the HTTPS
+  request: a connection or TLS failure, or a redirect or 4xx answer. A
+  timeout, a reset or a 5xx is not a reason to fall back, since the spot
+  may already have been taken and would be posted twice. The choice is
+  kept until PiRO restarts and logged once. Whether wsprnet.org accepts
+  HTTPS on /post/ couldn't be checked from here (this environment can't
+  reach it); the fallback means uploads keep working either way.
+- **systemd hardening (item 15).** `deploy/piro.service` gains
+  NoNewPrivileges, an empty CapabilityBoundingSet, RestrictSUIDSGID,
+  ProtectSystem=full, PrivateTmp, ProtectKernelTunables,
+  ProtectKernelModules, ProtectControlGroups, ProtectHostname,
+  RestrictNamespaces, LockPersonality, SystemCallArchitectures=native and
+  RestrictAddressFamilies (unix, inet, inet6, netlink). Left out, with the
+  reasons in the unit: PrivateDevices, DevicePolicy, ProtectClock and
+  ProtectKernelLogs (they restrict /dev, hiding the serial port and sound
+  card), MemoryDenyWriteExecute (Node's JIT and WebAssembly), ProtectHome
+  and ProtectSystem=strict (the save folders can be anywhere),
+  SystemCallFilter and RestrictRealtime (not tried on a Pi).
+  `systemd-analyze security --offline` rates the unit 4.1 ("OK"), the old
+  one 9.0 ("UNSAFE"); `systemd-analyze verify` passes. Not yet run on a
+  Pi: the README says how to turn a setting off with `systemctl edit`,
+  and that existing installs must re-run the install step to get it.
+- **The name.** "PiRO" throughout: the default `SCREEN_TITLE` (was "SPARC
+  PiRO"; set `SCREEN_TITLE` to keep a club name), the page title and
+  heading, the web app manifest, PSK Reporter's program id (was
+  "SPARC-PiRO"), `package.json` (`piro`; npm names are lower case), the
+  plain-text server reply, and the service-worker cache (`piro-shell-vN`;
+  the old `icom-rig-pwa-shell-*` cache is deleted by the usual cleanup).
+  The architecture diagram still shows the old cache name and v126.
+- **The title links to the source (AGPL).** The heading is now a link to
+  the source of the running copy: `SOURCE_CODE_URL`, which now defaults to
+  https://github.com/StevPem/piro. The page's HTML carries that link, so
+  it works before the page connects; the server's value replaces it. It
+  replaces the separate "Source" link, which only appeared when
+  `SOURCE_CODE_URL` was set, so an unconfigured copy offered no source.
+  The link looks like the title and is underlined on hover or focus.
+- Tests: wspr-bridge.test.js (HTTPS first; refused, 404 and a certificate
+  error fall back to HTTP and stay there; a timeout and a 5xx don't; once
+  HTTPS has worked a failure is reported, not switched; logged once), and
+  by hand Node's real error for a self-signed certificate
+  (DEPTH_ZERO_SELF_SIGNED_CERT) counts as not taken. ws-server.test.js and
+  psk-reporter.test.js for the new defaults. manual-tty-ui.js: the title
+  is a link to the repository, the old Source link is gone.
+- Service-worker cache v133.

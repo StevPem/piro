@@ -177,6 +177,19 @@ class Civ extends EventEmitter {
   await page.goto(`http://localhost:${port}/`);
   await page.waitForFunction(() => !document.getElementById('tty-send-btn').disabled, null, { timeout: 8000 });
 
+  // The title is "PiRO" and links to the source (AGPL); the old "Source" link is gone
+  {
+    const t = await page.evaluate(() => {
+      const a = document.querySelector('.panel__title a');
+      return { text: a?.textContent, href: a?.href, target: a?.target, doc: document.title, oldLink: !!document.getElementById('app-source-link') };
+    });
+    check(t.text === 'PiRO' && t.doc === 'PiRO', `the title is "PiRO" (page "${t.text}", tab "${t.doc}")`);
+    check(t.href === 'https://github.com/StevPem/piro' && t.target === '_blank', `and links to PiRO's repository in a new tab (${t.href})`);
+    check(!t.oldLink, 'the separate Source link is gone');
+    const manifest = await (await fetch(`http://localhost:${port}/manifest.webmanifest`)).json();
+    check(manifest.name === 'PiRO' && manifest.short_name === 'PiRO', 'the web app manifest names it PiRO');
+  }
+
   // A second browser on the same server (another phone, say): it follows
   // every mode the first one picks, without sending any radio commands itself.
   const pageB = await browser.newPage({ viewport: { width: 430, height: 1100 } });

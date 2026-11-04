@@ -193,7 +193,7 @@ class ControlServer extends EventEmitter {
         return;
       }
       res.writeHead(200, { 'Content-Type': 'text/plain' });
-      res.end('icom-rig-pwa control server\n');
+      res.end('PiRO control server\n');
     };
     this.httpServer = this.tls
       ? https.createServer({ cert: this.tls.cert, key: this.tls.key }, requestHandler)
@@ -220,7 +220,7 @@ class ControlServer extends EventEmitter {
       radioAddr: this.civ.radioAddr ?? null,
       audio: null, // set via setAudioInfo() once/if an AudioBridge is attached
       scope: null, // set via setScopeInfo() once/if a ScopeBridge is attached
-      screenTitle: screenTitle || 'SPARC PiRO', // static for the process lifetime, see docs/ui-notes.md
+      screenTitle: screenTitle || 'PiRO', // static for the process lifetime, see docs/ui-notes.md
       // The app's own version (from package.json), shown client-side in
       // small text next to screenTitle. Static for the process lifetime,
       // same as screenTitle — see docs/ui-notes.md. null (rather than a

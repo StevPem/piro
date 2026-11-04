@@ -174,7 +174,7 @@ async function run() {
     helloA.data.mode && helloA.data.mode.mode === 'USB',
     'listen() primes state.mode from the radio before any client connects, so the first snapshot already has a real value'
   );
-  check(helloA.data.screenTitle === 'SPARC PiRO', 'screenTitle defaults to "SPARC PiRO" when not configured');
+  check(helloA.data.screenTitle === 'PiRO', 'screenTitle defaults to "PiRO" when not configured');
   check(
     helloA.data.stationCallsign === null && helloA.data.stationGrid === null,
     'stationCallsign/stationGrid default to null when not configured'

@@ -12,7 +12,7 @@ Hamlib, no separate audio server and no extra apps.
 Written by VK3TR. Licensed AGPL-3.0-only (see
 [Licence](#licence)).
 
-**Current build: v132.** This is the version the app shows next to its title.
+**Current build: v133.** This is the version the app shows next to its title.
 It is the `CACHE_NAME` number in `src/client/sw.js`, which goes up with every
 change to the web app.
 
@@ -292,6 +292,28 @@ sudo systemctl disable piro         # stop it starting at boot
 - If you already run an older install under another unit name (for example
   `icom-rig-pwa`), keep using that name in the commands above, or disable it
   and install this one. Do not run two services on the same port.
+
+**Hardening.** The unit limits what PiRO, and the programs it starts, can
+do. They can't gain privileges, and they get a private `/tmp`. They can't
+write to `/usr`, `/boot` or `/etc`, or change kernel settings. Network use
+is limited to what PiRO needs. The serial port, the sound card and your
+home folder are untouched. `systemd-analyze security piro` rates it about
+4 ("OK"), where the unit without these lines rated 9 ("UNSAFE"). These
+lines have not yet been tried on a Pi. If something stops working (a save
+folder can't be written, a helper program won't start), turn the setting
+off with an override, then tell us which:
+
+```bash
+sudo systemctl edit piro            # add, for example:
+                                    #   [Service]
+                                    #   ProtectSystem=no
+sudo systemctl restart piro
+```
+
+An install made before v133 has the old unit. To get these lines, re-run
+step 2 above (it rewrites `/etc/systemd/system/piro.service`; your settings
+in `/etc/piro/piro.env` are kept), then `sudo systemctl daemon-reload` and
+`sudo systemctl restart piro`.
 
 ### Optional components
 
@@ -1367,7 +1389,9 @@ drift). Every browser sees the same list, and a page that opens later gets
 the recent spots.
 
 Spots go to wsprnet.org after each slot, the way WSJT-X sends them (a
-"wsprstat" report when nothing was heard). This needs `STATION_CALLSIGN`
+"wsprstat" report when nothing was heard). PiRO sends them over HTTPS; if
+wsprnet.org doesn't accept HTTPS, it uses plain HTTP, as WSJT-X does, and
+says so once in the log. This needs `STATION_CALLSIGN`
 and `WSPR_GRID` (or `STATION_GRID`); `WSPR_UPLOAD=off` turns it off. The
 panel shows whether the last upload worked.
 
@@ -1766,7 +1790,7 @@ All settings are environment variables. For the systemd service they go in
 | `AUDIO_SAMPLE_RATE` | `48000` | Audio sample rate. |
 | `AUDIO_CHANNELS` | `1` | Number of audio channels. |
 | `AUDIO_OPUS_BITRATE` | `24000` | Opus bit rate for compressed audio, in bits per second (6000 to 128000). See [Compressed audio for remote use](#compressed-audio-for-remote-use). `AUDIO_CODEC` is no longer used: each browser chooses. |
-| `SCREEN_TITLE` | `SPARC PiRO` | Title shown in the browser tab and on the page. |
+| `SCREEN_TITLE` | `PiRO` | Title shown in the browser tab and on the page (a link to the source, see `SOURCE_CODE_URL`). |
 | `JTTY_TX_FREQ_HZ` | `1450` | Audio frequency of JTTY's lowest tone, in Hz. The signal fills about 94 Hz above it. |
 | `JTTY_RX_LOW_HZ`, `JTTY_RX_HIGH_HZ` | `200`, `2900` | Audio range, in Hz, searched for JTTY signals. The default is the whole range the decoder supports. Two extra fixed channels at 1350 and 1650 Hz (±150 Hz) are always searched as well. A narrower range saves a little CPU. |
 | `JTTY_RX_QUALITY` | `economy` | JTTY decoder effort. `economy` uses about 40% of `full`'s CPU and decoded nearly as many weak signals in testing. `light` is in between, `full` matches WSJT-X's search exactly, and `auto` runs `full` but drops to `economy` when the Pi falls behind. |
@@ -1816,7 +1840,7 @@ All settings are environment variables. For the systemd service they go in
 | `ALLOWED_ORIGINS` | none | Extra web origins allowed to open the WebSocket, separated by commas, such as `https://radio.example.net`. Normally not needed: PiRO's own page is always allowed. Set it only behind a reverse proxy that changes the `Host` header. `*` allows any origin (not recommended). |
 | `CW_KEY_LINE` | none | `dtr` or `rts`: the CW paddle keys the radio with that line of the USB serial port. Set the radio's USB Keying (CW) to the same line. Unset or `off`: the paddle keys with CI-V PTT. See [CW](#cw). |
 | `CW_PADDLE_DELAY_MS` | `250` | How long the server holds paddle elements before sending them, so they go out with even timing (50 to 1000). Lower at home, higher on a poor link. |
-| `SOURCE_CODE_URL` | none | Link shown in the page footer. The AGPL asks you to offer the source to people who use your instance (see [Licence](#licence)). |
+| `SOURCE_CODE_URL` | PiRO's repository | Where the page's title links: the source of the PiRO you run. Leave it unset for an unchanged copy; if you have changed PiRO, point it at your own source (see [Licence](#licence)). |
 | `STATIC_DIR` | `src/client` | Folder the web app is served from. |
 | `RNNOISE_BIN` | `rnnoise_demo` | Path to the patched `rnnoise_demo`. |
 | `RNNOISE_WET` | `0.25,0.5,0.75,1.0` | Blend ratio for each level of the "RNN" button. |
@@ -1920,7 +1944,8 @@ one hard refresh (Ctrl+Shift+R, or Cmd+Shift+R on a Mac).
 - **WSPR spots don't reach wsprnet.org.** The WSPR panel says whether the
   last upload worked. Uploading needs `STATION_CALLSIGN`, `WSPR_GRID` (or
   `STATION_GRID`) and internet access from the Pi (to `wsprnet.org`, port
-  80), and must not be turned off with `WSPR_UPLOAD=off`.
+  443, or 80 if it falls back to HTTP: the log says which), and must not be
+  turned off with `WSPR_UPLOAD=off`.
 - **The WSPR Transmit box can't be ticked.** Its tooltip says why: usually
   `STATION_CALLSIGN` or the grid is not set, or the callsign has a `/`.
 - **The microphone is blocked in the browser.** Use HTTPS (see
@@ -3072,7 +3097,7 @@ The test files:
 - Update this README where it applies: the operator text in Part 1, the
   protocol, the test list, the environment variables, troubleshooting.
 - Write docs and UI text in plain, short sentences.
-- If you publish a fork, set `SOURCE_CODE_URL` to it, so the footer link
+- If you publish a fork, set `SOURCE_CODE_URL` to it, so the title's link
   points to the source of the version that is actually running.
 
 ### Ported code
@@ -3127,5 +3152,8 @@ Apache and MIT), which allow this. Their notices are in `third_party/` and
 `models/`.
 
 The AGPL asks that people who use your PiRO over a network can get its
-source code. Set `SOURCE_CODE_URL` to where your version's source is, and
-the page footer links to it.
+source code. The title at the top of the page ("PiRO", or your
+`SCREEN_TITLE`) is a link to it: to PiRO's repository,
+<https://github.com/StevPem/piro>, unless you set `SOURCE_CODE_URL`. If you
+run a copy you have changed, set `SOURCE_CODE_URL` to where your changed
+source is.
