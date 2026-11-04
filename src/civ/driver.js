@@ -511,6 +511,40 @@ class CivDriver extends EventEmitter {
   }
 
   /**
+   * Emergency unkey, for shutdown and crashes only: writes PTT-off
+   * (1C 00 00) straight to the port, ahead of anything queued, and
+   * doesn't wait for the radio's reply. setPtt(false) could sit behind
+   * meter or scope requests (up to a second each) when there may be no
+   * time left. The radio's OK reply may be taken as the answer to
+   * whatever request is in flight, so don't use this in normal running.
+   * Resolves true once the bytes have left for the radio, false if they
+   * couldn't be written in `timeoutMs`; never rejects.
+   */
+  forcePttOff({ timeoutMs = 1000 } = {}) {
+    return new Promise((resolve) => {
+      if (!this.port || !this.port.isOpen || this.radioAddr === null || this.radioAddr === undefined) {
+        resolve(false);
+        return;
+      }
+      const timer = setTimeout(() => resolve(false), timeoutMs);
+      const done = (ok) => {
+        clearTimeout(timer);
+        resolve(ok);
+      };
+      try {
+        const raw = encodeFrame({ to: this.radioAddr, from: this.controllerAddr, cmd: CMD.PTT, subCmd: SUBCMD.PTT, data: Buffer.from([0]) });
+        this.port.write(raw, (err) => {
+          if (err) return done(false);
+          if (typeof this.port.drain === 'function') this.port.drain((drainErr) => done(!drainErr));
+          else done(true);
+        });
+      } catch {
+        done(false);
+      }
+    });
+  }
+
+  /**
    * Whether the radio is transmitting now (a bare 1C 00 read). This sees
    * transmissions the radio starts itself, e.g. CW break-in, not only PTT
    * keyed over CI-V.

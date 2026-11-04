@@ -79,6 +79,32 @@ async function testBasicRequestReply() {
   check(hz === 14195000, 'getFrequency() resolves with the value from the simulated reply');
 }
 
+async function testForcePttOff() {
+  console.log('\n-- forcePttOff: emergency unkey ahead of the queue --');
+  const transport = new FakeTransport();
+  const driver = new CivDriver({ path: '/fake', radioAddr: RADIO_ADDR, transport, requestTimeoutMs: 200 });
+  await driver.open();
+  // A request in flight that the radio hasn't answered, and one queued behind it.
+  const pending = driver.getFrequency().catch(() => {});
+  const queued = driver.getMode().catch(() => {});
+  const before = transport.written.length;
+  const sent = await driver.forcePttOff();
+  check(sent === true, 'forcePttOff resolves true once written');
+  check(transport.written.length === before + 1, 'it writes at once, without waiting for the request in flight');
+  const frame = [...transport.written[transport.written.length - 1]];
+  check(frame.slice(4, 7).join() === [CMD.PTT, SUBCMD.PTT, 0x00].join(), `it sends 1C 00 00 (PTT off), got [${frame.join(',')}]`);
+  await Promise.all([pending, queued]);
+
+  transport.isOpen = false;
+  check((await driver.forcePttOff()) === false, 'with the port closed it resolves false rather than throwing');
+
+  const stuck = new FakeTransport();
+  stuck.write = () => {}; // never calls back
+  const d2 = new CivDriver({ path: '/fake', radioAddr: RADIO_ADDR, transport: stuck });
+  await d2.open();
+  check((await d2.forcePttOff({ timeoutMs: 30 })) === false, 'a write that never completes times out to false');
+}
+
 async function testCwKeyer() {
   console.log('\n-- CW keyer: key speed, break-in, sending text (17), stop, transmit state --');
   const transport = new FakeTransport();
@@ -1210,6 +1236,7 @@ async function run() {
   await testFunctionAndTunerGetters();
   await testDataMode();
   await testCwKeyer();
+  await testForcePttOff();
   await testUsbAudioLevels();
   await testTuneScopeToRange();
   await testCenterScope();

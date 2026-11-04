@@ -3,7 +3,7 @@
 const fs = require('fs');
 const path = require('path');
 const { CivDriver, KNOWN_RADIO_ADDR } = require('../civ');
-const { ControlServer } = require('./ws-server');
+const { ControlServer, parseAllowedOrigins } = require('./ws-server');
 const { AudioBridge } = require('./audio-bridge');
 const { ScopeBridge } = require('./scope-bridge');
 const { CwDecoderBridge } = require('./cw-decoder-bridge');
@@ -275,6 +275,13 @@ const CIV_MAXIMIZE_USB_LEVELS = !/^(0|false)$/i.test(process.env.CIV_MAXIMIZE_US
 const TLS_CERT_PATH = process.env.TLS_CERT_PATH;
 const TLS_KEY_PATH = process.env.TLS_KEY_PATH;
 
+// WebSocket connections are only accepted from this server's own page
+// (the browser's Origin must match the Host it connected to), so another
+// web site open in an operator's browser can't reach the radio. Behind a
+// reverse proxy that changes the Host header, list the public origin(s)
+// here, comma-separated, e.g. "https://radio.example.net".
+const ALLOWED_ORIGINS = parseAllowedOrigins(process.env.ALLOWED_ORIGINS);
+
 let civ;
 let controlServer;
 let audioBridge;
@@ -342,6 +349,16 @@ async function main() {
   civ = new CivDriver({ path: SERIAL_PATH, radioAddr, baudRate: CIV_BAUD_RATE });
 
   civ.on('error', (err) => console.error('[civ error]', err.message));
+  // The radio's USB went away (power-cycled, cable pulled, USB reset).
+  // The port isn't reopened here: the radio's USB sound card goes and
+  // comes back with it, so the whole service is restarted instead. Exit
+  // non-zero so systemd (Restart=on-failure) starts it again; while the
+  // radio is still away, each start fails at civ.open() and is retried.
+  civ.on('close', () => {
+    if (shuttingDown) return;
+    console.error(`[civ] The serial port ${SERIAL_PATH} closed unexpectedly (radio off or USB unplugged?). Exiting so the service restarts.`);
+    shutdown('serial port closed', 1);
+  });
 
   await civ.open();
   console.log(`CI-V port open: ${SERIAL_PATH} at ${civ.baudRate} baud`);
@@ -381,7 +398,9 @@ async function main() {
     stationGrid: STATION_GRID,
     rnnoiseLevelCount: RNNOISE_LEVEL_COUNT,
     sourceCodeUrl: SOURCE_CODE_URL,
+    allowedOrigins: ALLOWED_ORIGINS,
   });
+  if (ALLOWED_ORIGINS.length) console.log(`WebSocket connections also allowed from: ${ALLOWED_ORIGINS.join(', ')}`);
   const boundPort = await controlServer.listen();
   const scheme = tls ? 'https' : 'http';
   console.log(`Control server listening on ${scheme}://0.0.0.0:${boundPort}`);
@@ -775,9 +794,34 @@ async function main() {
   }
 }
 
-async function shutdown(signal) {
-  console.log(`\nReceived ${signal}, shutting down...`);
+let shuttingDown = false;
+
+/**
+ * Unkeys the radio first thing on shutdown or a crash. Each bridge's stop()
+ * puts back its own transmissions, but voice and paddle PTT from a browser
+ * have no bridge, and controlServer.close() clears the PTT watchdog, so
+ * without this a stop or crash mid-over would leave the radio
+ * transmitting with nothing left to unkey it. Bypasses the CI-V queue
+ * (see CivDriver#forcePttOff); never throws.
+ */
+async function emergencyUnkey(why) {
+  if (!civ || typeof civ.forcePttOff !== 'function') return;
   try {
+    const sent = await civ.forcePttOff({ timeoutMs: 1000 });
+    if (!sent) console.error(`[civ] Could not send PTT off (${why}); check the radio is not transmitting.`);
+  } catch (err) {
+    console.error(`[civ] Sending PTT off failed (${why}): ${err.message}`);
+  }
+}
+
+async function shutdown(signal, exitCode = 0) {
+  if (shuttingDown) return;
+  shuttingDown = true;
+  console.log(`\nShutting down (${signal})...`);
+  // If a step below hangs, still exit (inside systemd's TimeoutStopSec=10).
+  setTimeout(() => process.exit(exitCode), 8000).unref();
+  try {
+    await emergencyUnkey(signal);
     if (scopeBridge) await scopeBridge.stop();
     if (cwDecoderBridge) cwDecoderBridge.stop();
     if (rttyDecoderBridge) rttyDecoderBridge.stop();
@@ -802,13 +846,32 @@ async function shutdown(signal) {
     if (audioBridge) audioBridge.stop();
     if (controlServer) await controlServer.close();
     if (civ) await civ.close();
+  } catch (err) {
+    console.error('Error while shutting down:', err);
   } finally {
-    process.exit(0);
+    process.exit(exitCode);
   }
 }
 
 process.on('SIGINT', () => shutdown('SIGINT'));
 process.on('SIGTERM', () => shutdown('SIGTERM'));
+
+// A crash must not leave the transmitter keyed: unkey, then exit non-zero
+// so systemd restarts the service. (Node's default for both is to exit
+// at once, which skipped the unkey.)
+async function onFatal(kind, err) {
+  console.error(`Fatal ${kind}:`, err);
+  if (shuttingDown) {
+    process.exit(1);
+    return;
+  }
+  shuttingDown = true;
+  setTimeout(() => process.exit(1), 2000).unref();
+  await emergencyUnkey(kind);
+  process.exit(1);
+}
+process.on('uncaughtException', (err) => onFatal('uncaughtException', err));
+process.on('unhandledRejection', (err) => onFatal('unhandledRejection', err));
 
 main().catch((err) => {
   console.error('Failed to start:', err);
