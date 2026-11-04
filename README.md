@@ -12,7 +12,7 @@ Hamlib, no separate audio server and no extra apps.
 Written by VK3TR. Licensed AGPL-3.0-only (see
 [Licence](#licence)).
 
-**Current build: v131.** This is the version the app shows next to its title.
+**Current build: v132.** This is the version the app shows next to its title.
 It is the `CACHE_NAME` number in `src/client/sw.js`, which goes up with every
 change to the web app.
 
@@ -2003,6 +2003,14 @@ one hard refresh (Ctrl+Shift+R, or Cmd+Shift+R on a Mac).
 The `test/manual-*.js` scripts talk to a real radio. Stop the service first,
 because they need the serial port. None of them transmits.
 
+If you key CW with the USB cable (`CW_KEY_LINE`), the scripts drop that
+line too, as PiRO does: opening the port raises it, which would key the
+radio in CW with break-in on. They take `CW_KEY_LINE` from the shell, or
+else from `/etc/piro/piro.env`, and print which (for example "CW key line:
+DTR (from /etc/piro/piro.env)"). Other programs that open the radio's
+serial port (a terminal program, Hamlib, a logger on a PC) don't know to:
+leave break-in off when you're not sending CW.
+
 ```bash
 node test/manual-civ-test.js /dev/ttyUSB0            # basic CI-V check (optionally add the address: 0x94)
 node test/manual-scope-test.js /dev/ttyUSB0          # does your radio deliver scope data? (may need CIV_BAUD_RATE=115200)
@@ -2872,6 +2880,9 @@ The test files:
                            transmitting, another browser, a stuck paddle);
                            key up when the browser leaves or on stop; the
                            10-minute limit; CI-V PTT without a key line
+  key-line.test.js        CW_KEY_LINE: parsing, scripts run by hand finding
+                           it in /etc/piro/piro.env, and every program that
+                           opens the radio's serial port passing it on
   jtty-rx.test.js         JTTY receiver: list decoder, multi-frame messages,
                            two signals, noise, gaps, chunking, and WSJT-X's
                            own 10-frame sample recording

@@ -2,7 +2,7 @@
 
 const fs = require('fs');
 const path = require('path');
-const { CivDriver, KNOWN_RADIO_ADDR } = require('../civ');
+const { CivDriver, KNOWN_RADIO_ADDR, parseKeyLine } = require('../civ');
 const { ControlServer, parseAllowedOrigins } = require('./ws-server');
 const { AudioBridge } = require('./audio-bridge');
 const { ScopeBridge } = require('./scope-bridge');
@@ -42,11 +42,9 @@ const SERIAL_PATH = process.env.CIV_SERIAL_PATH || '/dev/ttyUSB0';
 // CW_PADDLE_DELAY_MS: how long elements are held so they can be replayed
 // with even timing (more for a jittery link, less at home).
 const CW_KEY_LINE = (() => {
-  const v = (process.env.CW_KEY_LINE || '').trim().toLowerCase();
-  if (v === '' || v === 'off' || v === 'none') return null;
-  if (v === 'dtr' || v === 'rts') return v;
-  console.warn(`CW_KEY_LINE="${process.env.CW_KEY_LINE}" is not dtr, rts or off; the CW paddle will key with CI-V PTT.`);
-  return null;
+  const { line, valid } = parseKeyLine(process.env.CW_KEY_LINE);
+  if (!valid) console.warn(`CW_KEY_LINE="${process.env.CW_KEY_LINE}" is not dtr, rts or off; the CW paddle will key with CI-V PTT.`);
+  return line;
 })();
 const CW_PADDLE_DELAY_MS = (() => {
   const raw = process.env.CW_PADDLE_DELAY_MS;

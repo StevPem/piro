@@ -5195,3 +5195,30 @@ transmission.
   port's DTR/RTS (the tests use a fake port), and a real phone on a poor
   link.
 - Service-worker cache v131.
+
+### Diagnostic scripts drop the CW key line too (v132)
+
+- **The gap.** With the radio's USB Keying (CW) on DTR or RTS (v131), the
+  `test/manual-*.js` scripts that open the serial port left that line high
+  for their whole run: Linux raises DTR and RTS on open, and only the
+  server knew to drop the key line. With the radio in CW and break-in on,
+  that is a steady carrier for as long as the script runs.
+- **The fix.** New `src/civ/key-line.js`: `parseKeyLine()` (now also used by
+  index.js) and `scriptKeyLine()`. The scripts are run from a shell, not
+  by systemd, so they don't see `/etc/piro/piro.env`; `scriptKeyLine()`
+  takes `CW_KEY_LINE` from the environment, or else reads it from that
+  file, and says which. All six scripts that open the port pass it to
+  CivDriver, which drops the line on open as the server does. Without a
+  key line the serial lines are still left alone.
+- Not covered: other programs on the same port (a terminal program,
+  Hamlib, a logger on a PC). The README says to leave break-in off when
+  not sending CW.
+- Tests: key-line.test.js (new: values, quotes, off, a bad value; the env
+  file read with comments, `export` and the last value winning; the
+  environment winning over the file; no file; and every program that
+  opens the radio's real port, found by scanning `test/` and index.js,
+  passes a key line, which fails if one doesn't: checked by taking it
+  out of one script). By hand, `manual-civ-test.js` against a fake radio
+  on a pseudo-terminal prints where it found the key line and tries to
+  drop it (a pseudo-terminal has no DTR, so that is reported as an error).
+- Service-worker cache v132.

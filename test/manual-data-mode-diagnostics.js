@@ -36,7 +36,7 @@
  *   CIV_BAUD_RATE=115200 node test/manual-data-mode-diagnostics.js /dev/ttyUSB0 0x94
  */
 
-const { CivDriver } = require('../src/civ');
+const { CivDriver, scriptKeyLine } = require('../src/civ');
 
 async function main() {
   const path = process.argv[2];
@@ -49,7 +49,11 @@ async function main() {
     process.exit(1);
   }
 
-  const civ = new CivDriver({ path, radioAddr: explicitAddr, baudRate });
+  // With the radio's USB Keying (CW) on DTR or RTS, opening the port raises
+  // that line and would key the radio: drop it (see src/civ/key-line.js).
+  const keyLine = scriptKeyLine();
+  console.log(keyLine.message);
+  const civ = new CivDriver({ path, radioAddr: explicitAddr, baudRate, keyLine: keyLine.line || undefined });
   civ.on('error', (err) => console.error('[civ error]', err.message));
 
   console.log(`Opening ${path}...`);
