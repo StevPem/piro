@@ -103,7 +103,13 @@ function decodePng(buf) {
   const start = controlServer.broadcasts.find((b) => b.type === EVENT.SSTV_START)?.data;
   const pic = controlServer.broadcasts.find((b) => b.type === EVENT.SSTV_PICTURE)?.data;
   const lines = controlServer.binary.filter((b) => b[0] === BINARY_TYPE.SSTV_LINE);
-  const spectra = controlServer.binary.filter((b) => b[0] === BINARY_TYPE.FT8_SPECTRUM);
+  // The spectrum goes out on a 250 ms timer. This test feeds audio faster
+  // than real time, so on a fast machine the picture can be finished before
+  // the timer has fired once: give it time (SSTV is still selected).
+  const isSpectrum = (b) => b[0] === BINARY_TYPE.FT8_SPECTRUM;
+  const t1 = Date.now();
+  while (!controlServer.binary.some(isSpectrum) && Date.now() - t1 < 2000) await sleep(20);
+  const spectra = controlServer.binary.filter(isSpectrum);
   check(start?.mode === 'R8BW' && start.width === 320 && start.lines === 120 && start.id === 1, `sstv-start broadcast (${start?.name}, ${start?.width} x ${start?.lines})`);
   check(lines.length === 120 && lines.every((f, i) => f.readUInt16LE(1) === 1 && f.readUInt16LE(3) === i), `120 SSTV_LINE frames, in order (${lines.length})`);
   check(pic && pic.complete && pic.mode === 'R8BW' && typeof pic.png === 'string', 'sstv-picture broadcast with the PNG');
