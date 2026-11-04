@@ -15,6 +15,7 @@ const { SstvDecoderBridge } = require(PKG + '/src/server/sstv-decoder-bridge');
 const { encodeSstv } = require(PKG + '/src/audio/sstv-tx');
 const { SstvTxBridge } = require(PKG + '/src/server/sstv-tx-bridge');
 const { CwTxBridge } = require(PKG + '/src/server/cw-tx-bridge');
+const { CwPaddleBridge } = require(PKG + '/src/server/cw-paddle-bridge');
 const { WsprBridge } = require(PKG + '/src/server/wspr-bridge');
 const { BandConditions } = require(PKG + '/src/server/band-conditions');
 const { FaxDecoderBridge } = require(PKG + '/src/server/fax-decoder-bridge');
@@ -51,7 +52,7 @@ class Civ extends EventEmitter {
   async setMode(mode) { this.log.push(['setMode', mode]); this.mode = mode; this.emit('mode', { mode, filter: 1 }); return true; }
   async setDataMode(on) { this.log.push(['setDataMode', on]); this.dataMode = on; return true; }
   async getDataMode() { return this.dataMode; }
-  async setPtt(on) { this.log.push(['setPtt', on]); return true; }
+  async setPtt(on) { this.log.push(['setPtt', on]); (this.pttAt ??= []).push([on, Date.now()]); return true; }
   async getSMeter() { return 100; }
   async getSWR() { return this.swr ?? 0; }
   async getAlc() { return this.alc ?? 0; }
@@ -90,6 +91,9 @@ class Civ extends EventEmitter {
   sstvTx.start();
   const cwTx = new CwTxBridge({ controlServer: server });
   cwTx.start();
+  server.cwTxBusy = () => cwTx.transmitting;
+  const cwPaddle = new CwPaddleBridge({ controlServer: server, delayMs: 250 }); // no key line: CI-V PTT, as without CW_KEY_LINE
+  cwPaddle.start();
   // WSPR, with a slot clock the test drives and no decoding (the spots are put in by hand)
   const wsprClock = Object.assign(new EventEmitter(), { currentSlotStart: () => Date.now() - (Date.now() % 120000), start() {}, stop() {} });
   const wspr = new WsprBridge({ controlServer: server, audioBridge, callsign: 'VK2IO', grid: 'QF56', slotClock: wsprClock, decoder: { decode: async () => ({ decodes: [], hashtab: [] }), terminate() {} }, wsprnet: { upload: async () => ({ sent: 1 }) }, random: () => 0 });
@@ -880,6 +884,39 @@ class Civ extends EventEmitter {
     await page.locator('#cw-send-btn').click();
     await page.waitForFunction(() => document.getElementById('cw-status').textContent === 'Stopped.', null, { timeout: 5000 });
     check(civ.log.some((e) => e[0] === 'stopCw') && civ.log.slice(-2).map((e) => e.join(' ')).join(' | ') === 'setBreakIn 0 | setKeySpeed 15' && (await page.locator('#cw-send-btn').textContent()) === 'Send', 'Stop: the keyer stopped, break-in and speed put back, Send again');
+  }
+
+  // CW paddle: elements go to the server (cwKey), which keys them a fixed delay later, timed on its own clock
+  {
+    await page.locator('#cw-wpm-input').fill('20'); // 60 ms units
+    civ.pttAt = [];
+    // who asks for each PTT change: a browser's setPtt has an owner, the paddle bridge's doesn't
+    const pttAsks = [];
+    const realSetPtt = server.setPttFromServer.bind(server);
+    server.setPttFromServer = (on, opts = {}) => { pttAsks.push({ on, fromBrowser: !!opts.owner, urgent: !!opts.urgent }); return realSetPtt(on, opts); };
+    const seen = [];
+    const realKey = cwPaddle.key.bind(cwPaddle);
+    cwPaddle.key = (ws, msg) => { seen.push({ ...msg, at: Date.now() }); return realKey(ws, msg); };
+    const dot = await page.locator('#cw-dot-btn').boundingBox();
+    const pressedAt = Date.now();
+    await page.mouse.move(dot.x + dot.width / 2, dot.y + dot.height / 2);
+    await page.mouse.down();
+    await sleep(250); // about two dots at 20 WPM (60 ms on, 60 ms off)
+    await page.mouse.up();
+    await sleep(900);
+    const p = civ.pttAt;
+    const ons = p.filter((e) => e[0]).map((e) => e[1]);
+    const offs = p.filter((e) => !e[0]).map((e) => e[1]);
+    check(seen.length >= 2 && seen.every((m) => m.d === 60 && typeof m.session === 'string') && seen[1].t - seen[0].t === 120, `DOT held: each dot sent as one cwKey of 60 ms, 120 ms apart on the keyer's schedule (${seen.map((m) => `t=${m.t} d=${m.d}`).join(', ')})`);
+    check(ons.length === seen.length && offs.length >= seen.length, `the server keyed each one (${ons.length} on, ${offs.length} off)`);
+    check(ons[0] - pressedAt >= 240, `a fixed delay after the press (${ons[0] - pressedAt} ms)`);
+    const lens = ons.map((t, i) => offs[i] - t);
+    check(lens.every((l) => Math.abs(l - 60) <= 20) && Math.abs(ons[1] - ons[0] - 120) <= 20, `on the radio: dots of ${lens.join(', ')} ms, ${ons[1] - ons[0]} ms apart (keyed 60 and 120)`);
+    check(pttAsks.length >= 2 && pttAsks.every((a) => !a.fromBrowser && a.urgent), `every PTT change came from the paddle bridge, sent urgent; none from the browser (${pttAsks.length})`);
+    cwPaddle.key = realKey;
+    server.setPttFromServer = realSetPtt;
+    await sleep(5200); // the session ends 5 s after the last element
+    check(server.state.cwKeying === false, 'the keying session has ended');
   }
 
   // Olivia -> LSB: leaves Olivia, DATA MODE off, PTT back

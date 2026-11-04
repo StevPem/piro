@@ -415,7 +415,9 @@ class ControlServer extends EventEmitter {
       // button): the NOTES_KEEP most recent, newest last, each {id, text,
       // time} with time in epoch ms. See REQUEST.POST_NOTE.
       notes: [],
+      cwKeying: false, // the CW paddle is keying (EVENT.CW_KEYING); see cw-paddle-bridge.js
     };
+    this.cwPaddle = null; // set by CwPaddleBridge#start()
 
     this._wireCivEvents();
     this._wireWsConnections();
@@ -1064,6 +1066,13 @@ class ControlServer extends EventEmitter {
           ws.send(makeResult(id, { accepted: true }));
           break;
         }
+        case REQUEST.CW_KEY: {
+          // One paddle element; see cw-paddle-bridge.js. Replies at once: the
+          // element is keyed later, on the server's clock.
+          if (!this.cwPaddle) throw new Error('The CW paddle is not available on this server');
+          ws.send(makeResult(id, this.cwPaddle.key(ws, msg)));
+          break;
+        }
         case REQUEST.SEND_CW: {
           if (typeof msg.text !== 'string' || msg.text.trim() === '') throw new Error('"text" must be a non-empty string');
           if (msg.text.length > 1000) throw new Error('"text" is too long');
@@ -1548,8 +1557,8 @@ class ControlServer extends EventEmitter {
    * weaken the fail-safe — it's just reusing the one safety mechanism
    * rather than needing a separate exemption path for automated TX.
    */
-  async setPttFromServer(on, { except, owner } = {}) {
-    await this.civ.setPtt(on);
+  async setPttFromServer(on, { except, owner, urgent = false } = {}) {
+    await this.civ.setPtt(on, { urgent });
     this.state.ptt = on;
     // `owner`: the browser that keyed it (REQUEST.SET_PTT); none when a bridge keyed it.
     this._pttOwner = on ? owner ?? null : null;

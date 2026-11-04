@@ -665,6 +665,35 @@ no way to notice a front-panel change without actively asking — see
 `docs/ui-notes.md` for how the UI polls these periodically to stay
 genuinely in sync rather than just reflecting its own last request.
 
+## CW keying with the USB serial port's DTR/RTS line (v131)
+
+Not a CI-V command, but it uses the same USB serial port. The IC-7300's
+**Menu > Set > Connectors > USB SEND/Keying > USB Keying (CW)** is OFF,
+DTR or RTS (default OFF); with DTR or RTS chosen, that modem-control line
+of the radio's USB virtual COM port keys CW, as fldigi and N1MM do. It
+can't be the same line as USB SEND (PTT). The IC-7300MK2 has two virtual
+COM ports and offers USB (A)/(B) DTR/RTS. Sources: the IC-7300 manual's
+USB SEND/Keying page, the fldigi wiki's IC7300 CW howto, N6TV's Dayton
+2019 "Everything USB" slides. Not yet checked on a real radio here.
+
+- As with a key on the KEY jack, the radio only transmits on it with
+  break-in on (semi or full); with break-in off it only sounds the
+  sidetone. CwPaddleBridge turns semi break-in on for a keying session and
+  puts it back, as CwTxBridge does for CI-V `17`.
+- `CivDriver#setKeyLine(line, on)` sets it with serialport's `port.set()`
+  (an ioctl), straight away, not through the CI-V queue: no reply to wait
+  for, so its timing is the Pi's (well under a millisecond plus Node's
+  timer accuracy).
+- **Linux raises DTR and RTS when a port is opened** (the tty driver does it
+  for any baud rate but B0). With USB Keying on that line, opening the
+  port keys the radio until something drops the line. CivDriver drops the
+  configured key line in the open callback; the window is short but not
+  zero, so the README says to leave break-in off when not sending CW. The
+  lines are left alone when no key line is set: some external CI-V
+  interfaces are powered from DTR/RTS.
+- Closing the port (and the process ending, even in a crash) drops DTR and
+  RTS again (HUPCL); `emergencyUnkey()` also drops the key line first.
+
 ## Antenna tuner (command 0x1C, sub-command 0x01)
 
 Lives under the same command group (`0x1C`) as PTT (sub-command `0x00`)

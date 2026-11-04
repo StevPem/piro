@@ -63,6 +63,10 @@ operators, so frequency tables follow the WIA band plans.
   RF tone.
 - CI-V CW text (`17`) takes 30 characters per command, answers NG when
   its buffer is full, and only transmits with break-in on.
+- CW can also be keyed with the USB serial port's DTR or RTS line (radio
+  menu USB Keying (CW); `CW_KEY_LINE`), also only with break-in on. Linux
+  raises DTR and RTS when a port opens: CivDriver drops the key line on
+  open. Don't touch the lines when no key line is set.
 - Australian class licence: remotely controlled transmissions stop after
   10 minutes (the PTT watchdog in ws-server.js). Anything that transmits
   without PTT needs its own limit.

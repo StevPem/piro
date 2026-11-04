@@ -151,6 +151,7 @@ class CwTxBridge {
     const civ = this.controlServer.civ;
     if (this._tx) return fail('Already sending CW.');
     if (this.controlServer.state?.ptt) return fail('The radio is already transmitting.');
+    if (this.controlServer.state?.cwKeying) return fail('The CW paddle is keying.');
     if (!civ || typeof civ.sendCw !== 'function') return fail("This radio can't be sent CW text.");
     const { text: clean, dropped } = cleanCwText(text);
     if (!clean) return fail('Nothing to send.');

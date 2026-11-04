@@ -29,10 +29,33 @@ const { clampHellTone } = require('../audio/hell-rx');
 const { Ft8Bridge } = require('../audio/ft8-bridge');
 const { TtyBridge } = require('../audio/tty-bridge');
 const { CwTxBridge } = require('./cw-tx-bridge');
+const { CwPaddleBridge } = require('./cw-paddle-bridge');
 const { RadeBridge } = require('./rade-bridge');
 const { FreeDvReporterBridge } = require('./freedv-reporter');
 
 const SERIAL_PATH = process.env.CIV_SERIAL_PATH || '/dev/ttyUSB0';
+
+// CW paddle keying (see server/cw-paddle-bridge.js). CW_KEY_LINE=dtr or rts
+// keys CW with that line of the CI-V USB serial port; set the radio's
+// Menu > Set > Connectors > USB SEND/Keying > USB Keying (CW) to the same
+// line. Unset (or off): the paddle keys with CI-V PTT, as before.
+// CW_PADDLE_DELAY_MS: how long elements are held so they can be replayed
+// with even timing (more for a jittery link, less at home).
+const CW_KEY_LINE = (() => {
+  const v = (process.env.CW_KEY_LINE || '').trim().toLowerCase();
+  if (v === '' || v === 'off' || v === 'none') return null;
+  if (v === 'dtr' || v === 'rts') return v;
+  console.warn(`CW_KEY_LINE="${process.env.CW_KEY_LINE}" is not dtr, rts or off; the CW paddle will key with CI-V PTT.`);
+  return null;
+})();
+const CW_PADDLE_DELAY_MS = (() => {
+  const raw = process.env.CW_PADDLE_DELAY_MS;
+  if (raw === undefined || raw.trim() === '') return 250;
+  const v = Number(raw);
+  if (Number.isFinite(v) && v >= 50 && v <= 1000) return Math.round(v);
+  console.warn(`CW_PADDLE_DELAY_MS="${raw}" is not 50 to 1000; using 250.`);
+  return 250;
+})();
 const RADIO_MODEL = process.env.CIV_RADIO_MODEL; // e.g. "IC-7300"
 // Must match the radio's own "CI-V USB Baud Rate" menu setting exactly —
 // defaults to 19200 (CivDriver's own default) if unset. Spectrum scope
@@ -291,6 +314,7 @@ let rttyDecoderBridge;
 let ft8Bridge;
 let ttyBridge;
 let cwTxBridge;
+let cwPaddleBridge;
 let jttyDecoderBridge;
 let oliviaDecoderBridge;
 let hellDecoderBridge;
@@ -346,7 +370,7 @@ async function maximizeUsbAudioLevelsOnRadio(civ) {
 
 async function main() {
   const radioAddr = RADIO_MODEL ? KNOWN_RADIO_ADDR[RADIO_MODEL] : undefined;
-  civ = new CivDriver({ path: SERIAL_PATH, radioAddr, baudRate: CIV_BAUD_RATE });
+  civ = new CivDriver({ path: SERIAL_PATH, radioAddr, baudRate: CIV_BAUD_RATE, keyLine: CW_KEY_LINE || undefined });
 
   civ.on('error', (err) => console.error('[civ error]', err.message));
   // Only after a timeout: the radio answered too late, and the answer was dropped.
@@ -775,6 +799,15 @@ async function main() {
   cwTxBridge = new CwTxBridge({ controlServer });
   cwTxBridge.start();
   console.log('CW text sending ready (the Send button in CW mode).');
+  controlServer.cwTxBusy = () => cwTxBridge.transmitting;
+
+  cwPaddleBridge = new CwPaddleBridge({ controlServer, keyLine: CW_KEY_LINE, delayMs: CW_PADDLE_DELAY_MS });
+  cwPaddleBridge.start();
+  console.log(
+    CW_KEY_LINE
+      ? `CW paddle ready: keys with the serial port's ${CW_KEY_LINE.toUpperCase()} line (the radio's USB Keying (CW) must be ${CW_KEY_LINE.toUpperCase()}), ${CW_PADDLE_DELAY_MS} ms behind.`
+      : `CW paddle ready: keys with CI-V PTT, ${CW_PADDLE_DELAY_MS} ms behind (set CW_KEY_LINE for more exact timing).`
+  );
 
   if (SCOPE_ENABLED) {
     scopeBridge = new ScopeBridge({ civ, controlServer });
@@ -808,6 +841,10 @@ let shuttingDown = false;
  */
 async function emergencyUnkey(why) {
   if (!civ || typeof civ.forcePttOff !== 'function') return;
+  if (CW_KEY_LINE) {
+    // The CW key line keys the radio without PTT: drop it too.
+    await civ.setKeyLine(CW_KEY_LINE, false).catch((err) => console.error(`[civ] Could not drop the CW key line (${why}): ${err.message}`));
+  }
   try {
     const sent = await civ.forcePttOff({ timeoutMs: 1000 });
     if (!sent) console.error(`[civ] Could not send PTT off (${why}); check the radio is not transmitting.`);
@@ -830,6 +867,7 @@ async function shutdown(signal, exitCode = 0) {
     if (ft8Bridge) ft8Bridge.stop();
     if (ttyBridge) ttyBridge.stop();
     if (cwTxBridge) cwTxBridge.stop();
+    if (cwPaddleBridge) cwPaddleBridge.stop();
     if (jttyDecoderBridge) jttyDecoderBridge.stop();
     if (oliviaDecoderBridge) oliviaDecoderBridge.stop();
     if (hellDecoderBridge) hellDecoderBridge.stop();
