@@ -581,6 +581,12 @@ class AudioBridge extends EventEmitter {
     return codec;
   }
 
+  /** Sends an audio frame, skipped for a browser that is too far behind (ControlServer#sendLive). */
+  _sendLive(ws, frame) {
+    if (typeof this.controlServer.sendLive === 'function') this.controlServer.sendLive(ws, frame);
+    else ws.send(frame);
+  }
+
   _forgetClient(ws) {
     this._clientCodec.delete(ws);
     const dec = this._txDecoders.get(ws);
@@ -608,7 +614,7 @@ class AudioBridge extends EventEmitter {
         wants.get(codec).push(ws);
       } else {
         raw ??= tagAudio(pcm);
-        ws.send(raw);
+        this._sendLive(ws, raw);
       }
     }
     for (const [codec, enc] of this._rxEncoders) {
@@ -633,7 +639,7 @@ class AudioBridge extends EventEmitter {
       const type = codec === 'opus' ? BINARY_TYPE.AUDIO_OPUS : BINARY_TYPE.AUDIO_ADPCM;
       for (const p of packets) {
         const frame = tagFrame(type, p);
-        for (const ws of clients) ws.send(frame);
+        for (const ws of clients) this._sendLive(ws, frame);
       }
     }
   }

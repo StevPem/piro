@@ -1819,6 +1819,118 @@ async function run() {
     await pServer.close();
   }
 
+  // Backpressure: live frames (audio, scope, spectrum) are skipped for a
+  // browser that is too far behind; picture frames and JSON never are.
+  {
+    const { BINARY_TYPE, EVENT } = require('../src/server/protocol');
+    const { LIVE_BACKLOG_BYTES } = require('../src/server/ws-server');
+    const bServer = new ControlServer({ civ: new StubCivDriver(), port: 0, heartbeatMs: 0 });
+    const log = console.log;
+    const warn = console.warn;
+    const lines = [];
+    // keep the server's [ws] lines to check them; pass the rest (the checks) through
+    console.log = (m, ...rest) => (String(m).startsWith('[ws]') ? lines.push(String(m)) : log(m, ...rest));
+    console.warn = (m, ...rest) => (String(m).startsWith('[ws]') ? lines.push(String(m)) : warn(m, ...rest));
+    try {
+      const fake = () => ({ OPEN: 1, readyState: 1, bufferedAmount: 0, sent: [], send(b) { this.sent.push(b); } });
+      const audio = Buffer.from([BINARY_TYPE.AUDIO, 1, 2]);
+      const scope = Buffer.from([BINARY_TYPE.SCOPE_LINE, 1]);
+      const sstv = Buffer.from([BINARY_TYPE.SSTV_LINE, 1]);
+      const fax = Buffer.from([BINARY_TYPE.FAX_LINE, 1]);
+      const hell = Buffer.from([BINARY_TYPE.HELL_COLUMNS, 1]);
+      const slow = fake();
+      const fast = fake();
+      bServer.clients.add(slow);
+      bServer.clients.add(fast);
+      slow.bufferedAmount = LIVE_BACKLOG_BYTES.pcm + 1;
+      bServer.broadcastBinary(audio);
+      bServer.broadcastBinary(scope);
+      check(slow.sent.length === 0 && bServer.isLagging(slow), 'a browser over its backlog limit gets no audio or scope frames');
+      check(fast.sent.length === 2 && !bServer.isLagging(fast), 'another browser at the same time gets them all');
+      bServer.broadcastBinary(sstv);
+      bServer.broadcastBinary(fax);
+      bServer.broadcastBinary(hell);
+      check(slow.sent.length === 3, 'SSTV, fax and Feld-Hell picture frames are still sent to the slow browser');
+      bServer.broadcastJsonEvent(EVENT.FREQUENCY, { value: 7074000 });
+      check(slow.sent.length === 4, 'and JSON events (state, text) are still sent');
+      slow.bufferedAmount = LIVE_BACKLOG_BYTES.pcm / 2; // under the limit, not yet a quarter
+      bServer.broadcastBinary(audio);
+      check(slow.sent.length === 4 && bServer.isLagging(slow), 'it keeps skipping until well caught up (under a quarter of the limit), not on and off each frame');
+      slow.bufferedAmount = 1000;
+      bServer.broadcastBinary(audio);
+      check(slow.sent.length === 5 && !bServer.isLagging(slow), 'once caught up it gets audio again');
+      check(lines.filter((l) => /falling behind/.test(l)).length === 1 && lines.filter((l) => /caught up after .* 3 audio\/scope frames were skipped/.test(l)).length === 1, 'one log line when it falls behind and one when it catches up, with the count: ' + lines.join(' | '));
+
+      // the limit follows the browser's audio format
+      bServer.setClientAudioCodec = (ws, codec) => codec;
+      const c = await (async () => {
+        const p2 = await bServer.listen();
+        const ws = await connect(p2);
+        await nextMessage(ws);
+        return ws;
+      })();
+      const serverSide = [...bServer.clients].find((w) => w !== slow && w !== fast);
+      c.send(JSON.stringify({ id: 'codec', type: 'setAudioCodec', codec: 'opus' }));
+      await nextMessage(c);
+      check(bServer._liveLimit.get(serverSide) === LIVE_BACKLOG_BYTES.compressed, 'a browser on compressed audio gets the smaller limit (seconds of Opus, not minutes)');
+      c.send(JSON.stringify({ id: 'codec2', type: 'setAudioCodec', codec: 'pcm' }));
+      await nextMessage(c);
+      check(bServer._liveLimit.get(serverSide) === LIVE_BACKLOG_BYTES.pcm, 'back on raw audio, the larger one');
+      c.close();
+      bServer.clients.delete(slow);
+      bServer.clients.delete(fast);
+    } finally {
+      console.log = log;
+      console.warn = warn;
+    }
+    await bServer.close();
+  }
+
+  // Backpressure with a real browser that stops reading: the server's
+  // backlog for it stays near the limit while another browser gets everything.
+  {
+    const { BINARY_TYPE } = require('../src/server/protocol');
+    const limit = 64 * 1024;
+    const rServer = new ControlServer({ civ: new StubCivDriver(), port: 0, heartbeatMs: 0, liveBacklogBytes: { pcm: limit, compressed: limit } });
+    const rPort = await rServer.listen();
+    // plain clients: connect() parses every message as JSON
+    const open = () =>
+      new Promise((resolve, reject) => {
+        const ws = new WebSocket(`ws://localhost:${rPort}`);
+        ws.on('open', () => resolve(ws));
+        ws.on('error', reject);
+      });
+    const stuck = await open();
+    let goodFrames = 0;
+    const good = await open();
+    good.on('message', (raw, isBinary) => {
+      if (isBinary) goodFrames++;
+    });
+    await sleep(50);
+    stuck._socket.pause(); // stops reading, like a phone whose link has stalled
+    const serverStuck = [...rServer.clients][0]; // the first to connect
+    const warn = console.warn;
+    console.warn = () => {};
+    const frame = Buffer.alloc(4096, 0);
+    frame[0] = BINARY_TYPE.AUDIO;
+    let maxBacklog = 0;
+    const total = 4000; // 16 MB: far more than the OS will buffer for the stalled socket
+    for (let i = 0; i < total; i++) {
+      rServer.broadcastBinary(frame);
+      maxBacklog = Math.max(maxBacklog, serverStuck.bufferedAmount);
+      if (i % 50 === 0) await new Promise((r) => setImmediate(r));
+    }
+    console.warn = warn;
+    check(rServer.isLagging(serverStuck), 'a browser that stops reading is detected as behind');
+    check(maxBacklog <= limit + frame.length, `the server never holds more than the limit plus one frame for it (most: ${Math.round(maxBacklog / 1024)} kB, limit ${limit / 1024} kB)`);
+    const t0 = Date.now();
+    while (goodFrames < total && Date.now() - t0 < 5000) await sleep(20);
+    check(goodFrames === total, `a browser reading normally meanwhile gets every frame (${goodFrames}/${total})`);
+    stuck.close();
+    good.close();
+    await rServer.close();
+  }
+
   // Message size limit: one browser can't make the server hold a huge message.
   {
     const { MAX_MESSAGE_BYTES } = require('../src/server/ws-server');

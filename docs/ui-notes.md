@@ -5093,3 +5093,46 @@ Items 6, 7 and 12 from the code review. Not tested on air.
   URL is used; STT_URL can still be http://). The new checks fail against
   the old code.
 - Service-worker cache v129.
+
+### Backpressure: skip live frames for a browser that is behind (v130)
+
+Item 11 from the code review. Not tested on air (receive only, but not
+tried on a real phone on a weak link).
+
+- **The problem.** The server sent audio (about 50 frames a second),
+  scope lines and spectra to every browser without looking at whether it
+  was keeping up. For a phone on weak mobile data the frames piled up in
+  the Pi's memory (`ws` buffers whatever hasn't gone yet), and its audio
+  fell further and further behind. With a stalled test browser and 16 MB
+  sent, the old server held 11.8 MB for it.
+- **The fix.** `ControlServer#sendLive()` sends a live frame only if that
+  browser's backlog (`ws.bufferedAmount`) is under its limit. Over it, the
+  browser's live frames are skipped until the backlog is under a quarter
+  of the limit, so it doesn't flip on and off each frame. The same test
+  now holds at most 0.1 MB. A short gap in what that browser hears, rather
+  than growing delay.
+  - Live frames: raw, Opus and ADPCM audio, scope lines, spectra
+    (`LIVE_FRAME_TYPES`). `broadcastBinary()` and `sendBinary()` pick by
+    the frame's tag; AudioBridge sends its audio through `sendLive()`.
+  - Never skipped: SSTV and fax lines and Feld-Hell columns (a lost one
+    is a hole in the picture), and all JSON (state, decoded text).
+  - Limits (`LIVE_BACKLOG_BYTES`): 128 kB for a browser on raw audio
+    (about 96 kB/s, so a little over a second), 32 kB on Opus or ADPCM
+    (3 to 6 kB/s, so several seconds). Set when the browser chooses its
+    format (`setAudioCodec`); `liveBacklogBytes` overrides them.
+  - Data already handed to the operating system's network buffers isn't
+    counted; the limit is on top of that.
+  - Dropping audio packets is safe for the decoders in the browser: each
+    ADPCM frame carries its own starting sample and step, and Opus is
+    built to conceal lost packets.
+  - One log line when a browser starts skipping and one when it catches
+    up, with how long and how many frames.
+- Tests: ws-server.test.js (with a fake socket: a browser over its limit
+  gets no audio or scope while another gets everything; SSTV, fax,
+  Feld-Hell and JSON still sent; skipping goes on until under a quarter
+  of the limit, then audio resumes; one log line each way; the limit
+  follows `setAudioCodec`. With a real client that stops reading: it is
+  detected, the server never holds more than the limit plus one frame,
+  and a client reading normally gets all 4000 frames).
+  audio-bridge.test.js (raw, Opus and ADPCM all go through `sendLive`).
+- Service-worker cache v130.
