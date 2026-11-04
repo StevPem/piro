@@ -5048,3 +5048,48 @@ serial transport in civ-driver.test.js. Details in docs/civ-notes.md.
   driver these fail: the late OK answers the wrong request and the queue
   goes out of step.
 - Service-worker cache v128.
+
+### Input checks: message size, DEEPGRAM_URL https only, frequency numbers (v129)
+
+Items 6, 7 and 12 from the code review. Not tested on air.
+
+- **Message size limit.** The WebSocket now refuses a message over 8 MiB
+  from a browser and closes that connection (code 1009). Before, `ws`'s
+  default of 100 MiB applied, so one browser could make the Pi hold that
+  much. 8 MiB is above the largest message the protocol allows:
+  `sendEasypal` takes a JPEG of up to 4 MB, about 5.6 MB as base64, and
+  `sendSstv`'s RGB is at most 3 MB (4 MB as base64). The web app draws
+  pictures onto a fixed-size canvas first, so what it really sends is far
+  smaller. `ControlServer`'s `maxMessageBytes` option sets it (tests use
+  a small one).
+- **DEEPGRAM_URL must be https.** The check accepted `http://` although its
+  warning said `https://` was needed, so the API key, which goes in a
+  header with every request, could have been sent unencrypted. Now
+  anything not starting with `https://` (and a host) is refused with a
+  warning and the default used. `STT_URL`, for a whisper-server on the
+  LAN, can still be `http://`: it has no key. `DEEPGRAM_URL` is now in the
+  configuration table.
+- **Frequency numbers.** `freqToBCD()` turned a negative number into bytes
+  holding its minus sign, and `1e21` (written "1e+21", 5 characters)
+  slipped past its length check, so either went to the radio as garbage
+  BCD. It now refuses anything that isn't a finite number of 0 or more
+  that fits the bytes. This covers every caller (setFrequency, scope
+  span, levels). The `setFrequency` request also refuses a value outside
+  1 to 9,999,999,999 Hz with a clear error before the radio is touched,
+  and rounds a fraction to whole Hz, as the radio was always set; the
+  reply, the broadcast and the server's state now hold that rounded
+  value. Whether the radio covers a frequency is still up to the radio,
+  which answers NG. Requiring whole numbers instead was considered, but
+  18 places in the web app set a frequency and one sending a fraction
+  (`14.074 * 1e6` is 14073999.999999998) would have broken.
+- Tests: frame.test.js (negative, 1e10, 1e21, NaN, Infinity, strings and
+  null refused; the largest 10-digit value, zero and rounding still
+  work), ws-server.test.js (setFrequency refuses negative, zero, 1e21 and
+  over 10 digits without touching the radio, and rounds 7074000.6 to
+  7074001 in the reply, the radio and the state; a message under the
+  limit is handled, one over it closes the socket with 1009 and the
+  browser is forgotten), stt.test.js (http://, HTTP://, ftp://, no scheme
+  and a bare https:// refused for the default with a warning; an https://
+  URL is used; STT_URL can still be http://). The new checks fail against
+  the old code.
+- Service-worker cache v129.

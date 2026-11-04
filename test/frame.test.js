@@ -39,6 +39,18 @@ test('freqToBCD / bcdToFreq round-trip across a range of frequencies', () => {
   }
 });
 
+test('freqToBCD refuses numbers that would encode as garbage', () => {
+  // Before: -5 encoded its minus sign, and 1e21 ("1e+21") passed the length check.
+  for (const bad of [-5, -0.4 - 1, 1e21, 1e10, NaN, Infinity, -Infinity, '14074000', null, undefined]) {
+    assert.throws(() => freqToBCD(bad), undefined, `should refuse ${String(bad)}`);
+  }
+  assert.deepStrictEqual([...freqToBCD(9999999999)], [0x99, 0x99, 0x99, 0x99, 0x99], 'the largest 5-byte value still works');
+  assert.deepStrictEqual([...freqToBCD(0)], [0, 0, 0, 0, 0], 'zero still encodes (a scope span or level can be 0)');
+  assert.strictEqual(bcdToFreq(freqToBCD(14074000.4)), 14074000, 'a fraction is rounded to whole Hz, as before');
+  assert.deepStrictEqual([...freqToBCD(99, 1)], [0x99], 'one byte: 99 fits');
+  assert.throws(() => freqToBCD(100, 1), /does not fit/, 'one byte: 100 does not');
+});
+
 test('encodeFrame builds a well-formed frame with data', () => {
   const frame = encodeFrame({
     to: 0x94,

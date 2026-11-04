@@ -231,6 +231,21 @@ async function run() {
     'invalid value type is rejected with an error, not thrown/crashed'
   );
 
+  // Numbers that used to reach the radio as garbage BCD are refused.
+  {
+    const before = civ._freq;
+    for (const [n, value] of [[-14074000, 'negative'], [0, 'zero'], [1e21, '1e21'], [1e10, 'over 10 digits']]) {
+      clientA.send(JSON.stringify({ id: `f${n}`, type: 'setFrequency', value: n }));
+      const r = await nextMessage(clientA);
+      check(r.ok === false && /from 1 to 9999999999/.test(r.error || ''), `setFrequency refuses ${value} with a clear error`);
+    }
+    check(civ._freq === before, 'and the radio is not touched');
+    clientA.send(JSON.stringify({ id: 'f-frac', type: 'setFrequency', value: 7074000.6 }));
+    const frac = await nextMessage(clientA);
+    await nextMessage(clientB); // the broadcast to the other browser
+    check(frac.ok === true && frac.data.value === 7074001 && civ._freq === 7074001 && server.state.frequency === 7074001, 'a fraction is rounded to whole Hz, and that is what is reported');
+  }
+
   clientA.send(JSON.stringify({ id: '5', type: 'setScopeBand', lowHz: 7000000, highHz: 7300000 }));
   const scopeBandReply = await nextMessage(clientA);
   check(
@@ -1802,6 +1817,26 @@ async function run() {
     check(live.readyState === WebSocket.OPEN, 'a browser that answers pings stays connected');
     live.close();
     await pServer.close();
+  }
+
+  // Message size limit: one browser can't make the server hold a huge message.
+  {
+    const { MAX_MESSAGE_BYTES } = require('../src/server/ws-server');
+    check(MAX_MESSAGE_BYTES >= Math.ceil((4 * 1024 * 1024 * 4) / 3) + 1024, 'the limit is above the largest message the protocol allows (a 4 MB EasyPal JPEG as base64)');
+    const mServer = new ControlServer({ civ: new StubCivDriver(), port: 0, heartbeatMs: 0, maxMessageBytes: 64 * 1024 });
+    const mPort = await mServer.listen();
+    const c = await connect(mPort);
+    await nextMessage(c);
+    c.send(JSON.stringify({ id: 'big-ok', type: 'postNote', text: 'x'.repeat(10), pad: 'y'.repeat(32 * 1024) }));
+    const okReply = await nextMessage(c);
+    check(okReply.id === 'big-ok', 'a message under the limit is handled');
+    const closed = new Promise((resolve) => c.on('close', (code) => resolve(code)));
+    c.send(JSON.stringify({ id: 'too-big', type: 'postNote', text: 'x', pad: 'y'.repeat(100 * 1024) }));
+    const code = await Promise.race([closed, sleep(2000).then(() => 'still open')]);
+    check(code === 1009, `a message over the limit closes the socket with 1009 (message too big), got ${code}`);
+    await sleep(20);
+    check(mServer.clients.size === 0, 'and the server forgets that browser');
+    await mServer.close();
   }
 
   // Origin check: another web page can't open a socket to the radio.

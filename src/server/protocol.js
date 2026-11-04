@@ -62,7 +62,7 @@ const BINARY_TYPE = {
 
 const REQUEST = {
   GET_FREQUENCY: 'getFrequency',
-  SET_FREQUENCY: 'setFrequency',
+  SET_FREQUENCY: 'setFrequency', // {value: Hz} -> sets the radio's frequency. 1 to 9999999999 (CI-V's 10 digits), rounded to whole Hz; anything else is refused before the radio. Replies {value} (the rounded Hz); the radio answers NG for a frequency it doesn't cover.
   GET_MODE: 'getMode',
   SET_MODE: 'setMode',
   SET_DATA_MODE: 'setDataMode', // {on: boolean} -> IC-7300 "DATA MODE" (distinct from the operating mode itself); see civ/driver.js#setDataMode
