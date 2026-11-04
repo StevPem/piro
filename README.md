@@ -12,7 +12,7 @@ Hamlib, no separate audio server and no extra apps.
 Written by VK3TR. Licensed AGPL-3.0-only (see
 [Licence](#licence)).
 
-**Current build: v127.** This is the version the app shows next to its title.
+**Current build: v128.** This is the version the app shows next to its title.
 It is the `CACHE_NAME` number in `src/client/sw.js`, which goes up with every
 change to the web app.
 
@@ -1813,7 +1813,14 @@ one hard refresh (Ctrl+Shift+R, or Cmd+Shift+R on a Mac).
   `build-essential` and `python3`, and check that Node is version 18 or newer.
 - **Every CI-V command times out.** The baud rate must match the radio's menu
   setting exactly, CI-V Transceive must be on, and nothing else (another CAT
-  program, or a second PiRO) may hold the port.
+  program, or a second PiRO) may hold the port. "CI-V queue full" errors
+  mean the same thing: the radio isn't answering, so PiRO stops taking
+  new requests rather than letting them pile up.
+- **"Dropped a late OK (or NG) from the radio" in the log.** A request timed
+  out and the radio answered afterwards. PiRO ignores that answer so it
+  can't be taken for the answer to the next request. Now and then is
+  harmless; often means the CI-V link is slow or overloaded (check the
+  baud rate, and try with the scope off).
 - **The page loads but never connects, and the log says "refused a
   connection from origin".** PiRO only accepts its WebSocket from its own
   page. Behind a reverse proxy that changes the `Host` header, add the
@@ -2649,7 +2656,10 @@ The test files:
                            transport: request/reply matching (incl. the
                            subCmd disambiguation fix), scope-line wiring,
                            scope span/mode/band-range commands, and the
-                           emergency PTT off sent ahead of the queue
+                           emergency PTT off sent ahead of the queue;
+                           the queue: PTT off goes before polling but never
+                           before an earlier PTT on, late OK/NG replies are
+                           dropped, and the queue limit
   data-mode-guard.test.js DATA mode confirmed before PTT (read back, retried,
                            settle time) and watched during a transmission
   ws-server.test.js       integration test for the control layer, stubbed
