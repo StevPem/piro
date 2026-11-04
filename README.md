@@ -12,7 +12,7 @@ Hamlib, no separate audio server and no extra apps.
 Written by VK3TR. Licensed AGPL-3.0-only (see
 [Licence](#licence)).
 
-**Current build: v130.** This is the version the app shows next to its title.
+**Current build: v131.** This is the version the app shows next to its title.
 It is the `CACHE_NAME` number in `src/client/sw.js`, which goes up with every
 change to the web app.
 
@@ -774,9 +774,41 @@ transmission.
 In **CW** the PTT button becomes a CW panel.
 
 **Paddle.** **DOT** and **DASH** work as an iambic paddle, at the speed in
-the **WPM** box (15 to start). Each element is sent as PTT on and off over
-the network, so the timing is looser than a real keyer, more so at higher
-speeds. For accurate sending, use CW text.
+the **WPM** box (15 to start); hold both to alternate. You hear a sidetone
+in the browser straight away. The radio sends your keying a fixed moment
+later (a quarter of a second, `CW_PADDLE_DELAY_MS`, plus the network's own
+delay), with the dots, dashes and gaps exactly as long as you keyed them.
+The server holds each element for that moment and replays it on its own
+clock, so an uneven network doesn't change the timing; only a stall longer
+than the delay stretches one gap. The delay can't be avoided over a
+network, but the other station can't tell: what matters for CW is even
+timing.
+
+For the most exact timing, let PiRO key the radio through the USB cable's
+key line:
+1. On the radio: **Menu > Set > Connectors > USB SEND/Keying > USB Keying
+   (CW)**: choose **DTR** (or RTS). It can't be the same line as USB SEND,
+   which can stay OFF.
+2. In `/etc/piro/piro.env`: `CW_KEY_LINE=dtr` (the same line), and restart
+   PiRO.
+
+PiRO then turns semi break-in on while you key (the radio only transmits
+on the key with break-in on) and puts it back after. Without
+`CW_KEY_LINE`, the paddle keys with CI-V PTT as before, timed the same way
+but a few milliseconds less exactly. Over the home network you can lower
+`CW_PADDLE_DELAY_MS` (to 100, say); on a poor mobile link, raise it.
+
+Only one browser keys at a time. Keying stops when that browser
+disconnects, and after 10 minutes of continuous keying. Not tested on air:
+neither way of keying has been tried on a real transmission yet.
+
+One thing to know with `CW_KEY_LINE`: Linux raises a serial port's DTR and
+RTS lines whenever the port is opened. PiRO drops the key line in the same
+moment, but with break-in left on the radio could send a click of carrier
+when PiRO starts. Leave break-in off when you're not sending CW (PiRO turns
+it on only while you key), and try it first into a dummy load.
+
+For text you type, use CW text below: the radio's own keyer sends it.
 
 **CW text.** Above the Dot/Dash buttons is a text box and **Send**. Type a message (or use the CQ it starts with) and press Send or
 Enter: PiRO hands the text to the radio's own CW keyer (CI-V command `17`),
@@ -1782,6 +1814,8 @@ All settings are environment variables. For the systemd service they go in
 | `WSPR_SKIP_BANDS` | none | Bands left out of the unattended band cycle, separated by commas: for example `160m,6m` (or `160,6`). The bands are 160m 80m 40m 30m 20m 17m 15m 12m 10m 6m. If the radio is on a skipped band, the cycle starts on the next one. |
 | `TLS_CERT_PATH`, `TLS_KEY_PATH` | none | Set both to serve HTTPS and WSS. Needed for the microphone from other devices. |
 | `ALLOWED_ORIGINS` | none | Extra web origins allowed to open the WebSocket, separated by commas, such as `https://radio.example.net`. Normally not needed: PiRO's own page is always allowed. Set it only behind a reverse proxy that changes the `Host` header. `*` allows any origin (not recommended). |
+| `CW_KEY_LINE` | none | `dtr` or `rts`: the CW paddle keys the radio with that line of the USB serial port. Set the radio's USB Keying (CW) to the same line. Unset or `off`: the paddle keys with CI-V PTT. See [CW](#cw). |
+| `CW_PADDLE_DELAY_MS` | `250` | How long the server holds paddle elements before sending them, so they go out with even timing (50 to 1000). Lower at home, higher on a poor link. |
 | `SOURCE_CODE_URL` | none | Link shown in the page footer. The AGPL asks you to offer the source to people who use your instance (see [Licence](#licence)). |
 | `STATIC_DIR` | `src/client` | Folder the web app is served from. |
 | `RNNOISE_BIN` | `rnnoise_demo` | Path to the patched `rnnoise_demo`. |
@@ -1830,6 +1864,12 @@ one hard refresh (Ctrl+Shift+R, or Cmd+Shift+R on a Mac).
   can't be taken for the answer to the next request. Now and then is
   harmless; often means the CI-V link is slow or overloaded (check the
   baud rate, and try with the scope off).
+- **The CW paddle plays a sidetone but the radio doesn't transmit.** With
+  `CW_KEY_LINE`, the radio's USB Keying (CW) must be set to the same line
+  (DTR or RTS), and the radio must be in CW. PiRO turns semi break-in on
+  while keying; check the log for "could not check or set break-in".
+  Without `CW_KEY_LINE`, try setting it: keying with CI-V PTT in CW mode
+  has not been checked on a real radio.
 - **Audio on a phone has gaps, and the log says "a browser is falling
   behind".** That browser's connection couldn't keep up, so the server
   skipped some of its audio and scope frames instead of letting them pile
@@ -2462,7 +2502,9 @@ browser may be at most 8 MiB (the largest real one, an EasyPal picture,
 is under 6 MB); a bigger one closes that browser's connection (code 1009).
 `setFrequency` takes a frequency in Hz from 1 to 9,999,999,999 (CI-V's 10
 digits), rounded to whole Hz; whether the radio covers it is up to the
-radio. Live binary frames (audio, scope lines, spectra) are skipped for a
+radio. `cwKey` (`{session, t, d}`) is one CW paddle element: the server
+holds it `CW_PADDLE_DELAY_MS` and keys it on its own clock; `cw-keying`
+(`{active}`) is broadcast when the paddle starts and stops keying. Live binary frames (audio, scope lines, spectra) are skipped for a
 browser with more than `LIVE_BACKLOG_BYTES` waiting (128 kB on raw audio,
 32 kB on compressed) until it is under a quarter of that; picture frames
 (SSTV, fax, Feld-Hell) and JSON are always sent. See `src/server/protocol.js` for the full JSON message
@@ -2822,6 +2864,14 @@ The test files:
   cw-tx-bridge.test.js    CW text through the radio's keyer: speed and
                            break-in set and put back, 30-character pieces,
                            buffer-full retries, Stop, refusals, timing
+  cw-paddle-bridge.test.js  the CW paddle timed at the server: with up to
+                           180 ms of network jitter every element and gap
+                           keyed exactly as sent (fake clock) and within
+                           2 ms on real timers; a stall moves the rest later;
+                           break-in set and put back; refusals (not CW,
+                           transmitting, another browser, a stuck paddle);
+                           key up when the browser leaves or on stop; the
+                           10-minute limit; CI-V PTT without a key line
   jtty-rx.test.js         JTTY receiver: list decoder, multi-frame messages,
                            two signals, noise, gaps, chunking, and WSJT-X's
                            own 10-frame sample recording

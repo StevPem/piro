@@ -1931,6 +1931,24 @@ async function run() {
     await rServer.close();
   }
 
+  // CW paddle elements (REQUEST.CW_KEY) go to CwPaddleBridge.
+  {
+    const kServer = new ControlServer({ civ: new StubCivDriver(), port: 0, heartbeatMs: 0 });
+    const kPort = await kServer.listen();
+    const c = await connect(kPort);
+    check((await nextMessage(c)).data.cwKeying === false, 'cwKeying is in the connect snapshot');
+    c.send(JSON.stringify({ id: 'k1', type: 'cwKey', session: 's', t: 0, d: 60 }));
+    const none = await nextMessage(c);
+    check(none.ok === false && /not available/.test(none.error), 'cwKey without the paddle bridge is refused');
+    const seen = [];
+    kServer.cwPaddle = { key: (ws, msg) => (seen.push(msg), { delayMs: 250, lateMs: 0 }) };
+    c.send(JSON.stringify({ id: 'k2', type: 'cwKey', session: 's', t: 0, d: 60 }));
+    const r = await nextMessage(c);
+    check(r.ok && r.data.delayMs === 250 && seen[0].t === 0 && seen[0].d === 60, 'cwKey is handed to the paddle bridge, which replies at once');
+    c.close();
+    await kServer.close();
+  }
+
   // Message size limit: one browser can't make the server hold a huge message.
   {
     const { MAX_MESSAGE_BYTES } = require('../src/server/ws-server');

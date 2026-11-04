@@ -36,6 +36,10 @@ class FakeTransport extends EventEmitter {
     this.written.push(buf);
     if (cb) cb();
   }
+  set(opts, cb) {
+    (this.lineSets ??= []).push(opts);
+    if (cb) cb();
+  }
   close(cb) {
     this.isOpen = false;
     if (cb) cb();
@@ -198,6 +202,47 @@ async function testQueuePriorityAndStaleReplies() {
     check(driver.queueLength === 4 && driver._queue[0].urgent, 'PTT off is accepted even with the queue full, and goes first');
     await driver.close();
   }
+}
+
+async function testKeyLine() {
+  console.log('\n-- CW key line (USB Keying (CW)): dropped on open, set directly --');
+  const transport = new FakeTransport();
+  const driver = new CivDriver({ path: '/fake', radioAddr: RADIO_ADDR, transport, keyLine: 'dtr' });
+  await driver.open();
+  check(JSON.stringify(transport.lineSets?.[0]) === JSON.stringify({ dtr: false }), `with keyLine dtr, DTR is dropped as soon as the port opens (Linux raises it on open): ${JSON.stringify(transport.lineSets)}`);
+  const inFlight = driver.getFrequency().catch(() => {});
+  await driver.setKeyLine('dtr', true);
+  check(JSON.stringify(transport.lineSets.at(-1)) === JSON.stringify({ dtr: true }), 'setKeyLine keys at once, even with a CI-V request waiting for its reply');
+  await driver.setKeyLine('rts', false);
+  check(JSON.stringify(transport.lineSets.at(-1)) === JSON.stringify({ rts: false }), 'RTS too');
+  let bad = null;
+  await driver.setKeyLine('cts', true).catch((err) => (bad = err.message));
+  check(/dtr' or 'rts/.test(bad || ''), 'another line is refused');
+  transport.isOpen = false;
+  let closed = null;
+  await driver.setKeyLine('dtr', false).catch((err) => (closed = err.message));
+  check(/not open/.test(closed || ''), 'with the port closed it rejects');
+  await inFlight;
+
+  const plain = new FakeTransport();
+  const d2 = new CivDriver({ path: '/fake', radioAddr: RADIO_ADDR, transport: plain });
+  await d2.open();
+  check(!plain.lineSets, "without keyLine the lines are left alone (some CI-V cables are powered from them)");
+
+  // setPtt(true, {urgent: true}) for paddle elements goes ahead of polling
+  const t3 = new FakeTransport();
+  const d3 = new CivDriver({ path: '/fake', radioAddr: RADIO_ADDR, transport: t3 });
+  await d3.open();
+  const busy = d3.getFrequency().catch(() => {});
+  const poll = d3.getMode().catch(() => {});
+  const on = d3.setPtt(true, { urgent: true }).catch(() => {});
+  await new Promise((r) => setImmediate(r));
+  check(d3._queue[0]?.cmd === CMD.PTT && d3._queue[0].raw[6] === 1, 'setPtt(true, {urgent}) goes ahead of a queued poll');
+  const plainOn = d3.setPtt(true).catch(() => {});
+  await new Promise((r) => setImmediate(r));
+  check(d3._queue.at(-1).cmd === CMD.PTT && !d3._queue.at(-1).urgent, 'plain setPtt(true) still waits its turn');
+  await d3.close();
+  for (const p of [busy, poll, on, plainOn]) p.catch?.(() => {});
 }
 
 async function testForcePttOff() {
@@ -1358,6 +1403,7 @@ async function run() {
   await testDataMode();
   await testCwKeyer();
   await testForcePttOff();
+  await testKeyLine();
   await testQueuePriorityAndStaleReplies();
   await testUsbAudioLevels();
   await testTuneScopeToRange();

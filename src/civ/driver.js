@@ -65,6 +65,10 @@ class CivDriver extends EventEmitter {
    *   arrives meanwhile (see _dequeueNext())
    * @param {number} [opts.maxQueue=64] - most requests waiting at once; more
    *   are refused at once (urgent ones never are)
+   * @param {'dtr'|'rts'} [opts.keyLine] - the serial line that keys CW (the
+   *   radio's USB Keying (CW) setting). Linux raises DTR and RTS when a
+   *   port is opened, which would key the radio; this line is dropped as
+   *   soon as the port reports open. See setKeyLine().
    * @param {object} [opts.transport] - inject a fake serial-port-like object
    *   (must support write(buf, cb), on(event, cb), isOpen, close(cb)) instead
    *   of opening a real SerialPort — used by tests, not needed for real use.
@@ -81,6 +85,7 @@ class CivDriver extends EventEmitter {
     this.requestTimeoutMs = opts.requestTimeoutMs ?? 1000;
     this.staleReplyGuardMs = opts.staleReplyGuardMs ?? 150;
     this.maxQueue = opts.maxQueue ?? 64;
+    this.keyLine = opts.keyLine ?? null;
     this._transport = opts.transport ?? null;
 
     this.port = null;
@@ -102,6 +107,7 @@ class CivDriver extends EventEmitter {
       if (this._transport) {
         this.port = this._transport;
         this._wirePortEvents();
+        this._dropKeyLineOnOpen();
         this.emit('open');
         resolve();
         return;
@@ -113,11 +119,38 @@ class CivDriver extends EventEmitter {
             reject(err);
             return;
           }
+          this._dropKeyLineOnOpen();
           this.emit('open');
           resolve();
         }
       );
       this._wirePortEvents();
+    });
+  }
+
+  /** First thing after open: drop the CW key line Linux raised (see opts.keyLine). */
+  _dropKeyLineOnOpen() {
+    if (!this.keyLine) return;
+    this.setKeyLine(this.keyLine, false).catch((err) => this.emit('error', new Error(`Could not drop the CW key line (${this.keyLine}): ${err.message}`)));
+  }
+
+  /**
+   * Keys (on) or unkeys CW with the serial port's DTR or RTS line, for the
+   * radio's USB Keying (CW) setting. Set straight on the port, not through
+   * the CI-V queue: it is a modem-control line, not a CI-V command, so its
+   * timing is the Pi's. Resolves when the port has done it.
+   */
+  setKeyLine(line, on) {
+    return new Promise((resolve, reject) => {
+      if (line !== 'dtr' && line !== 'rts') {
+        reject(new Error(`The key line must be 'dtr' or 'rts', not ${line}`));
+        return;
+      }
+      if (!this.port || !this.port.isOpen || typeof this.port.set !== 'function') {
+        reject(new Error('The serial port is not open'));
+        return;
+      }
+      this.port.set({ [line]: !!on }, (err) => (err ? reject(err) : resolve(true)));
     });
   }
 
@@ -568,9 +601,10 @@ class CivDriver extends EventEmitter {
   }
 
   /** Key or unkey the transmitter. */
-  async setPtt(on) {
-    // PTT off jumps the queue: see _send().
-    const frame = await this._send(CMD.PTT, SUBCMD.PTT, Buffer.from([on ? 1 : 0]), { urgent: !on });
+  async setPtt(on, { urgent = false } = {}) {
+    // PTT off always jumps the queue (see _send()); PTT on does when asked
+    // (the CW paddle, whose elements are timed).
+    const frame = await this._send(CMD.PTT, SUBCMD.PTT, Buffer.from([on ? 1 : 0]), { urgent: urgent || !on });
     this._throwIfNG(frame, 'set PTT');
     return true;
   }

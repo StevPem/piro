@@ -5136,3 +5136,62 @@ tried on a real phone on a weak link).
   and a client reading normally gets all 4000 frames).
   audio-bridge.test.js (raw, Opus and ADPCM all go through `sendLive`).
 - Service-worker cache v130.
+
+### CW paddle timed at the server, optional DTR/RTS keying (v131)
+
+Not tested on air: neither keying method has been tried on a real
+transmission.
+
+- **The bug.** `runKeyerLoop()` sent PTT on, waited for the reply, slept the
+  element, sent PTT off, waited for the reply, slept a unit. Each element
+  on air lasted from the radio getting PTT on to it getting PTT off, so it
+  was the element plus one full network round trip; each gap likewise. At
+  20 WPM (60 ms units) over a 100 ms mobile round trip: dots 160 ms (2.7
+  units), dashes 280 ms, gaps 160 ms. A dot nearly the length of a dash
+  and gaps nearly letter gaps: wrong characters at the other end, not just
+  loose timing. Jitter made it uneven as well, and there was no sidetone.
+- **The fix.** The browser still runs the iambic keyer, but sends each
+  element as it starts as `cwKey {session, t, d}`, with t from the keyer's
+  own schedule (each element one unit after the last ends), so neither
+  browser timers nor the network change what is sent. The new
+  `CwPaddleBridge` holds elements for `CW_PADDLE_DELAY_MS` (250) after the
+  first of a session arrives and replays them on the server's clock. Every
+  element and gap keeps its keyed length; the sending is a fixed delay
+  late. An element that arrives after its slot (a stall longer than the
+  delay) moves the rest of the session later instead of being squashed.
+  The network delay itself can't be removed; a steady one does no harm to
+  CW.
+- **Sidetone.** A 600 Hz tone in the browser, scheduled on the Web Audio
+  clock with 4 ms ramps, plays each element as it is keyed, with no delay.
+- **Keying.** `CW_KEY_LINE=dtr|rts` keys with that line of the CI-V USB
+  serial port (radio menu USB Keying (CW); see docs/civ-notes.md), set
+  directly, not through the CI-V queue; semi break-in is turned on for the
+  session and put back. Without it the paddle keys with CI-V PTT as
+  before, now timed on the server and sent `urgent` (`setPtt(true,
+  {urgent})` goes ahead of polling as PTT off already did).
+- **Safety.** One browser keys at a time; the key goes up at once when it
+  disconnects (pending elements dropped) and on stop; an element is at
+  most 1.5 s (a stuck paddle can't hold the key down); a session (elements
+  under 5 s apart) is stopped at 10 minutes, since keying the line is a
+  transmission the PTT watchdog doesn't see. Refused if the radio isn't in
+  CW, is transmitting, or CW text is being sent; CW text is refused while
+  the paddle keys. The key line is dropped when the port opens (Linux
+  raises DTR/RTS on open) and in `emergencyUnkey()`.
+- `cw-keying` `{active}` is broadcast when keying starts and stops
+  (`state.cwKeying` in the snapshot); a message (10-minute limit, an
+  error) is shown in every browser.
+- Tests: cw-paddle-bridge.test.js (new: with up to 180 ms of jitter,
+  delivered in order as a WebSocket does, every element and gap exact on a
+  fake clock and within 2 ms on real timers; a stall; refusals; disconnect
+  and stop; break-in set and put back; the 10-minute limit; CI-V PTT
+  urgent and timed), civ-driver.test.js (the key line dropped on open,
+  set at once while a CI-V reply is awaited, other lines refused, lines
+  untouched without keyLine; urgent PTT on ahead of polling),
+  ws-server.test.js (cwKey handed to the bridge, cwKeying in the
+  snapshot), cw-tx-bridge.test.js (CW text refused while the paddle keys),
+  manual-tty-ui.js (holding DOT at 20 WPM in Chromium: dots of 59 to 60 ms,
+  120 ms apart, on the stub radio about 250 ms after the press; every PTT
+  change from the bridge, none from the browser). Not tried: a real serial
+  port's DTR/RTS (the tests use a fake port), and a real phone on a poor
+  link.
+- Service-worker cache v131.

@@ -5173,7 +5173,7 @@ function setCwPaddleVisible(visible) {
   cwComposerEl.hidden = !visible;
   if (visible && !cwTextInput.value && stationCallsign) cwTextInput.value = `CQ CQ DE ${stationCallsign} ${stationCallsign} K`;
   pttHintEl.textContent = visible
-    ? "Type text and press Send (or Enter): the radio's own keyer sends it at the WPM set below. Or hold Dot/Dash to key by hand (iambic — hold both to alternate; CI-V round-trip latency makes that timing less precise than a hardware keyer)."
+    ? "Type text and press Send (or Enter): the radio's own keyer sends it at the WPM set below. Or hold Dot/Dash to key by hand (iambic: hold both to alternate). You hear a sidetone at once; the radio sends your keying a fixed moment later, with the timing you keyed."
     : 'Hold to transmit (or hold Space). First use will ask for microphone access.';
 
   cwTickerSectionEl.hidden = !visible;
@@ -6391,69 +6391,123 @@ window.addEventListener('keyup', (event) => {
 // releasePtt() themselves, since those also start/stop the microphone
 // audio pipeline, which CW keying has no use for.
 //
-// Latency caveat, worth being upfront about: there is no CI-V primitive
-// for "key down for N milliseconds" — the only way to produce a dot or
-// dash is toggling the same setPtt command used for voice PTT, once per
-// element, over the WebSocket + serial round trip. At typical WPM this
-// timing will be visibly less precise than a hardware keyer or the
-// radio's own internal one; the default 15 WPM here is a deliberately
-// conservative starting point given that latency, not a claim of
-// contest-grade keying. See docs/ui-notes.md.
+// The paddle's iambic keyer runs here, but the timing on air is made at the
+// radio's end (server/cw-paddle-bridge.js). Each element is sent as it
+// starts, as {session, t, d}: t from the keyer's own schedule (each element
+// starts one unit after the last ends), not from when a browser timer
+// happened to fire, so neither browser timers nor the network change what
+// is sent. The server holds the elements a fixed time (CW_PADDLE_DELAY_MS)
+// and replays them on its own clock. A sidetone plays here straight away,
+// so you hear your keying without the delay. See docs/ui-notes.md.
 let paddleDotDown = false;
 let paddleDashDown = false;
 let keyerLoopRunning = false;
 let lastKeyerElementWasDash = false; // alternates dot/dash when both paddles are squeezed
-let keyerSessionStartedAt = null;
+const CW_SESSION_IDLE_MS = 3000; // a new keying session after this long without an element (the server waits longer)
+const CW_SESSION_MAX_MS = 10 * 60 * 1000; // the server stops a session at 10 minutes too
+let cwSession = null; // {id, t0, lastEnd, failed}: times are performance.now() ms
 
 function keyerUnitMs() {
   const wpm = Math.max(5, Math.min(40, Number(cwWpmInput.value) || 15));
   return 1200 / wpm; // standard PARIS-word timing convention
 }
 
+// Shows this browser as keying (and the meter as SWR, which follows pttActive).
 function startKeyerSession() {
   if (pttActive) return;
   pttActive = true;
-  keyerSessionStartedAt = Date.now();
   updatePttVisual(true);
 }
 
 function endKeyerSession() {
   if (!pttActive) return;
   pttActive = false;
-  keyerSessionStartedAt = null;
   updatePttVisual(false);
-  link.request('setPtt', { value: false }).catch((err) => showError(err.message));
+  // Nothing to send: the server keys each element up itself, and ends the
+  // session a few seconds after the last one.
 }
+
+function cwKeyingSession(now) {
+  if (!cwSession || cwSession.failed || now - cwSession.lastEnd > CW_SESSION_IDLE_MS) {
+    cwSession = { id: `${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 8)}`, t0: now, lastEnd: -Infinity, failed: false };
+  }
+  return cwSession;
+}
+
+function sendCwElement(session, start, d) {
+  link.request('cwKey', { session: session.id, t: Math.round((start - session.t0) * 10) / 10, d: Math.round(d * 10) / 10 }).catch((err) => {
+    if (session.failed) return;
+    session.failed = true; // one message, and stop keying
+    paddleDotDown = false;
+    paddleDashDown = false;
+    showError(`CW paddle: ${err.message}`);
+  });
+}
+
+// Sidetone: a 600 Hz tone, scheduled on the audio clock so its elements are
+// exactly the lengths sent, with 4 ms ramps so it doesn't click.
+const SIDETONE_HZ = 600;
+const SIDETONE_LEVEL = 0.2;
+let sidetoneCtx = null;
+let sidetoneGain = null;
+function playSidetone(start, d) {
+  try {
+    if (!sidetoneCtx) {
+      sidetoneCtx = new (window.AudioContext || window.webkitAudioContext)();
+      const osc = sidetoneCtx.createOscillator();
+      osc.frequency.value = SIDETONE_HZ;
+      sidetoneGain = sidetoneCtx.createGain();
+      sidetoneGain.gain.value = 0;
+      osc.connect(sidetoneGain).connect(sidetoneCtx.destination);
+      osc.start();
+    }
+    if (sidetoneCtx.state === 'suspended') sidetoneCtx.resume();
+    const at = sidetoneCtx.currentTime + Math.max(0, (start - performance.now()) / 1000);
+    const len = d / 1000;
+    const ramp = Math.min(0.004, len / 4);
+    const g = sidetoneGain.gain;
+    g.setValueAtTime(0, at);
+    g.linearRampToValueAtTime(SIDETONE_LEVEL, at + ramp);
+    g.setValueAtTime(SIDETONE_LEVEL, at + len - ramp);
+    g.linearRampToValueAtTime(0, at + len);
+  } catch {
+    // no Web Audio: keying works without the sidetone
+  }
+}
+
+const sleepUntil = (t) => new Promise((resolve) => setTimeout(resolve, Math.max(0, t - performance.now())));
 
 async function runKeyerLoop() {
   if (keyerLoopRunning) return;
   keyerLoopRunning = true;
   startKeyerSession();
+  const now = performance.now();
+  const session = cwKeyingSession(now);
+  // Carrying on a session: never closer than one unit after the last element.
+  let next = Math.max(now, session.lastEnd + keyerUnitMs());
   try {
-    while (paddleDotDown || paddleDashDown) {
-      // Defense-in-depth against the 10-minute fail-safe: the server
-      // watchdog resets on every element's off-period (correctly, so
-      // normal keying never trips it — see docs/civ-notes.md), which
-      // means a genuinely stuck paddle producing continuous keying for
-      // the entire 10 minutes wouldn't hit that backstop the same way a
-      // held voice PTT would. This client-side session-length check
-      // closes that specific gap.
-      if (keyerSessionStartedAt != null && Date.now() - keyerSessionStartedAt > 10 * 60 * 1000) {
+    while ((paddleDotDown || paddleDashDown) && !session.failed) {
+      if (next - session.t0 > CW_SESSION_MAX_MS) {
         showError('CW keying automatically stopped after 10 minutes (fail-safe cutoff).');
         break;
       }
+      const unit = keyerUnitMs();
       const sendDash = paddleDotDown && paddleDashDown ? !lastKeyerElementWasDash : paddleDashDown;
       lastKeyerElementWasDash = sendDash;
+      const start = next;
+      const d = sendDash ? unit * 3 : unit;
+      sendCwElement(session, start, d);
+      playSidetone(start, d);
+      session.lastEnd = start + d;
+      await sleepUntil(start);
       cwDotBtn.classList.toggle('cw-paddle__btn--active', !sendDash);
       cwDashBtn.classList.toggle('cw-paddle__btn--active', sendDash);
-      const elementMs = sendDash ? keyerUnitMs() * 3 : keyerUnitMs();
-      await link.request('setPtt', { value: true }).catch((err) => showError(err.message));
-      await new Promise((resolve) => setTimeout(resolve, elementMs));
-      await link.request('setPtt', { value: false }).catch((err) => showError(err.message));
+      await sleepUntil(start + d);
       cwDotBtn.classList.remove('cw-paddle__btn--active');
       cwDashBtn.classList.remove('cw-paddle__btn--active');
       if (!paddleDotDown && !paddleDashDown) break;
-      await new Promise((resolve) => setTimeout(resolve, keyerUnitMs())); // inter-element gap
+      next = start + d + unit; // the gap between elements
+      await sleepUntil(next);
     }
   } finally {
     keyerLoopRunning = false;
@@ -6462,6 +6516,11 @@ async function runKeyerLoop() {
     endKeyerSession();
   }
 }
+
+// Another browser's paddle (or this one's session being stopped early).
+link.addEventListener('cw-keying', (event) => {
+  if (event.detail.message) showError(event.detail.message);
+});
 
 cwDotBtn.addEventListener('pointerdown', (event) => {
   cwDotBtn.setPointerCapture(event.pointerId);

@@ -143,6 +143,11 @@ function setup(civOpts, bridgeOpts) {
     controlServer.state.ptt = true;
     await bridge.send({ text: 'TEST', wpm: 20 }).catch(() => {});
     check(/already transmitting/.test(statuses(controlServer).at(-1).error) && civ.log.length === 0, 'refused while the radio is transmitting');
+    controlServer.state.ptt = false;
+    controlServer.state.cwKeying = true;
+    await bridge.send({ text: 'TEST', wpm: 20 }).catch(() => {});
+    check(/paddle is keying/.test(statuses(controlServer).at(-1).error) && civ.log.length === 0, 'refused while the CW paddle is keying (it keys without PTT)');
+    controlServer.state.cwKeying = false;
   }
 
   // --- the speed is kept to what the keyer can do ---
