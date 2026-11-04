@@ -16,6 +16,39 @@ const NOTE_MAX_CHARS = 200;
 const NOTES_IDLE_MS = 60 * 60 * 1000; // cleared after an hour with no new note
 const NOTES_EMPTY_GRACE_MS = 2 * 60 * 1000; // ...or two minutes after the last browser leaves
 
+// How often each browser is pinged. A browser that hasn't answered the
+// previous ping by the next one is dropped, so a phone that lost its
+// network is noticed in 15-30 s, not when TCP gives up many minutes later.
+const HEARTBEAT_MS = 15 * 1000;
+
+/**
+ * Whether a WebSocket upgrade may go ahead, judged by its Origin header.
+ * A browser always sends Origin; another web page open in the operator's
+ * browser would send its own, so only the page this server serves (same
+ * host and port as the request's Host header) or an origin in
+ * `allowedOrigins` gets through. No Origin means no browser (a script or
+ * a test), which a web page can't fake.
+ */
+function originAllowed(origin, host, allowedOrigins = []) {
+  if (!origin) return true;
+  const o = String(origin).trim().toLowerCase().replace(/\/+$/, '');
+  if (allowedOrigins.some((a) => a === '*' || a === o)) return true;
+  let url;
+  try {
+    url = new URL(o);
+  } catch {
+    return false;
+  }
+  if (url.protocol !== 'http:' && url.protocol !== 'https:') return false;
+  return !!host && url.host === String(host).trim().toLowerCase();
+}
+
+/** "a, b" (ALLOWED_ORIGINS) or an array -> lower-case origins without a trailing slash. */
+function parseAllowedOrigins(value) {
+  const list = Array.isArray(value) ? value : String(value || '').split(',');
+  return list.map((o) => String(o).trim().toLowerCase().replace(/\/+$/, '')).filter(Boolean);
+}
+
 /**
  * Bridges the (single, shared) CI-V driver to any number of WebSocket
  * clients on the LAN. Each client request is served directly and
@@ -63,6 +96,8 @@ class ControlServer extends EventEmitter {
     rnnoiseLevelCount = 5,
     sourceCodeUrl,
     pttWatchdogMs = 10 * 60 * 1000,
+    heartbeatMs = HEARTBEAT_MS,
+    allowedOrigins = [],
     notesIdleMs = NOTES_IDLE_MS,
     notesEmptyGraceMs = NOTES_EMPTY_GRACE_MS,
   }) {
@@ -86,6 +121,15 @@ class ControlServer extends EventEmitter {
     // real minutes for the timeout to fire — see docs/civ-notes.md.
     this.pttWatchdogMs = pttWatchdogMs;
     this._pttWatchdogTimer = null;
+    // The browser that keyed PTT with REQUEST.SET_PTT, while it's keyed.
+    // If that browser goes (closed, network lost, heartbeat missed), PTT
+    // is released at once rather than when the watchdog fires.
+    this._pttOwner = null;
+    // Ping every heartbeatMs (0 turns it off); see HEARTBEAT_MS.
+    this.heartbeatMs = heartbeatMs;
+    this._heartbeatTimer = null;
+    // Origins allowed besides this server's own page; see originAllowed().
+    this.allowedOrigins = parseAllowedOrigins(allowedOrigins);
     // Operator notes (REQUEST.POST_NOTE): cleared after notesIdleMs with no
     // new note, or once nobody has been connected for notesEmptyGraceMs (a
     // grace period, so one person reloading the page doesn't wipe them).
@@ -98,7 +142,15 @@ class ControlServer extends EventEmitter {
     const staticHandler = staticDir ? createStaticHandler(staticDir) : null;
     const requestHandler = (req, res) => {
       if (staticHandler) {
-        staticHandler(req, res);
+        // Belt and braces: nothing a browser sends should be able to throw
+        // out of here and take the server (and the radio's PTT) down.
+        try {
+          staticHandler(req, res);
+        } catch (err) {
+          console.error(`[http] ${req.method} ${req.url} failed:`, err.message);
+          if (!res.headersSent) res.writeHead(500, { 'Content-Type': 'text/plain' });
+          res.end('Server error');
+        }
         return;
       }
       res.writeHead(200, { 'Content-Type': 'text/plain' });
@@ -107,7 +159,14 @@ class ControlServer extends EventEmitter {
     this.httpServer = this.tls
       ? https.createServer({ cert: this.tls.cert, key: this.tls.key }, requestHandler)
       : http.createServer(requestHandler);
-    this.wss = new WebSocketServer({ server: this.httpServer });
+    this.wss = new WebSocketServer({
+      server: this.httpServer,
+      verifyClient: ({ origin, req }) => {
+        if (originAllowed(origin, req.headers.host, this.allowedOrigins)) return true;
+        console.warn(`[ws] refused a connection from origin ${origin} (Host: ${req.headers.host}); see ALLOWED_ORIGINS`);
+        return false;
+      },
+    });
     this.clients = new Set();
 
     // Cached last-known state so a newly-connected client gets an
@@ -357,19 +416,61 @@ class ControlServer extends EventEmitter {
         }
         this._handleMessage(ws, raw);
       });
-      ws.on('close', () => {
-        this.clients.delete(ws);
-        this._broadcastClientCount();
-        this.emit('client-disconnected', ws);
-        this._releaseJttyIfAlone();
+      ws.isAlive = true;
+      ws.on('pong', () => {
+        ws.isAlive = true;
       });
-      ws.on('error', () => {
-        this.clients.delete(ws);
-        this._broadcastClientCount();
-        this.emit('client-disconnected', ws);
-        this._releaseJttyIfAlone();
-      });
+      ws.on('close', () => this._onClientGone(ws));
+      ws.on('error', () => this._onClientGone(ws));
     });
+    if (this.heartbeatMs > 0) {
+      this._heartbeatTimer = setInterval(() => this._heartbeat(), this.heartbeatMs);
+      this._heartbeatTimer.unref?.();
+    }
+  }
+
+  /** A browser closed, errored or was dropped by the heartbeat ('close' and 'error' may both call this). */
+  _onClientGone(ws) {
+    this.clients.delete(ws);
+    this._broadcastClientCount();
+    this.emit('client-disconnected', ws);
+    this._releaseJttyIfAlone();
+    this._releasePttIfOwnerGone(ws);
+  }
+
+  /**
+   * Unkeys the radio if `ws` keyed it with REQUEST.SET_PTT and is still
+   * holding it. Without this a phone that loses its network mid-over
+   * would leave the transmitter on until the 10-minute watchdog.
+   * Transmissions a bridge keyed itself (FT8, WSPR, ...) have no owner;
+   * the bridges stop those when the last browser leaves.
+   */
+  _releasePttIfOwnerGone(ws) {
+    if (!this._pttOwner || this._pttOwner !== ws) return;
+    this._pttOwner = null; // first, so 'close' after 'error' doesn't send it twice
+    if (!this.state.ptt) return;
+    console.warn('[ws] the browser holding PTT disconnected; releasing PTT');
+    this.setPttFromServer(false).catch((err) => {
+      console.error('[ws] releasing PTT after a disconnect failed:', err.message);
+      this._broadcast(makeEvent(EVENT.RIG_ERROR, { message: `Releasing PTT after a browser disconnected failed: ${err.message}` }));
+    });
+  }
+
+  /** Pings every browser; drops any that didn't answer the last ping. */
+  _heartbeat() {
+    for (const ws of this.clients) {
+      if (ws.isAlive === false) {
+        console.warn('[ws] a browser stopped answering pings; dropping it');
+        ws.terminate(); // 'close' follows, which calls _onClientGone()
+        continue;
+      }
+      ws.isAlive = false;
+      try {
+        ws.ping();
+      } catch {
+        // not open any more; 'close' deals with it
+      }
+    }
   }
 
   /**
@@ -614,7 +715,7 @@ class ControlServer extends EventEmitter {
           // Excludes the requesting client from the broadcast, same as
           // setFrequency/setMode above — that client already gets its own
           // confirmation via the result reply below.
-          await this.setPttFromServer(msg.value, { except: ws });
+          await this.setPttFromServer(msg.value, { except: ws, owner: ws });
           ws.send(makeResult(id, { value: msg.value }));
           break;
         }
@@ -1363,12 +1464,16 @@ class ControlServer extends EventEmitter {
    * weaken the fail-safe — it's just reusing the one safety mechanism
    * rather than needing a separate exemption path for automated TX.
    */
-  async setPttFromServer(on, { except } = {}) {
+  async setPttFromServer(on, { except, owner } = {}) {
     await this.civ.setPtt(on);
     this.state.ptt = on;
+    // `owner`: the browser that keyed it (REQUEST.SET_PTT); none when a bridge keyed it.
+    this._pttOwner = on ? owner ?? null : null;
     this._armOrClearPttWatchdog(on);
     this._broadcast(makeEvent(EVENT.PTT, { value: on }), except);
     this.emit('ptt', on);
+    // The browser went while the radio was being keyed: unkey now.
+    if (on && owner && !this.clients.has(owner)) this._releasePttIfOwnerGone(owner);
   }
 
   _armOrClearPttWatchdog(pttOn) {
@@ -1383,6 +1488,7 @@ class ControlServer extends EventEmitter {
 
   async _onPttWatchdogTimeout() {
     this._pttWatchdogTimer = null;
+    this._pttOwner = null;
     try {
       await this.civ.setPtt(false);
     } catch (err) {
@@ -1404,6 +1510,8 @@ class ControlServer extends EventEmitter {
       clearTimeout(this._pttWatchdogTimer);
       this._pttWatchdogTimer = null;
     }
+    clearInterval(this._heartbeatTimer);
+    this._heartbeatTimer = null;
     return new Promise((resolve) => {
       for (const client of this.clients) client.terminate();
       this.wss.close(() => this.httpServer.close(() => resolve()));
@@ -1411,4 +1519,4 @@ class ControlServer extends EventEmitter {
   }
 }
 
-module.exports = { ControlServer };
+module.exports = { ControlServer, originAllowed, parseAllowedOrigins, HEARTBEAT_MS };

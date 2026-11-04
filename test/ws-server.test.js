@@ -1686,6 +1686,158 @@ async function run() {
     await watchdogServer.close();
   }
 
+  // The browser that keyed PTT disconnects mid-over (a phone losing its
+  // network): PTT is released at once, not after the 10-minute watchdog.
+  {
+    const pCiv = new StubCivDriver();
+    const pServer = new ControlServer({ civ: pCiv, port: 0, heartbeatMs: 0 });
+    const pPort = await pServer.listen();
+    const keyer = await connect(pPort);
+    const other = await connect(pPort);
+    await nextMessage(keyer);
+    await nextMessage(other);
+    keyer.send(JSON.stringify({ id: '1', type: 'setPtt', value: true }));
+    await nextMessage(keyer);
+    check((await nextMessage(other)).data.value === true, 'the other browser hears PTT go on');
+    check(pCiv._ptt === true, 'PTT is on before the keying browser goes');
+    keyer.terminate(); // no clean close, like a dropped connection
+    const off = await nextMessage(other);
+    check(off.type === 'ptt' && off.data.value === false, "the other browser gets 'ptt' false when the keying browser goes");
+    check(pCiv._ptt === false && pServer.state.ptt === false, 'PTT is released on the radio when the keying browser disconnects');
+    check(pServer._pttWatchdogTimer === null, 'the watchdog is cleared by that release');
+    other.close();
+    await pServer.close();
+  }
+
+  // Another browser leaving doesn't release PTT held by someone else.
+  {
+    const pCiv = new StubCivDriver();
+    const pServer = new ControlServer({ civ: pCiv, port: 0, heartbeatMs: 0 });
+    const pPort = await pServer.listen();
+    const keyer = await connect(pPort);
+    const other = await connect(pPort);
+    await nextMessage(keyer);
+    await nextMessage(other);
+    keyer.send(JSON.stringify({ id: '1', type: 'setPtt', value: true }));
+    await nextMessage(keyer);
+    other.terminate();
+    await sleep(100);
+    check(pCiv._ptt === true, 'a browser that did not key PTT leaving leaves PTT alone');
+    keyer.send(JSON.stringify({ id: '2', type: 'setPtt', value: false }));
+    await nextMessage(keyer);
+    keyer.close();
+    await sleep(50);
+    check(pCiv._ptt === false, 'a browser that already released PTT leaving changes nothing');
+    await pServer.close();
+  }
+
+  // PTT keyed by a bridge (no owner) isn't released by a browser leaving;
+  // the bridges handle that themselves.
+  {
+    const pCiv = new StubCivDriver();
+    const pServer = new ControlServer({ civ: pCiv, port: 0, heartbeatMs: 0 });
+    const pPort = await pServer.listen();
+    const c = await connect(pPort);
+    await nextMessage(c);
+    await pServer.setPttFromServer(true);
+    c.terminate();
+    await sleep(100);
+    check(pCiv._ptt === true, 'a bridge-keyed transmission is not released by a browser leaving');
+    await pServer.setPttFromServer(false);
+    await pServer.close();
+  }
+
+  // The browser goes while the radio is still being keyed: released as soon as keying completes.
+  {
+    const pCiv = new StubCivDriver();
+    let finishKeying;
+    pCiv.setPtt = function (on) {
+      if (!on) {
+        this._ptt = false;
+        return Promise.resolve(true);
+      }
+      return new Promise((resolve) => {
+        finishKeying = () => {
+          this._ptt = true;
+          resolve(true);
+        };
+      });
+    };
+    const pServer = new ControlServer({ civ: pCiv, port: 0, heartbeatMs: 0 });
+    const pPort = await pServer.listen();
+    const c = await connect(pPort);
+    await nextMessage(c);
+    c.send(JSON.stringify({ id: '1', type: 'setPtt', value: true }));
+    while (!finishKeying) await sleep(5);
+    c.terminate();
+    await sleep(50); // the server has seen the close
+    finishKeying();
+    await sleep(50);
+    check(pCiv._ptt === false && pServer.state.ptt === false, 'PTT keyed after its browser left is released straight away');
+    await pServer.close();
+  }
+
+  // Heartbeat: a browser that stops answering pings is dropped, and PTT it held is released.
+  {
+    const pCiv = new StubCivDriver();
+    const pServer = new ControlServer({ civ: pCiv, port: 0, heartbeatMs: 60 });
+    const pPort = await pServer.listen();
+    const live = await connect(pPort);
+    await nextMessage(live);
+    const dead = await new Promise((resolve, reject) => {
+      const ws = new WebSocket(`ws://localhost:${pPort}`, { autoPong: false });
+      ws.on('open', () => resolve(ws));
+      ws.on('error', reject);
+    });
+    await sleep(30);
+    dead.send(JSON.stringify({ id: '1', type: 'setPtt', value: true }));
+    await sleep(30);
+    check(pCiv._ptt === true, 'PTT on from the browser that will go silent');
+    const closed = new Promise((resolve) => dead.on('close', resolve));
+    await Promise.race([closed, sleep(1000)]);
+    check(dead.readyState === WebSocket.CLOSED, 'a browser that stops answering pings is dropped');
+    await sleep(20);
+    check(pCiv._ptt === false, 'PTT it held is released when it is dropped');
+    await sleep(200); // several more heartbeats
+    check(live.readyState === WebSocket.OPEN, 'a browser that answers pings stays connected');
+    live.close();
+    await pServer.close();
+  }
+
+  // Origin check: another web page can't open a socket to the radio.
+  {
+    const { originAllowed } = require('../src/server/ws-server');
+    check(originAllowed(undefined, 'pi:8080'), 'no Origin (not a browser) is allowed');
+    check(originAllowed('https://pi:8080', 'pi:8080'), 'the page this server serves is allowed');
+    check(originAllowed('https://PI:8080', 'pi:8080'), 'the origin check ignores case');
+    check(!originAllowed('https://evil.example', 'pi:8080'), 'another site is refused');
+    check(!originAllowed('https://pi:8081', 'pi:8080'), 'another port on the same host is refused');
+    check(!originAllowed('null', 'pi:8080'), 'an opaque "null" origin (sandboxed frame, file:) is refused');
+    check(originAllowed('https://radio.example.net', 'localhost:8080', ['https://radio.example.net']), 'an origin in ALLOWED_ORIGINS is allowed');
+
+    const oServer = new ControlServer({ civ: new StubCivDriver(), port: 0, heartbeatMs: 0 });
+    const oPort = await oServer.listen();
+    const refused = await new Promise((resolve) => {
+      const ws = new WebSocket(`ws://localhost:${oPort}`, { origin: 'https://evil.example' });
+      ws.on('open', () => {
+        ws.close();
+        resolve(false);
+      });
+      ws.on('error', () => resolve(true));
+    });
+    check(refused, 'a socket from another origin is refused at the upgrade');
+    const own = await new Promise((resolve) => {
+      const ws = new WebSocket(`ws://localhost:${oPort}`, { origin: `http://localhost:${oPort}` });
+      ws.on('open', () => {
+        ws.close();
+        resolve(true);
+      });
+      ws.on('error', () => resolve(false));
+    });
+    check(own, "a socket from the server's own page is accepted");
+    await oServer.close();
+  }
+
   if (failures > 0) {
     console.error(`\n${failures} test(s) failed.`);
     process.exitCode = 1;

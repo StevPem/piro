@@ -12,7 +12,7 @@ Hamlib, no separate audio server and no extra apps.
 Written by VK3TR. Licensed AGPL-3.0-only (see
 [Licence](#licence)).
 
-**Current build: v126.** This is the version the app shows next to its title.
+**Current build: v127.** This is the version the app shows next to its title.
 It is the `CACHE_NAME` number in `src/client/sw.js`, which goes up with every
 change to the web app.
 
@@ -27,6 +27,11 @@ This README has two parts:
 
 ## Warning!
 Note that it DOES NOT include any form of login or password - so don't present it to the big bad internet or some rando will start controlling your rig! Always put it behind a firewall or VPN.
+
+PiRO does accept the WebSocket only from its own page, so another web site
+open in a browser on your network can't reach the radio through it. If
+you put PiRO behind a reverse proxy that changes the host name, see
+`ALLOWED_ORIGINS` in the [Configuration reference](#configuration-reference).
 
 ---
 
@@ -250,6 +255,10 @@ sed -e "s|@USER@|$USER|" -e "s|@DIR@|$PWD|" -e "s|@NODE@|$(command -v node)|" \
 
 The unit runs PiRO as your user, adds the `dialout` and `audio` groups for it,
 and reads `/etc/piro/piro.env`.
+
+If the radio is switched off or its USB cable is pulled, PiRO exits and
+systemd starts it again every 5 seconds until the radio is back. Run by
+hand (`npm start`), PiRO just exits; start it again when the radio is on.
 
 **3. Enable and start it.**
 
@@ -569,6 +578,12 @@ it doesn't lock while you listen.
 controlled stations. The server does it, so it works even if your browser
 crashes or the network drops. Modes that transmit without PTT (CW text,
 for example) have their own limits.
+
+PiRO doesn't wait that long when it knows something is wrong. If the
+browser holding PTT disconnects, or stops answering the server's pings
+for about 15 to 30 seconds (a phone that lost its signal), PTT is released
+at once. PiRO also sends PTT off to the radio when the service stops or
+crashes.
 
 #### Sharing the radio
 
@@ -1757,6 +1772,7 @@ All settings are environment variables. For the systemd service they go in
 | `WSPR_BAND_MINUTES` | `6` | Minutes on each band in the unattended band cycle. WSPR slots are 2 minutes, so it is rounded to an even number; 2 changes band every slot. |
 | `WSPR_SKIP_BANDS` | none | Bands left out of the unattended band cycle, separated by commas: for example `160m,6m` (or `160,6`). The bands are 160m 80m 40m 30m 20m 17m 15m 12m 10m 6m. If the radio is on a skipped band, the cycle starts on the next one. |
 | `TLS_CERT_PATH`, `TLS_KEY_PATH` | none | Set both to serve HTTPS and WSS. Needed for the microphone from other devices. |
+| `ALLOWED_ORIGINS` | none | Extra web origins allowed to open the WebSocket, separated by commas, such as `https://radio.example.net`. Normally not needed: PiRO's own page is always allowed. Set it only behind a reverse proxy that changes the `Host` header. `*` allows any origin (not recommended). |
 | `SOURCE_CODE_URL` | none | Link shown in the page footer. The AGPL asks you to offer the source to people who use your instance (see [Licence](#licence)). |
 | `STATIC_DIR` | `src/client` | Folder the web app is served from. |
 | `RNNOISE_BIN` | `rnnoise_demo` | Path to the patched `rnnoise_demo`. |
@@ -1798,6 +1814,15 @@ one hard refresh (Ctrl+Shift+R, or Cmd+Shift+R on a Mac).
 - **Every CI-V command times out.** The baud rate must match the radio's menu
   setting exactly, CI-V Transceive must be on, and nothing else (another CAT
   program, or a second PiRO) may hold the port.
+- **The page loads but never connects, and the log says "refused a
+  connection from origin".** PiRO only accepts its WebSocket from its own
+  page. Behind a reverse proxy that changes the `Host` header, add the
+  address in the browser's address bar to `ALLOWED_ORIGINS`, such as
+  `ALLOWED_ORIGINS=https://radio.example.net`.
+- **The service restarts over and over.** Look at `journalctl -u piro`. "The
+  serial port ... closed unexpectedly" or an error opening the port means
+  the radio is off or its USB is unplugged: PiRO keeps trying until it is
+  back.
 - **No audio devices.** Install `alsa-utils` and check `arecord -l` shows the
   radio's codec. Some radios use a second USB cable for audio.
 - **A noise-reduction button does nothing.** Look at `journalctl -u piro`. For
@@ -2407,7 +2432,10 @@ codec code that both ends share is `src/client/audio-codec.js`.
 
 Plain JSON text frames carry the control protocol; binary frames carry
 audio and scope data (tagged, see `docs/ui-notes.md`), multiplexed on the
-same connection. See `src/server/protocol.js` for the full JSON message
+same connection. The server pings each browser every 15 seconds and drops
+one that didn't answer the last ping (browsers answer pings by
+themselves). Only the page PiRO serves may connect (the `Origin` header
+must match the `Host`), plus any `ALLOWED_ORIGINS`. See `src/server/protocol.js` for the full JSON message
 shapes.
 
 - **Control (JSON, text frames)**: requests (`getFrequency`,
@@ -2620,11 +2648,14 @@ The test files:
   civ-driver.test.js      CivDriver integration tests against a fake serial
                            transport: request/reply matching (incl. the
                            subCmd disambiguation fix), scope-line wiring,
-                           and scope span/mode/band-range commands
+                           scope span/mode/band-range commands, and the
+                           emergency PTT off sent ahead of the queue
   data-mode-guard.test.js DATA mode confirmed before PTT (read back, retried,
                            settle time) and watched during a transmission
   ws-server.test.js       integration test for the control layer, stubbed
-                           CivDriver, no hardware needed
+                           CivDriver, no hardware needed; also PTT released
+                           when its browser disconnects or misses pings,
+                           and the WebSocket Origin check
   pcm-framer.test.js      unit tests for PCM frame accumulation
   opus-codec.test.js      real Opus encode/decode round-trip tests (WASM,
                            no hardware needed)
@@ -2650,7 +2681,8 @@ The test files:
                            WebSocket, tagged binary frame encode/decode
                            round-trip, coexistence with audio frames
   static-server.test.js   static file server tests: content types, 404s,
-                           path-traversal protection
+                           path-traversal protection, malformed URLs (400,
+                           server keeps running)
   tls-server.test.js      confirms the server actually works over
                            HTTPS/WSS when TLS_CERT_PATH/TLS_KEY_PATH are set
   readme-version.test.js  checks the README's "Current build" number matches

@@ -4946,3 +4946,67 @@ model for how to approach that.
   `docs/architecture.png` made again.
 - No code changed. Service-worker cache v126.
 
+
+### PTT safety: release on disconnect, heartbeat, unkey on stop and crash, Origin check (v127)
+
+Fixes from a code review. Not tested on air; checked against stub radios
+and a fake radio on a pseudo-terminal.
+
+- **PTT released when its browser goes.** ControlServer now remembers which
+  browser keyed PTT with `setPtt` (`_pttOwner`). When that browser
+  disconnects, PTT is released at once and every browser gets `ptt` false.
+  Before, nothing released it: a phone that lost its network mid-over left
+  the radio transmitting until the 10-minute watchdog. A browser that
+  didn't key PTT leaving changes nothing, and transmissions a bridge keyed
+  itself (FT8, WSPR, VARA, ...) have no owner; the bridges stop those when
+  the last browser leaves, as before. If the browser goes while the radio
+  is still being keyed, PTT is released as soon as keying finishes.
+- **Heartbeat.** The server pings every browser every 15 s
+  (`heartbeatMs`), and drops one that hasn't answered the previous ping.
+  A dead connection is noticed in 15 to 30 s, not when TCP gives up many
+  minutes later, and dropping it releases its PTT (above). Browsers answer
+  pings by themselves; a page that reconnects is unaffected.
+- **PTT off on stop and crash.** `shutdown()` now sends PTT off before
+  stopping anything, with the new `CivDriver#forcePttOff()`: it writes
+  `1C 00 00` straight to the port, ahead of the CI-V queue, and doesn't
+  wait for the reply (setPtt(false) could wait behind a second-long meter
+  or scope request). Before, voice and paddle PTT were never released on a
+  stop, and `controlServer.close()` cleared the watchdog, so a stop
+  mid-over left the radio transmitting. `uncaughtException` and
+  `unhandledRejection` now do the same, then exit 1 so systemd restarts
+  the service (Node used to exit at once, radio still keyed). Shutdown
+  also exits after 8 s if a step hangs (inside TimeoutStopSec=10).
+- **Malformed URLs.** `GET /%E0%A4%A` made `decodeURIComponent` throw
+  inside the HTTP request handler, which stopped the whole server. The
+  static handler now answers 400, as it does for a NUL in the path, and
+  ControlServer's request handler catches anything else with a 500.
+- **WebSocket Origin check.** The WebSocket only accepts a browser whose
+  `Origin` matches the `Host` it connected to (PiRO's own page), plus any
+  origin in the new `ALLOWED_ORIGINS` env var (for a reverse proxy that
+  changes `Host`). Before, any web page open in an operator's browser on
+  the LAN or VPN could open a socket to the radio and key it. Connections
+  with no Origin (scripts, the tests) are still accepted: a web page can't
+  leave it out. Refusals are logged. Not covered: DNS rebinding against
+  a plain-HTTP install (Origin and Host then match); TLS stops that,
+  since the certificate won't match the attacker's name.
+- **Serial port lost.** When the radio is switched off or its USB unplugged,
+  the serial port closes. Nothing listened for that, so PiRO ran on with
+  CI-V dead and systemd never restarted it. It now shuts down cleanly and
+  exits 1; systemd (`Restart=on-failure`, 5 s) starts it again, and each
+  start fails at opening the port until the radio is back. The port isn't
+  reopened in place because the radio's USB sound card goes and comes
+  back with it.
+- Tests: ws-server.test.js (PTT released when the keying browser
+  terminates; not when another browser leaves or after a normal release;
+  not for a bridge-keyed transmission; released when the browser left
+  while keying; a browser with pongs turned off dropped by the heartbeat
+  and its PTT released, a normal one kept; the Origin rules and a refused
+  upgrade), static-server.test.js (400 for a malformed escape and a NUL,
+  still serving afterwards), civ-driver.test.js (`forcePttOff` writes
+  `1C 00 00` while a request is in flight, false with the port closed or
+  a write that never completes). By hand, index.js against a fake radio
+  on a pseudo-terminal: SIGTERM and a forced uncaught exception while
+  keyed both send PTT off, and closing the port makes the server exit 1.
+  With the old code, SIGTERM left PTT on and the server didn't exit when
+  the port closed.
+- Service-worker cache v127. The architecture diagram still says v126.
