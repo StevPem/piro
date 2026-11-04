@@ -349,6 +349,8 @@ async function main() {
   civ = new CivDriver({ path: SERIAL_PATH, radioAddr, baudRate: CIV_BAUD_RATE });
 
   civ.on('error', (err) => console.error('[civ error]', err.message));
+  // Only after a timeout: the radio answered too late, and the answer was dropped.
+  civ.on('stale-reply', (f) => console.warn(`[civ] Dropped a late ${f.cmd === 0xfb ? 'OK' : 'NG'} from the radio (a request had already timed out).`));
   // The radio's USB went away (power-cycled, cable pulled, USB reset).
   // The port isn't reopened here: the radio's USB sound card goes and
   // comes back with it, so the whole service is restarted instead. Exit

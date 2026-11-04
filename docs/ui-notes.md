@@ -5010,3 +5010,41 @@ and a fake radio on a pseudo-terminal.
   With the old code, SIGTERM left PTT on and the server didn't exit when
   the port closed.
 - Service-worker cache v127. The architecture diagram still says v126.
+
+### CI-V queue: PTT off first, late replies dropped, queue limit (v128)
+
+Item 10 from the code review. Not tested on air; checked with the fake
+serial transport in civ-driver.test.js. Details in docs/civ-notes.md.
+
+- **PTT off goes ahead of polling.** `setPtt(false)` is now urgent in
+  CivDriver's queue. Before, it waited behind every meter, scope and
+  function poll queued from every browser, each up to a second if the
+  radio was slow. That held up the watchdog, the release when a browser
+  disconnects, and every bridge's unkey. It still waits for the request
+  already on the bus, and never overtakes an earlier PTT on: the server
+  handles messages concurrently, so on then off can both be queued, and
+  sending off first would unkey and then key up again, leaving the radio
+  keyed. (The first version of this change had that bug; the tests
+  caught it.)
+- **Late OK/NG dropped.** OK and NG don't say which command they answer.
+  A late OK to a request that had timed out was taken as the answer to
+  the next request, so a PTT off could look confirmed when the radio
+  never answered it. After a timeout the driver now pauses 150 ms before
+  sending the next request and drops any OK/NG that arrives in the pause,
+  or with no request waiting. They are logged ("Dropped a late OK from the
+  radio"). Unsolicited frequency and mode changes still come through
+  during the pause.
+- **Queue limit.** At most 64 requests wait; more are refused at once
+  with "CI-V queue full; is the radio answering?". PTT off is never
+  refused. Before, the queue had no limit when the radio stopped
+  answering.
+- Tests: civ-driver.test.js (PTT off goes straight after the request on
+  the bus, ahead of queued polls, and two in a row keep their order; PTT
+  off queued after a PTT on stays after it; a late OK during the pause is
+  dropped, doesn't resolve the waiting PTT off, and PTT off is sent and
+  resolves on its own OK after the pause; OK/NG with nothing waiting is
+  dropped; a front-panel frequency change during the pause still arrives;
+  requests beyond the limit are refused, PTT off is not). Against the old
+  driver these fail: the late OK answers the wrong request and the queue
+  goes out of step.
+- Service-worker cache v128.
