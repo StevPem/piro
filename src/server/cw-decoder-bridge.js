@@ -181,6 +181,7 @@ class CwDecoderBridge {
       dec.off('space', this._spaceHandlers[variant]);
       dec.off('pitch', this._pitchHandlers[variant]);
       dec.off('error', this._errorHandlers[variant]);
+      dec.close?.(); // CW3's worker thread
     }
   }
 

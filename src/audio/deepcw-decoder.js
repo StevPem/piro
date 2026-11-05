@@ -3,6 +3,7 @@
 const path = require('path');
 const fs = require('fs');
 const { EventEmitter } = require('events');
+const { Worker } = require('worker_threads');
 
 // onnxruntime-node ships prebuilt native bindings for linux-x64/linux-arm64
 // (covers a 64-bit Raspberry Pi OS install — Pi 4/5), darwin-x64/arm64, and
@@ -97,6 +98,7 @@ class DeepCwDecoder extends EventEmitter {
     windowSeconds = DEFAULT_WINDOW_SECONDS,
     modelPath = DEFAULT_MODEL_PATH,
     metadataPath = DEFAULT_METADATA_PATH,
+    inWorker = true,
   } = {}) {
     super();
     this.sampleRate = sampleRate;
@@ -120,7 +122,6 @@ class DeepCwDecoder extends EventEmitter {
     }
     this._startBin = startBin;
     this._stopBin = stopBin;
-    this._window = hannWindow(this.metadata.fft_length);
 
     // Two cascaded one-pole low-pass filters ahead of decimation — see
     // this file's top-of-file doc comment, departure #2.
@@ -135,20 +136,28 @@ class DeepCwDecoder extends EventEmitter {
     this._buffer = new Float32Array(this._windowSamples);
     this._bufferFill = 0;
 
-    this._session = null;
-    this._ready = this._loadModel();
+    // The spectrogram and the model run in a worker thread (deepcw-worker.js)
+    // by default. On the main thread they held up everything else the
+    // server does, including sending audio to the browsers, for 0.5 s
+    // every window on a fast PC and longer on a Pi, which was heard as
+    // dropouts in CW mode: onnxruntime-node's run() returns at once but
+    // then keeps the main thread busy until the inference is done.
+    // inWorker: false runs them here (tests compare the two).
+    this._engine = inWorker ? new WorkerEngine({ modelPath, metadata: this.metadata }) : new DeepCwEngine({ modelPath, metadata: this.metadata });
+    this._loaded = false;
+    this._ready = this._engine
+      .load()
+      .then(() => {
+        this._loaded = true;
+      })
+      .catch((err) => {
+        this.emit('error', new Error(`CW3 (DeepCW) model failed to load from ${this._modelPath}: ${err.message}`));
+      });
   }
 
-  async _loadModel() {
-    try {
-      if (!ort) ort = require('onnxruntime-node');
-      this._session = await ort.InferenceSession.create(this._modelPath);
-    } catch (err) {
-      this.emit(
-        'error',
-        new Error(`CW3 (DeepCW) model failed to load from ${this._modelPath}: ${err.message}`)
-      );
-    }
+  /** Stops the worker thread. The decoder can't be used after this. */
+  close() {
+    this._engine.close();
   }
 
   reset() {
@@ -198,12 +207,10 @@ class DeepCwDecoder extends EventEmitter {
     if (peak < SILENCE_PEAK_THRESHOLD) return; // nothing worth running inference on
 
     await this._ready;
-    if (!this._session) return; // model never loaded — already reported via 'error'
+    if (!this._loaded) return; // model never loaded — already reported via 'error'
 
     try {
-      const spectrogram = this._audioToSpectrogram(window);
-      const outputs = await this._session.run({ [this.metadata.onnx_input_name]: spectrogram });
-      const text = greedyCtcDecode(outputs[this.metadata.onnx_output_name], this.metadata.chars, this.metadata.blank_index);
+      const text = await this._engine.decode(window);
       for (const c of text) {
         if (c === ' ') this.emit('space');
         else this.emit('char', c);
@@ -212,12 +219,52 @@ class DeepCwDecoder extends EventEmitter {
       this.emit('error', new Error(`CW3 (DeepCW) inference failed: ${err.message}`));
     }
   }
+}
+
+/**
+ * The model's side: an audio window (at the model's sample rate) to text,
+ * by spectrogram, inference and CTC decoding. Runs in the worker thread
+ * (deepcw-worker.js), or in-process for tests.
+ */
+class DeepCwEngine {
+  constructor({ modelPath = DEFAULT_MODEL_PATH, metadata }) {
+    this.modelPath = modelPath;
+    this.metadata = metadata;
+    const { startBin, stopBin } = frequencyBinRange(metadata.sample_rate, metadata.fft_length, metadata.spectrogram_min_freq_hz, metadata.spectrogram_max_freq_hz);
+    this._window = hannWindow(metadata.fft_length);
+    // The DFT's cos/sin values for the bins used, worked out once (see
+    // dftTables()), instead of about 9 million Math.cos and Math.sin calls
+    // per 8 s window: the spectrogram takes about a tenth of the time.
+    this._dft = dftTables(metadata.fft_length, startBin, stopBin);
+    this._session = null;
+  }
+
+  async load() {
+    if (!ort) ort = require('onnxruntime-node');
+    this._session = await ort.InferenceSession.create(this.modelPath);
+  }
+
+  /** @param {Float32Array} window @returns {Promise<string>} */
+  async decode(window) {
+    const spectrogram = this.spectrogram(window);
+    const outputs = await this._session.run({ [this.metadata.onnx_input_name]: spectrogram });
+    return greedyCtcDecode(outputs[this.metadata.onnx_output_name], this.metadata.chars, this.metadata.blank_index);
+  }
+
+  close() {}
 
   /** Ported from deepcw-engine's examples/nodejs/decode_morse.mjs#audioToSpectrogram. */
-  _audioToSpectrogram(audio) {
+  spectrogram(audio) {
+    if (!ort) ort = require('onnxruntime-node');
+    const { data, frames, bins } = this.spectrogramData(audio);
+    return new ort.Tensor('float32', data, [1, 1, frames, bins]);
+  }
+
+  /** The spectrogram as a plain Float32Array (frames x bins), log1p of the magnitudes. */
+  spectrogramData(audio) {
     const fftLength = this.metadata.fft_length;
     const hopLength = this.metadata.hop_length;
-    const expectedBins = this.metadata.spectrogram_frequency_bins;
+    const bins = this.metadata.spectrogram_frequency_bins;
 
     const pad = Math.floor(fftLength / 2);
     const padded = new Float32Array(audio.length + pad * 2);
@@ -227,20 +274,71 @@ class DeepCwDecoder extends EventEmitter {
     }
     padded.set(audio, pad);
 
-    const frames = 1 + Math.floor((padded.length - fftLength) / hopLength);
-    const tensorData = new Float32Array(Math.max(frames, 0) * expectedBins);
-
+    const frames = Math.max(0, 1 + Math.floor((padded.length - fftLength) / hopLength));
+    const data = new Float32Array(frames * bins);
     const frame = new Float32Array(fftLength);
+    const magnitudes = new Float32Array(bins);
     for (let frameIndex = 0; frameIndex < frames; frameIndex++) {
       const start = frameIndex * hopLength;
       for (let i = 0; i < fftLength; i++) frame[i] = padded[start + i] * this._window[i];
-      const magnitudes = selectedDftMagnitudes(frame, this._startBin, this._stopBin);
-      for (let bin = 0; bin < expectedBins; bin++) {
-        tensorData[frameIndex * expectedBins + bin] = Math.log1p(magnitudes[bin]);
-      }
+      tabledDftMagnitudes(frame, this._dft, magnitudes);
+      for (let bin = 0; bin < bins; bin++) data[frameIndex * bins + bin] = Math.log1p(magnitudes[bin]);
     }
+    return { data, frames, bins };
+  }
+}
 
-    return new ort.Tensor('float32', tensorData, [1, 1, frames, expectedBins]);
+/** DeepCwEngine in a worker thread (deepcw-worker.js), with the same load()/decode()/close(). */
+class WorkerEngine {
+  constructor({ modelPath, metadata }) {
+    this._worker = new Worker(path.join(__dirname, 'deepcw-worker.js'), { workerData: { modelPath, metadata } });
+    this._worker.unref(); // never keeps the server (or a test) running on its own
+    this._pending = new Map();
+    this._nextId = 1;
+    this._closed = false;
+    this._loaded = new Promise((resolve, reject) => {
+      this._settleLoad = { resolve, reject };
+    });
+    this._worker.on('message', (msg) => {
+      if (msg.type === 'ready') this._settleLoad.resolve();
+      else if (msg.type === 'load-error') this._settleLoad.reject(new Error(msg.message));
+      else if (msg.type === 'text' || msg.type === 'decode-error') {
+        const p = this._pending.get(msg.id);
+        if (!p) return;
+        this._pending.delete(msg.id);
+        if (msg.type === 'text') p.resolve(msg.text);
+        else p.reject(new Error(msg.message));
+      }
+    });
+    const fail = (err) => {
+      this._settleLoad.reject(err);
+      for (const p of this._pending.values()) p.reject(err);
+      this._pending.clear();
+    };
+    this._worker.on('error', fail);
+    this._worker.on('exit', (code) => {
+      if (!this._closed) fail(new Error(`the DeepCW worker stopped (exit code ${code})`));
+    });
+  }
+
+  load() {
+    return this._loaded;
+  }
+
+  decode(window) {
+    if (this._closed) return Promise.reject(new Error('the DeepCW worker has been closed'));
+    const id = this._nextId++;
+    const copy = Float32Array.from(window); // its buffer is handed over, not copied again
+    return new Promise((resolve, reject) => {
+      this._pending.set(id, { resolve, reject });
+      this._worker.postMessage({ type: 'decode', id, window: copy.buffer }, [copy.buffer]);
+    });
+  }
+
+  close() {
+    if (this._closed) return;
+    this._closed = true;
+    this._worker.terminate();
   }
 }
 
@@ -259,6 +357,41 @@ function frequencyBinRange(sampleRate, fftLength, minHz, maxHz) {
 }
 
 /** A plain per-bin DFT restricted to [startBin, stopBin) — cheaper than a full FFT when only a narrow band (65 of 256 bins here) is ever needed. */
+/**
+ * cos and sin of the DFT angle for each bin in [startBin, stopBin) and each
+ * sample, worked out exactly as selectedDftMagnitudes() does, so the result
+ * is the same to the bit.
+ */
+function dftTables(length, startBin, stopBin) {
+  const bins = stopBin - startBin;
+  const cos = new Float64Array(bins * length);
+  const sin = new Float64Array(bins * length);
+  for (let bin = startBin; bin < stopBin; bin++) {
+    for (let n = 0; n < length; n++) {
+      const angle = (-2 * Math.PI * bin * n) / length;
+      cos[(bin - startBin) * length + n] = Math.cos(angle);
+      sin[(bin - startBin) * length + n] = Math.sin(angle);
+    }
+  }
+  return { length, bins, cos, sin };
+}
+
+/** selectedDftMagnitudes() with the cos/sin looked up in dftTables(), into `out`. */
+function tabledDftMagnitudes(frame, { length, bins, cos, sin }, out) {
+  for (let b = 0; b < bins; b++) {
+    let real = 0;
+    let imaginary = 0;
+    const row = b * length;
+    for (let n = 0; n < length; n++) {
+      real += frame[n] * cos[row + n];
+      imaginary += frame[n] * sin[row + n];
+    }
+    out[b] = Math.hypot(real, imaginary);
+  }
+  return out;
+}
+
+/** The DFT as ported, computing every cos/sin as it goes; kept as the reference for tabledDftMagnitudes(). */
 function selectedDftMagnitudes(frame, startBin, stopBin) {
   const length = frame.length;
   const output = new Float32Array(stopBin - startBin);
@@ -304,4 +437,4 @@ function greedyCtcDecode(logProbs, chars, blankIndex) {
   return decoded;
 }
 
-module.exports = { DeepCwDecoder };
+module.exports = { DeepCwDecoder, DeepCwEngine, selectedDftMagnitudes, tabledDftMagnitudes, dftTables };
