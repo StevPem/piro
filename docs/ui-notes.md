@@ -5275,3 +5275,43 @@ Items 8 and 15 from the code review, and two requests. Not tested on air
   psk-reporter.test.js for the new defaults. manual-tty-ui.js: the title
   is a link to the repository, the old Source link is gone.
 - Service-worker cache v133.
+
+### CW mode audio dropouts: CW3 (DeepCW) moved to a worker thread (v134)
+
+- **The bug.** Reported: in CW mode, audio had frequent brief dropouts;
+  other modes were fine. The CW decoder only runs in CW mode, and CW3
+  (DeepCW, the default) did its heavy work on the server's main thread,
+  the same thread that sends audio to every browser. Every 8 s window,
+  measured on a 2.8 GHz PC:
+  - the spectrogram, a direct DFT computing `Math.cos` and `Math.sin` for
+    every term (about 9 million of each per window): 400-650 ms;
+  - then the inference: onnxruntime-node's `run()` returns at once but
+    keeps the main thread busy until it finishes, 60-200 ms, even with
+    one onnxruntime thread (so not CPU contention).
+
+  So the server stopped for half a second or more every 8 s (once 2.5 s
+  with the model load), and several times that on a Pi. No audio went out
+  meanwhile; the browser then got a burst and skipped the backlog. CW1
+  and CW2 held it at most 30-40 ms, under what the browser buffers.
+- **The fix.**
+  - The spectrogram and the model now run in a worker thread
+    (`src/audio/deepcw-worker.js`, `DeepCwEngine`), as CLAUDE.md's design
+    rules ask for long jobs. The main thread keeps the per-sample filter,
+    the decimation and the silence check, and hands each window over.
+    `inWorker: false` keeps it in-process (the tests compare the two).
+  - The DFT's cos/sin values are worked out once per decoder
+    (`dftTables()`): the spectrogram takes 35-40 ms instead of 400-650 ms,
+    with bit-for-bit the same values, which saves the Pi's CPU too.
+  - `CwDecoderBridge#stop()` closes the decoders, ending the worker. A
+    worker left open keeps a test process from exiting by itself (it
+    seems onnxruntime's own threads hold it); `process.exit()`, which the
+    server's shutdown uses, is not held up.
+- **Measured after:** CW3 decoding 40 s of real-time CW holds the main
+  thread at most 35 ms, as CW1 and CW2 do (was 2.5 s), and decodes the
+  same text. Not yet heard on a Pi.
+- Tests: deepcw-decoder.test.js (the tabled DFT bit-for-bit the same as
+  the original on random frames; the worker decodes the same text as
+  in-process, and while it decodes the main thread is never held more
+  than a few ms (in-process: over 300 ms); a missing model is reported
+  from the worker; every decoder closed at the end).
+- Service-worker cache v134.

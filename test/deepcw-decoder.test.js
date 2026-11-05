@@ -1,7 +1,18 @@
 // Run with: node test/deepcw-decoder.test.js
 'use strict';
 
-const { DeepCwDecoder } = require('../src/audio/deepcw-decoder');
+const { performance, monitorEventLoopDelay } = require('perf_hooks');
+const { DeepCwDecoder: RealDeepCwDecoder, selectedDftMagnitudes, tabledDftMagnitudes, dftTables } = require('../src/audio/deepcw-decoder');
+
+// Every decoder made here is closed at the end: its worker thread would
+// otherwise keep the test process from exiting.
+const made = [];
+class DeepCwDecoder extends RealDeepCwDecoder {
+  constructor(opts) {
+    super(opts);
+    made.push(this);
+  }
+}
 
 let failures = 0;
 function check(cond, msg) {
@@ -117,7 +128,7 @@ async function run() {
     check(decoder._bufferFill > 0, 'sanity: some samples buffered before reset()');
     decoder.reset();
     check(decoder._bufferFill === 0, 'reset() clears the partially-filled buffer');
-    check(decoder._session !== null, 'reset() does not force a model reload');
+    check(decoder._loaded === true, 'reset() does not force a model reload');
   }
 
   // --- API parity with CwDecoder/HamfistCwDecoder ---
@@ -127,6 +138,71 @@ async function run() {
     decoder.setPitch(700); // must not throw
     check(decoder.estimatedWpm === 0, 'estimatedWpm reports 0 (this model has no timing-based speed estimate)');
   }
+
+  // --- The faster DFT gives exactly the same numbers as the original ---
+  {
+    const length = 256;
+    const tables = dftTables(length, 8, 73);
+    let seed = 3;
+    const rnd = () => ((seed = (seed * 16807) % 2147483647) / 2147483647 - 0.5);
+    let identical = true;
+    for (let k = 0; k < 20 && identical; k++) {
+      const frame = Float32Array.from({ length }, () => rnd());
+      const a = selectedDftMagnitudes(frame, 8, 73);
+      const b = tabledDftMagnitudes(frame, tables, new Float32Array(65));
+      for (let i = 0; i < a.length; i++) if (a[i] !== b[i]) identical = false;
+    }
+    check(identical, 'looking up the DFT cos/sin values gives bit-for-bit the same magnitudes as computing them each time');
+  }
+
+  // --- In the worker thread: the same text, and the server's main thread stays free ---
+  {
+    const sampleRate = 48000;
+    const samples = new Int16Array(genSamples(sampleRate, 650, 1200 / 18, 9000, seqFor('PARIS', 3), 1500));
+    const decodeWith = async (inWorker) => {
+      const d = new DeepCwDecoder({ sampleRate, windowSeconds: 10, inWorker });
+      await d._ready;
+      let out = '';
+      d.on('char', (c) => (out += c));
+      d.on('space', () => (out += ' '));
+      for (let i = 0; i < samples.length; i += 960) d.pushSamples(samples.subarray(i, i + 960));
+      const h = monitorEventLoopDelay({ resolution: 1 });
+      h.enable();
+      // a 1 ms timer on the main thread, as the audio sending would be
+      let longest = 0;
+      let last = performance.now();
+      const tick = setInterval(() => {
+        const now = performance.now();
+        longest = Math.max(longest, now - last);
+        last = now;
+      }, 1);
+      const t = performance.now();
+      await d._decodeWindow(d._buffer.slice(0, d._bufferFill));
+      const took = performance.now() - t;
+      await new Promise((r) => setTimeout(r, 20));
+      clearInterval(tick);
+      h.disable();
+      return { out, longest, took };
+    };
+    const local = await decodeWith(false);
+    const inWorker = await decodeWith(true);
+    check(inWorker.out === local.out && inWorker.out.includes('PARIS'), `the worker decodes the same text as in-process (${JSON.stringify(inWorker.out)})`);
+    check(inWorker.longest < 30, `while the worker decodes (${inWorker.took.toFixed(0)} ms), the main thread is never held more than ${inWorker.longest.toFixed(0)} ms (in-process: held ${local.longest.toFixed(0)} ms)`);
+  }
+
+  // --- A model that won't load is reported, from the worker too ---
+  {
+    const d = new DeepCwDecoder({ sampleRate: 48000, modelPath: '/nonexistent/model.onnx' });
+    let err = null;
+    d.on('error', (e) => (err = e));
+    await d._ready;
+    check(/CW3 \(DeepCW\) model failed to load from \/nonexistent\/model.onnx/.test(err?.message || ''), `a missing model is reported as an 'error' (${err?.message})`);
+    d.pushSamples(new Int16Array(48000 * 9).map((_, i) => (i % 40 < 20 ? 8000 : -8000)));
+    await new Promise((r) => setTimeout(r, 100));
+    check(true, 'and decoding after that is skipped, not a crash');
+  }
+
+  for (const d of made) d.close();
 
   if (failures > 0) {
     console.error(`\n${failures} test(s) failed.`);

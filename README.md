@@ -12,7 +12,7 @@ Hamlib, no separate audio server and no extra apps.
 Written by VK3TR. Licensed AGPL-3.0-only (see
 [Licence](#licence)).
 
-**Current build: v133.** This is the version the app shows next to its title.
+**Current build: v134.** This is the version the app shows next to its title.
 It is the `CACHE_NAME` number in `src/client/sw.js`, which goes up with every
 change to the web app.
 
@@ -1894,6 +1894,10 @@ one hard refresh (Ctrl+Shift+R, or Cmd+Shift+R on a Mac).
   while keying; check the log for "could not check or set break-in".
   Without `CW_KEY_LINE`, try setting it: keying with CI-V PTT in CW mode
   has not been checked on a real radio.
+- **Audio drops out briefly every few seconds in CW mode only.** Before
+  v134 the CW3 decoder held up the whole server for half a second or more
+  every 8 seconds (longer on a Pi), so no audio went out meanwhile. Update
+  to v134 or later. If you can't, choose CW 1 or CW 2 with the CW button.
 - **Audio on a phone has gaps, and the log says "a browser is falling
   behind".** That browser's connection couldn't keep up, so the server
   skipped some of its audio and scope frames instead of letting them pile
@@ -2853,8 +2857,11 @@ The test files:
                            decoding of a synthetic "PARIS" signal through
                            the real ONNX model, silence producing no
                            output, reset() clearing buffered state
-                           without reloading the model, and API parity
-                           (setPitch()/estimatedWpm) with CW1/CW2
+                           without reloading the model, API parity
+                           (setPitch()/estimatedWpm) with CW1/CW2, the
+                           faster DFT bit-for-bit the same, and the worker
+                           thread: the same text, the main thread free
+                           while it decodes, a missing model reported
   cw-decoder-bridge.test.js
                            unit tests for the server-side bridge's
                            mode/PTT-driven attach-to-PCM-stream logic,
