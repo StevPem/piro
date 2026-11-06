@@ -884,7 +884,11 @@ async function shutdown(signal, exitCode = 0) {
   try {
     await emergencyUnkey(signal);
     if (scopeBridge) await scopeBridge.stop();
-    if (cwDecoderBridge) cwDecoderBridge.stop();
+    // Start graceful native-worker cleanup, but stop transmit producers
+    // below before waiting for model loading/inference to finish.
+    const cwDecoderStopped = cwDecoderBridge
+      ? Promise.resolve(cwDecoderBridge.stop()).catch((err) => console.error('Could not close CW decoder:', err.message))
+      : null;
     if (rttyDecoderBridge) rttyDecoderBridge.stop();
     if (ft8Bridge) ft8Bridge.stop();
     if (ttyBridge) ttyBridge.stop();
@@ -906,6 +910,7 @@ async function shutdown(signal, exitCode = 0) {
     if (radeBridge) radeBridge.stop();
     if (freeDvReporterBridge) freeDvReporterBridge.stop();
     if (audioBridge) audioBridge.stop();
+    if (cwDecoderStopped) await cwDecoderStopped;
     if (controlServer) await controlServer.close();
     if (civ) await civ.close();
   } catch (err) {

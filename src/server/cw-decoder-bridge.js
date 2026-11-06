@@ -175,14 +175,16 @@ class CwDecoderBridge {
     this.civ.off('mode', this._onMode);
     this.controlServer.off('ptt', this._onPtt);
     this.controlServer.off('cw-decoder-variant', this._onVariantChange);
+    const closing = [];
     for (const variant of Object.keys(this.decoders)) {
       const dec = this.decoders[variant];
       dec.off('char', this._charHandlers[variant]);
       dec.off('space', this._spaceHandlers[variant]);
       dec.off('pitch', this._pitchHandlers[variant]);
       dec.off('error', this._errorHandlers[variant]);
-      dec.close?.(); // CW3's worker thread
+      closing.push(dec.close?.()); // CW3 settles native work before terminating
     }
+    return Promise.all(closing);
   }
 
   /**

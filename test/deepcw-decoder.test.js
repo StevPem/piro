@@ -2,6 +2,8 @@
 'use strict';
 
 const { performance, monitorEventLoopDelay } = require('perf_hooks');
+const { spawnSync } = require('child_process');
+const path = require('path');
 const { DeepCwDecoder: RealDeepCwDecoder, selectedDftMagnitudes, tabledDftMagnitudes, dftTables } = require('../src/audio/deepcw-decoder');
 
 // Every decoder made here is closed at the end: its worker thread would
@@ -202,7 +204,41 @@ async function run() {
     check(true, 'and decoding after that is skipped, not a crash');
   }
 
-  for (const d of made) d.close();
+  // Native ONNX loading/inference must settle before a worker's N-API
+  // environment is destroyed. Exercise fresh processes, as server startup
+  // followed immediately by SIGTERM otherwise only failed intermittently.
+  for (const phase of ['loading', 'decoding', 'missing-model']) {
+    const result = spawnSync(process.execPath, ['-e', `
+      const assert = require('assert/strict');
+      const { DeepCwDecoder } = require('./src/audio/deepcw-decoder');
+      (async () => {
+        const phase = ${JSON.stringify(phase)};
+        const decoder = new DeepCwDecoder(phase === 'missing-model' ? { modelPath: '/nonexistent/deepcw.onnx' } : {});
+        let settled = false, premature = false;
+        const engine = decoder._engine;
+        const terminate = engine._worker.terminate.bind(engine._worker);
+        engine._worker.terminate = () => { premature ||= !settled; return terminate(); };
+        let pending;
+        if (phase === 'decoding') {
+          await decoder._ready;
+          pending = engine.decode(new Float32Array(32000));
+          pending.then(() => { settled = true; });
+        } else {
+          engine._worker.on('message', (message) => {
+            if (message.type === 'ready' || message.type === 'load-error') settled = true;
+          });
+        }
+        const closing = decoder.close();
+        assert.ok(closing && typeof closing.then === 'function', 'close must expose native cleanup completion');
+        assert.equal(decoder.close(), closing, 'close must be idempotent');
+        await Promise.all([closing, pending]);
+        assert.equal(premature, false, 'worker terminated before native work settled');
+      })().catch((error) => { console.error(error); process.exitCode = 1; });
+    `], { cwd: path.join(__dirname, '..'), encoding: 'utf8', timeout: 30000 });
+    check(result.status === 0, `worker close during ${phase} waits for native cleanup without a crash (${result.status ?? result.signal}; ${result.stderr.trim()})`);
+  }
+
+  await Promise.all(made.map((d) => d.close()));
 
   if (failures > 0) {
     console.error(`\n${failures} test(s) failed.`);
