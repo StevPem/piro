@@ -259,3 +259,27 @@ Other optional-tool audit: Whisper server/model is still absent for STT;
 RNNoise is absent but hidden in the current UI. DeepCW/ONNX, HamNoise WASM,
 VARA/Xara WASM, JS8 data and the other bundled modes are present. Neither
 Whisper nor RNNoise is required for radio control or RADE.
+
+
+## Mode-aware reconnect acceptance (build v137)
+
+The physical MK2 in USB/FIL2 rejected CI-V CW-stop17FF with FA while already
+receiving. Unconditional keyer stop therefore prevented Connect. Startup now
+releases PTT in every mode, reads the selected mode, requires keyer stop in
+CW/CW_R, and requires actual receive-state value0 before readiness. It does
+not change mode. Safety cleanup finishes before a manual cancellation releases
+an authenticated session. Model/read failures, rejected CW stop in CW, failed
+PTT release and non-receive readback remain fatal.
+
+Regressions failed before the fix; afterward all96 LAN subtests, the existing
+CI-V driver suite, version, syntax and diff checks passed. A timer-phase-sensitive
+packet-loss test was corrected to use the normal80ms reorder window instead
+of10ms, shorter than its20ms tick. The reconnect snapshot test still injects a
+confirmed tune between the state reads, after the added safety-mode query.
+
+Deployed code77dd9d8 was tested in USB/FIL2 at14,083,750Hz without changing
+mode or frequency. All3 radio UDP sockets closed and reopened. Receive audio
+and scope recovered (98 audio and60 scope frames in the short observation),
+with the same PID3098861 and zero restarts. Disconnect took24ms and Connect
+106ms in this single LAN observation. No RF was transmitted. The radio was
+left connected. See `icom-lan-hardware-results/usb-reconnect-fix.json`.

@@ -1,0 +1,27 @@
+{
+  "time": "2026-11-06T21:58:07.051Z",
+  "transmitTest": false,
+  "mainPidBefore": "3098861",
+  "frequencyBefore": 14083750,
+  "modeBefore": {
+    "mode": "USB",
+    "filter": 2
+  },
+  "radioSocketsBefore": 3,
+  "disconnectMs": 24,
+  "radioSocketsDisconnected": 0,
+  "audioFramesWhileOff": 0,
+  "scopeFramesWhileOff": 0,
+  "newBrowserSeesDisconnected": true,
+  "reconnectMs": 106,
+  "audioFramesAfterReconnect": 98,
+  "scopeFramesAfterReconnect": 60,
+  "radioSocketsAfter": 3,
+  "frequencyAfter": 14083750,
+  "modeAfter": {
+    "mode": "USB",
+    "filter": 2
+  },
+  "mainPidAfter": "3098861",
+  "passed": true
+}

@@ -6,7 +6,7 @@ application. USB remains the default connection.
 
 Integrated upstream StevPem/piro main at da2d962, retaining its Origin checks,
 heartbeat/PTT ownership, queue ordering/stale-ACK protection, backpressure,
-CW keyline/paddle support, JS8, STT and DeepCW worker. Build/cache is v136.
+CW keyline/paddle support, JS8, STT and DeepCW worker. Build/cache is v137.
 
 LAN initialization uses the authenticated session's advertised CI-V address
 then independently verifies the MK2 model, so custom addresses remain usable.
@@ -29,7 +29,7 @@ Integrated validation: TEST_RETRIES=0 npm run test:ci passed 65/65 file
 groups (68 LAN subtests) in 338 seconds. Syntax and diff checks passed.
 The hardware report records the exact scope and remaining limits.
 No new npm dependencies. No credentials are included in this change.
-The Pi now runs integrated build v136, including the RADE hotfix and shared
+The Pi now runs integrated build v137, including the RADE hotfix and shared
 radio manager. A receive-only live disconnect/reconnect test released all
 three radio UDP sockets, restored audio and scope, retained tuning/mode, and
 kept the same process with zero restarts. No RF was sent for that test.
@@ -63,3 +63,11 @@ restores reachable settings and releases streams; reconnect starts fresh audio
 and scope. UI polls/controls pause while offline, with keyboard and touch
 access. Lifecycle regressions cover rollback, delayed ACKs, retry cancellation,
 multiple callers, repeated reopen, audio recovery and queued TX discard.
+
+
+Mode-aware reconnect follow-up:
+The physical MK2 rejected CW-stop in USB. Startup now keeps the selected mode,
+releases PTT, stops the keyer only in CW modes, and verifies receive state.
+All96 LAN subtests and the CI-V driver/version checks passed. Physical USB/FIL2
+Disconnect/Connect retained14.083750MHz and restored audio/scope with no
+process restart or RF. The radio is left connected.
