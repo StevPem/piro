@@ -208,3 +208,23 @@ scrolling, the panel stayed in the viewport, and summary/action touch targets
 measured44px. Visual review passed at95/100 against the existing page style.
 Observations are in `icom-lan-hardware-results/radio-manager-browser.json`.
 No RF transmission was made for this feature's fixture/browser checks.
+
+
+### Physical manager acceptance after deployment
+
+Build v136 (`0308ffa`) was deployed to the Pi on 2026-11-06 and tested against
+the physical IC-7300MK2 in receive. Two WebSocket clients retained their
+browser connections while one disconnected the radio; a newly opened third
+client also saw the deliberate disconnected state. All three radio UDP sockets
+were released, and no RX audio or scope frames arrived during the off interval.
+Connect reopened all three sockets and restored99 audio frames and60 scope
+frames over the short capture. Frequency remained10,120,710Hz, CW/FIL2 before
+and after. The process remained PID3083076 with zero restarts. Measured local
+operations were23ms to disconnect and83ms to reconnect; these are one LAN
+observation, not general latency guarantees. The test left the radio connected.
+No RF transmission was made. Full observations are in
+`icom-lan-hardware-results/radio-manager-live.json`.
+
+This deployment supersedes the earlier note that only the RADE hotfix had
+been deployed: the Pi now runs the integrated upstream build plus RADE fix
+and the shared radio manager. The native RADE tools are still absent.

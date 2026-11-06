@@ -29,8 +29,10 @@ Integrated validation: TEST_RETRIES=0 npm run test:ci passed 65/65 file
 groups (68 LAN subtests) in 338 seconds. Syntax and diff checks passed.
 The hardware report records the exact scope and remaining limits.
 No new runtime dependencies. No credentials are included in this change.
-The Pi retains the earlier LAN build with only the separately verified RADE
-broken-pipe hotfix; the full integrated build has not been deployed.
+The Pi now runs integrated build v136, including the RADE hotfix and shared
+radio manager. A receive-only live disconnect/reconnect test released all
+three radio UDP sockets, restored audio and scope, retained tuning/mode, and
+kept the same process with zero restarts. No RF was sent for that test.
 
 Limits:
 No independent RF power/spectrum or digital decoder measurement, firmware
