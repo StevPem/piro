@@ -187,3 +187,24 @@ FreeDV was disabled delivered 76 RX audio frames and 48 scope frames during the
 short check. The result is in `icom-lan-hardware-results/rade-crash-fix.json`.
 No RF transmission was made for this check. The missing native RADE tools
 still prevent actual FreeDV encoding/decoding; that remains separate setup work.
+
+
+## Shared radio manager (build v136)
+
+The final candidate passed `TEST_RETRIES=0 npm run test:ci`: **65/65 groups in
+340 seconds**, including **79/79 LAN subtests**. Eleven new lifecycle cases
+cover shared browser status, native-only management, repeated reopening and
+raw PCM recovery, retry/handshake cancellation, receive-setting rollback
+before session release, delayed parameter-write ACKs, rapid caller intents,
+restored automatic retry, and discarding mock transmission/audio on close.
+Existing reconnect snapshot coverage still verifies that a confirmed driver
+tune between initialization reads wins over an older read; browser mutations
+are deliberately gated until the managed session is ready.
+
+Chrome checks verified Connect/Disconnect without losing the browser link,
+disabled tuning/PTT while offline, recovery on reconnect, keyboard operation,
+and no browser errors. At 375/414/768/1024/1440px there was no horizontal
+scrolling, the panel stayed in the viewport, and summary/action touch targets
+measured44px. Visual review passed at95/100 against the existing page style.
+Observations are in `icom-lan-hardware-results/radio-manager-browser.json`.
+No RF transmission was made for this feature's fixture/browser checks.

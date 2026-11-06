@@ -38,10 +38,128 @@ function createRadio(env = process.env) {
   });
 }
 
+// Keeps deliberate disconnection separate from an interrupted LAN session.
+// The latest requested state wins; a pending open can always be cancelled.
+class RadioConnectionManager {
+  constructor(civ, controlServer) {
+    this.civ = civ;
+    this.controlServer = controlServer;
+    this.manual = false;
+    this._task = null;
+    this._connecting = false;
+    this._closing = false;
+    this._intent = 0;
+    this._cancelOpen = null;
+  }
+
+  get ready() {
+    return !this.manual && !this._connecting && !this._closing
+      && this.civ.session.connected && this.civ.prepared;
+  }
+
+  publish(data, deliberate = false) {
+    if (!deliberate && (this._closing || this.manual)) return;
+    const status = { transport: 'lan', managed: true, manual: this.manual,
+      radioAddr: this.civ.radioAddr, ...(this.civ.profile ? { model: this.civ.profile.name } : {}), ...data };
+    this.controlServer.state.radioConnection = status;
+    this.controlServer.broadcastJsonEvent('radio-connection', status);
+  }
+
+  setConnected(connected) {
+    if (typeof connected !== 'boolean') throw new Error('"connected" must be a boolean');
+    if (!connected && this.manual && !this._task && this.controlServer.state.radioConnection?.state === 'disconnected') {
+      return this.controlServer.state.radioConnection;
+    }
+    // An already desired automatic connection may be retrying by itself.
+    // Do not start a second association beside its pending retry timer.
+    if (connected && !this.manual && !this.civ.session.stopped && this.civ.session.state !== 'failed') {
+      return this.controlServer.state.radioConnection;
+    }
+    this.manual = !connected;
+    ++this._intent;
+    this.civ.manuallyDisconnected = !connected;
+    if (!connected) {
+      // Stop retrying immediately, while retaining the association long enough
+      // for close() to stop CW/PTT and restore the radio's input settings.
+      this.civ.session.stopped = true;
+      clearTimeout(this.civ.session.retryTimer);
+      this.civ.prepared = false;
+      this.controlServer.state.ptt = null;
+      this.controlServer._pttOwner = null;
+      this.controlServer._armOrClearPttWatchdog?.(false);
+      this.controlServer.emit('radio-disconnected');
+      this.publish({ state: 'disconnecting' }, true);
+      // Authenticated initialization checks the manual flag between complete
+      // CI-V transactions, preserving ACK correlation and rolling settings
+      // back before close. A handshake has no settings to restore.
+      if (this._connecting && !this.civ.session.connected) {
+        this._cancelOpen = this.civ.session.close().catch((err) => this.controlServer.broadcastJsonEvent('rig-error', { message: err.message }));
+      }
+    }
+    this._start();
+    return this.controlServer.state.radioConnection;
+  }
+
+  _start() {
+    if (this._task) return;
+    this._task = this._reconcile().catch((err) => {
+      this.publish({ state: 'failed', message: err.message }, true);
+    }).finally(() => {
+      this._task = null;
+      const state = this.controlServer.state.radioConnection?.state;
+      if ((this.manual && !['disconnected', 'failed'].includes(state)) || (!this.manual && state === 'disconnected')) this._start();
+    });
+  }
+
+  async _reconcile() {
+    while (true) {
+      if (this._cancelOpen) {
+        await this._cancelOpen;
+        this._cancelOpen = null;
+      }
+      if (this.manual) {
+        this._closing = true;
+        try { await this.civ.close(); }
+        finally { this._closing = false; }
+        this.civ.prepared = false;
+        this.publish({ state: 'disconnected' }, true);
+        if (this.manual) return;
+      } else {
+        if (this.civ.session.connected && this.civ.prepared) {
+          this.civ.session.stopped = false;
+          this.civ.capture.start();
+          this.civ.playback.start();
+          this.publish({ state: 'connected' }, true);
+          return;
+        }
+        this._connecting = true;
+        const intent = this._intent;
+        this.civ.session.attempts = 0;
+        this.publish({ state: 'connecting' }, true);
+        try {
+          await this.civ.open();
+          if (intent !== this._intent) continue;
+          if (this.manual) continue;
+          this.civ.capture.start();
+          this.civ.playback.start();
+          this.publish({ state: 'connected' }, true);
+        } catch (err) {
+          if (intent !== this._intent) continue;
+          if (!this.manual) { this.publish({ state: 'failed', message: err.message }, true); return; }
+        } finally { this._connecting = false; }
+        if (!this.manual) return;
+      }
+    }
+  }
+}
+
 // Uses the existing rig-error UI plus a structured status event/snapshot.
 // No credential or token is ever put in browser state.
 function wireRadioConnection(civ, controlServer) {
+  const manager = civ.session ? new RadioConnectionManager(civ, controlServer) : null;
+  controlServer.radioConnectionManager = manager;
   const publish = (data) => {
+    if (manager) { manager.publish(data); return; }
     controlServer.state.radioConnection = data;
     controlServer.broadcastJsonEvent('radio-connection', data);
   };
@@ -59,6 +177,7 @@ function wireRadioConnection(civ, controlServer) {
     controlServer.broadcastJsonEvent('rig-error', { message: 'Radio LAN connection lost. Transmission state is unknown; reconnect will not replay commands.' });
   });
   const ready = (radioState) => {
+    if (manager?.manual) return;
     controlServer.state.radioAddr = civ.radioAddr;
     if (radioState) {
       controlServer.state.frequency = radioState.frequency;
@@ -78,6 +197,7 @@ function wireRadioConnection(civ, controlServer) {
   };
   civ.on('radio-ready', ready);
   if (civ.radioState) ready(civ.radioState);
+  return manager;
 }
 
-module.exports = { createRadio, wireRadioConnection };
+module.exports = { createRadio, wireRadioConnection, RadioConnectionManager };

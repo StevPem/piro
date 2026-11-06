@@ -157,6 +157,9 @@ class CivDriver extends EventEmitter {
   }
 
   _wirePortEvents() {
+    // Manual LAN disconnect/reconnect reuses the same transport object.
+    if (this._wiredPort === this.port) return;
+    this._wiredPort = this.port;
     this.port.on('data', (chunk) => this._handleData(chunk));
     this.port.on('error', (err) => this.emit('error', err));
     this.port.on('close', () => {
@@ -170,6 +173,8 @@ class CivDriver extends EventEmitter {
   /** Close the serial connection. */
   close() {
     this.cancelPending(new Error('CI-V driver closing'));
+    this._parser.reset();
+    this._scope.reset();
     return new Promise((resolve, reject) => {
       if (!this.port || (!this.port.isOpen && !this._transport)) {
         resolve();

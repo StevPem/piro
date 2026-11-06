@@ -1,0 +1,62 @@
+{
+  "build": 136,
+  "target": "isolated localhost radio peer",
+  "browser": "Chrome",
+  "browserErrors": 0,
+  "flow": {
+    "disconnect": {
+      "radio": "Radio disconnected",
+      "browser": "Connected",
+      "action": "Connect",
+      "frequencyDisabled": true
+    },
+    "reconnect": {
+      "radio": "Radio connected",
+      "browser": "Connected",
+      "action": "Disconnect",
+      "frequencyDisabled": false
+    }
+  },
+  "layouts": [
+    {
+      "width": 375,
+      "horizontalOverflow": false,
+      "panelFitsViewport": true,
+      "summaryHeight": 44,
+      "actionHeight": 44
+    },
+    {
+      "width": 414,
+      "horizontalOverflow": false,
+      "panelFitsViewport": true,
+      "summaryHeight": 44,
+      "actionHeight": 44
+    },
+    {
+      "width": 768,
+      "horizontalOverflow": false,
+      "panelFitsViewport": true,
+      "summaryHeight": 44,
+      "actionHeight": 44
+    },
+    {
+      "width": 1024,
+      "horizontalOverflow": false,
+      "panelFitsViewport": true,
+      "summaryHeight": 44,
+      "actionHeight": 44
+    },
+    {
+      "width": 1440,
+      "horizontalOverflow": false,
+      "panelFitsViewport": true,
+      "summaryHeight": 44,
+      "actionHeight": 44
+    }
+  ],
+  "keyboard": "Space opens native dropdown without reaching global PTT shortcut; keyup safety release retained",
+  "visualVerdict": {
+    "score": 95,
+    "verdict": "pass"
+  }
+}

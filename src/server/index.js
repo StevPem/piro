@@ -423,6 +423,12 @@ async function main() {
     easypalTxBridge?.abort();
     wsprBridge?.setTx({ enabled: false });
     js8Bridge?.request({ action: 'stop' }).catch((err) => console.error('Could not stop JS8 after radio loss:', err.message));
+    ft8Bridge?.cancelTx('Radio disconnected');
+    if (controlServer.state.freeDvActive) {
+      controlServer.state.freeDvActive = false;
+      controlServer.emit('freedv-active', false);
+      controlServer._broadcastAppModes();
+    }
     if (controlServer.state.varaActive) controlServer.setVaraActiveFromServer(false);
     // Stop pipelines while the actual radio state remains unknown. This is
     // an internal producer signal; the browser snapshot keeps ptt=null.

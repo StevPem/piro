@@ -89,6 +89,32 @@ ports and advertise their actual bound ports in the authenticated request.
 This version targets IPv4 and an ordinary LAN/VPN path; routed/NAT behavior
 still needs physical validation.
 
+## Connect and disconnect from the browser
+
+Open **Radio connected** beside **Connected (1)** in the top-right header.
+Choose **Disconnect** to release the radio, or **Connect** to use the configured
+radio again. The browser remains connected to PiRO, so the page, speaker
+setting and operator notes remain available.
+
+This is one shared radio connection: a change from any browser is reflected
+in every other browser. While disconnected or changing connection, tuning,
+radio settings and transmit controls are disabled. Disconnect stops local
+transmit work, attempts CW/PTT release and restores saved routing settings
+while the radio is reachable, then releases the LAN streams and cancels
+retrying. Connect starts a fresh authenticated session and restores receive
+audio and scope; queued transmissions are never resumed.
+
+A deliberate disconnect pauses automatic reconnect until Connect is selected.
+This choice lasts for the running server process; normal automatic connection
+at server startup is unchanged. The manager is available for native LAN;
+USB behavior is unchanged. Radio address, credentials and ports remain in
+the private server configuration rather than the browser.
+
+The browser RPC is `setRadioConnected` with `{connected: boolean}`. It
+acknowledges the requested operation immediately; `radio-connection` events
+and fresh-client snapshots carry the resulting state, `managed` capability
+and `manual` flag. Errors and connection progress appear in the dropdown.
+
 ## What happens during operation
 
 The header shows radio connection status separately from browser connection

@@ -66,7 +66,7 @@ test('PTT watchdog preserves unknown radio state when a LAN release cannot be co
 
 test('confirmed LAN receive after reconnect clears the previous watchdog and PTT owner', async (t) => {
   const civ = new EventEmitter();
-  Object.assign(civ, { session: {}, radioAddr: 0xb6, async setPtt() {} });
+  Object.assign(civ, { session: { connected: true }, prepared: true, radioAddr: 0xb6, async setPtt() {} });
   const cs = new ControlServer({ civ, port: 0 });
   await cs.listen();
   t.after(() => cs.close());
@@ -389,17 +389,18 @@ test('failed reconnect initialization restores RX settings before failing the as
   assert.equal(peer.parameters.get('0079')[0], 1);
 });
 
-test('reconnect snapshot also preserves a client tune completed between state reads', async (t) => {
+test('reconnect snapshot preserves a confirmed driver tune completed between state reads', async (t) => {
   const { peer, driver, cs } = await setup(t, { reconnectAttempts: 1, reconnectMs: 20 });
   const original = peer.civ.bind(peer);
-  const replies = [], frequencies = [];
+  const frequencies = [];
   cs.on('frequency', (hz) => frequencies.push(hz));
   let request;
   peer.civ = (frame, association) => {
     if (!request && frame[4] === 4) {
-      request = cs._handleMessage({ send: (raw) => replies.push(JSON.parse(raw)) }, Buffer.from(JSON.stringify({
-        id: 'tune-during-reconnect', type: 'setFrequency', value: 14200000,
-      })));
+      // Browser mutations are now gated until the managed link is ready.
+      // Keep testing the lower-level race: a confirmed tune arriving between
+      // initialization reads must still win over its earlier frequency read.
+      request = driver.setFrequency(14200000);
     }
     original(frame, association);
   };
@@ -407,7 +408,6 @@ test('reconnect snapshot also preserves a client tune completed between state re
   peer.release();
   await ready;
   await request;
-  assert.equal(replies[0].ok, true);
   assert.equal(cs.state.frequency, 14200000);
   assert.equal(driver.radioState.frequency, 14200000);
   assert.equal(await driver.getFrequency(), 14200000);

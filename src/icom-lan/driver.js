@@ -80,6 +80,10 @@ class IcomLanDriver extends CivDriver {
     this.prepared = false;
     return this.queueSettings(async (generation) => {
       let identified = false;
+      const checkCancelled = () => {
+        this.assertSession(generation);
+        if (this.manuallyDisconnected) throw new Error('Radio connection cancelled by operator');
+      };
       try {
         this.emit('connection-status', { transport: 'lan', state: 'identifying' });
         // Direct-radio LAN sessions advertise the configured CI-V address.
@@ -98,19 +102,24 @@ class IcomLanDriver extends CivDriver {
         // state is stopped before accepting a new operator command.
         await super.stopCw();
         await super.setPtt(false);
+        checkCancelled();
         await this.restore(this.txSaved).catch((err) => this.emit('restore-error', err));
+        checkCancelled();
         // AF, not the 12 kHz IF stream; open squelch preserves decoder input.
         for (const parameter of [MK2.afSelect, MK2.afSql]) {
           const old = await this.readParameter(parameter);
+          checkCancelled();
           if (old !== 0) {
             this.saveSetting(this.rxSaved, { parameter, value: 0 }, old);
             await this.writeParameter(parameter, 0);
+            checkCancelled();
           }
         }
         for (const [key, read] of [['frequency', () => this.getFrequency()],
           ['mode', () => this.getMode()], ['dataMode', () => this.getDataMode()]]) {
           const revision = this.stateRevision[key];
           const value = await read();
+          checkCancelled();
           // A transceive notification or confirmed local change received
           // during the read is newer than its reply. Keep that observation.
           if (revision === this.stateRevision[key]) this.radioState[key] = value;
@@ -214,6 +223,7 @@ class IcomLanDriver extends CivDriver {
   }
 
   setPtt(on, options = {}) {
+    if (on && this.manuallyDisconnected) return Promise.reject(new Error('Radio is manually disconnected'));
     const revision = ++this.txRevision;
     // Cancel local audio immediately on release; serialize radio routing and
     // restoration so an older release cannot restore MIC after a newer key.
@@ -250,6 +260,7 @@ class IcomLanDriver extends CivDriver {
   }
 
   async sendCw(text) {
+    if (this.manuallyDisconnected) throw new Error('Radio is manually disconnected');
     if (!this.prepared) throw new Error('LAN radio is not ready for CW');
     return super.sendCw(text);
   }

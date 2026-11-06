@@ -6,7 +6,7 @@ application. USB remains the default connection.
 
 Integrated upstream StevPem/piro main at da2d962, retaining its Origin checks,
 heartbeat/PTT ownership, queue ordering/stale-ACK protection, backpressure,
-CW keyline/paddle support, JS8, STT and DeepCW worker. Build/cache is v135.
+CW keyline/paddle support, JS8, STT and DeepCW worker. Build/cache is v136.
 
 LAN initialization uses the authenticated session's advertised CI-V address
 then independently verifies the MK2 model, so custom addresses remain usable.
@@ -48,3 +48,13 @@ callers. Failed TX clears buffered playback and requests PTT off while keeping
 raw mic muted until confirmed release. Verified by 91 pipeline/bridge checks
 and a live missing-codec RX smoke check: same PID, zero restarts, audio and
 scope recovered after disabling FreeDV. Native RADE tools are still absent.
+
+
+Shared radio connection manager:
+Top-right radio-status dropdown beside the browser Connected/count indicator
+can release and reopen the configured native LAN session without stopping
+PiRO. All browsers share status. Manual disconnect stops retries/transmit work,
+restores reachable settings and releases streams; reconnect starts fresh audio
+and scope. UI polls/controls pause while offline, with keyboard and touch
+access. Lifecycle regressions cover rollback, delayed ACKs, retry cancellation,
+multiple callers, repeated reopen, audio recovery and queued TX discard.

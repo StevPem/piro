@@ -5391,3 +5391,20 @@ Items 8 and 15 from the code review, and two requests. Not tested on air
 - Earlier physical-radio evidence and remaining checks are recorded in
   `docs/icom-lan-hardware-validation.md`; the integrated build needs a fresh
   hardware sweep after deployment. Service-worker cache v135.
+
+
+### Shared LAN radio connection manager (v136)
+
+- The header groups the browser's Connected/count indicator with an accessible
+  radio-status dropdown. Connect/Disconnect affects the shared native LAN
+  session, not the browser connection. USB behavior is unchanged.
+- Deliberate disconnect cancels retries and queued transmit work, releases
+  CW/PTT and restores reachable radio routing before closing the streams.
+  Reconnect starts fresh audio and scope without accumulating listeners.
+- Radio controls and polling pause while disconnected; speaker and notes remain
+  available. Keyboard operation inside the manager does not trigger Space PTT.
+- Initialization cancellation waits for a confirmed CI-V transaction boundary,
+  restores RX settings before releasing the association, and does not reuse a
+  late ACK. Rapid changes from different browsers settle at the latest request.
+- The manual state is process-scoped; normal startup still auto-connects.
+  Service-worker cache v136. See `docs/icom-lan.md` for operation.

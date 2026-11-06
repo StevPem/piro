@@ -453,6 +453,7 @@ class ControlServer extends EventEmitter {
 
       ws.on('message', (raw, isBinary) => {
         if (isBinary) {
+          if (this.radioConnectionManager && !this.radioConnectionManager.ready) return;
           this.emit('binary-message', ws, raw);
           return;
         }
@@ -698,7 +699,26 @@ class ControlServer extends EventEmitter {
     }
 
     try {
+      const deactivating = msg.active === false && [REQUEST.SET_FT8_ACTIVE, REQUEST.SET_FREEDV_ACTIVE,
+        REQUEST.SET_JTTY_ACTIVE, REQUEST.SET_OLIVIA_ACTIVE, REQUEST.SET_HELL_ACTIVE, REQUEST.SET_JS8_ACTIVE,
+        REQUEST.SET_VARA_ACTIVE, REQUEST.SET_SSTV_ACTIVE, REQUEST.SET_WSPR_ACTIVE, REQUEST.SET_FAX_ACTIVE,
+        REQUEST.SET_EASYPAL_ACTIVE].includes(type);
+      const stopping = [REQUEST.ABORT_CW, REQUEST.ABORT_TTY, REQUEST.ABORT_SSTV, REQUEST.ABORT_EASYPAL].includes(type)
+        || (type === REQUEST.SET_PTT && msg.value === false);
+      if (this.radioConnectionManager && !this.radioConnectionManager.ready
+        && ![REQUEST.SET_RADIO_CONNECTED, REQUEST.SET_AUDIO_CODEC, REQUEST.POST_NOTE,
+          REQUEST.GET_SSTV_PICTURES, REQUEST.GET_BAND_CONDITIONS].includes(type)
+        && !deactivating && !stopping) {
+        throw new Error('Radio is disconnected or changing connection; connect the radio first');
+      }
       switch (type) {
+        case REQUEST.SET_RADIO_CONNECTED: {
+          if (typeof msg.connected !== 'boolean') throw new Error('"connected" must be a boolean');
+          if (!this.radioConnectionManager) throw new Error('Radio connection management is available for native LAN connections only');
+          const radioConnection = this.radioConnectionManager.setConnected(msg.connected);
+          ws.send(makeResult(id, { radioConnection }));
+          break;
+        }
         case REQUEST.GET_FREQUENCY: {
           const value = await this.civ.getFrequency();
           this.state.frequency = value;
@@ -1563,6 +1583,9 @@ class ControlServer extends EventEmitter {
    * rather than needing a separate exemption path for automated TX.
    */
   async setPttFromServer(on, { except, owner, urgent = false } = {}) {
+    if (on && this.radioConnectionManager && !this.radioConnectionManager.ready) {
+      throw new Error('Radio is not connected and ready');
+    }
     await this.civ.setPtt(on, { urgent });
     this.state.ptt = on;
     // `owner`: the browser that keyed it (REQUEST.SET_PTT); none when a bridge keyed it.

@@ -26,14 +26,27 @@
         <h1 class="panel__title"><a class="panel__title-link" id="app-title-link" href="https://github.com/StevPem/piro" target="_blank" rel="noopener" title="PiRO's source code (AGPL-3.0)">PiRO</a></h1>
         <span class="app-version" id="app-version"></span>
       </div>
-      <span class="led">
-        <span class="led__dot" id="led-dot" data-state="connecting"></span>
-        <span id="led-text">Connecting&hellip;</span>
-        <!-- How many browsers are connected, this one included: "(2)".
-             From the server's connect snapshot and 'clients' events. -->
-        <span class="led__count" id="led-count" hidden></span>
-      </span>
-      <span class="radio-link-status" id="radio-link-status" role="status" hidden></span>
+      <div class="panel__connections">
+        <span class="led" title="Browser connection to PiRO">
+          <span class="led__dot" id="led-dot" data-state="connecting"></span>
+          <span id="led-text">Connecting&hellip;</span>
+          <!-- How many browsers are connected, this one included: "(2)".
+               From the server's connect snapshot and 'clients' events. -->
+          <span class="led__count" id="led-count" hidden></span>
+        </span>
+        <details class="radio-manager" id="radio-connection-manager" hidden>
+          <summary class="radio-manager__toggle" aria-label="Manage radio connection">
+            <span class="radio-link-status" id="radio-link-status" role="status">Radio</span>
+            <span class="radio-manager__arrow" aria-hidden="true">&#9662;</span>
+          </summary>
+          <div class="radio-manager__panel">
+            <p class="radio-manager__heading">Radio connection</p>
+            <p id="radio-connection-message">This connection is shared by all browsers.</p>
+            <button class="chip radio-manager__action" id="radio-connection-action" type="button" disabled>Disconnect</button>
+            <p class="radio-manager__error" id="radio-connection-error" role="alert" hidden></p>
+          </div>
+        </details>
+      </div>
     </header>
 
     <div class="panel__body">

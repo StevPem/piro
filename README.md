@@ -12,7 +12,7 @@ Hamlib, no separate audio server and no extra apps.
 Written by VK3TR. Licensed AGPL-3.0-only (see
 [Licence](#licence)).
 
-**Current build: v135.** This is the version the app shows next to its title.
+**Current build: v136.** This is the version the app shows next to its title.
 It is the `CACHE_NAME` number in `src/client/sw.js`, which goes up with every
 change to the web app.
 
@@ -131,6 +131,8 @@ failure and long-session validation remains pending. See the
 [hardware test record](docs/icom-lan-hardware-validation.md),
 [LAN setup and hardware validation](docs/icom-lan.md) and
 [protocol/source evidence](docs/icom-lan-sources.md). USB remains the default.
+Use the **Radio connected** dropdown beside **Connected (1)** to disconnect
+and reconnect the shared LAN radio while leaving PiRO and its browsers running.
 The [LAN audit fixes](docs/icom-lan-audit-fixes.md) cover connection timing,
 audio integrity, PTT/QSY ordering, restoration and reconnect state. Build v122
 also covers overlapping restores, operator changes and cancelled VARA drains.

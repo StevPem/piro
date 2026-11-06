@@ -239,7 +239,10 @@ class IcomSession extends EventEmitter {
   }
 
   async fail(err, retry = true) {
-    if (this.tearingDown || this.stopped) return;
+    // A deliberate graceful disconnect disables retries before its unkey/
+    // restoration commands finish. A failure must still invalidate an open
+    // association, so late ACKs cannot confirm a subsequent cleanup command.
+    if (this.tearingDown || (this.stopped && !this.connected)) return;
     this.tearingDown = true;
     this.connected = false;
     ++this.generation;
