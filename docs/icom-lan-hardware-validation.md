@@ -228,3 +228,34 @@ No RF transmission was made. Full observations are in
 This deployment supersedes the earlier note that only the RADE hotfix had
 been deployed: the Pi now runs the integrated upstream build plus RADE fix
 and the shared radio manager. The native RADE tools are still absent.
+
+
+## Native RADE installation and software acceptance
+
+On 2026-11-06, native ARM64 tools from `freedv/rade_c` commit
+`c8a3dc156045cae2cd251e1a4be0c304c9ddf2f9` were built on the Pi5 with its
+pinned Opus/FARGAN dependency (`940d4e5af64351ca8ba8390df3f555484c567fbb`).
+Installed `radae_tx`, `radae_rx`, `lpcnet_demo`, WAV helpers and `real2iq` in
+`/usr/local/bin`, with `librade.so.0.1` and its symlink in `/usr/local/lib`.
+The runtime library path explicitly uses that persistent directory and was
+checked after deleting the temporary RAM build. Build sources, licenses,
+manifest/checksums, log and sample decoded speech are retained under
+`/usr/local/share/piro-native-tools/rade/`.
+
+RADE V1 native feature/encode/decode/synthesis and WAV round trips passed on
+9.82seconds of supplied test speech; the upstream V1 text tests passed6/6.
+PiRO's actual `RadeBridge` receive path, using installed native subprocesses,
+decoded9.43seconds of generated modem audio without codec errors. No radio or
+RF output was attached to that test. JSON observations and installed binary
+hashes are in `icom-lan-hardware-results/native-rade-*.json`.
+
+The operator had deliberately disconnected the real radio, so that state was
+preserved. PiRO remained PID3083076 with zero restarts; no restart or radio
+connection was required for installation. This supersedes earlier historical
+notes that the native RADE tools were absent. Actual on-air RADE audio and RF
+performance are not certified by software loopback tests.
+
+Other optional-tool audit: Whisper server/model is still absent for STT;
+RNNoise is absent but hidden in the current UI. DeepCW/ONNX, HamNoise WASM,
+VARA/Xara WASM, JS8 data and the other bundled modes are present. Neither
+Whisper nor RNNoise is required for radio control or RADE.

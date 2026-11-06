@@ -1,0 +1,62 @@
+{
+  "installedAt": "2026-11-06T21:34:51.237417+00:00",
+  "source": "https://github.com/freedv/rade_c",
+  "sourceCommit": "c8a3dc156045cae2cd251e1a4be0c304c9ddf2f9",
+  "architecture": "aarch64",
+  "defaultPiROProtocol": "RADE v1",
+  "opusCommit": "940d4e5af64351ca8ba8390df3f555484c567fbb",
+  "installPrefix": "/usr/local",
+  "runtimeLibraryPath": "/usr/local/lib",
+  "buildType": "Release",
+  "parallelBuildJobs": 2,
+  "sourceArchive": "/usr/local/share/piro-native-tools/rade/rade_c-c8a3dc1-source.tar.gz",
+  "files": [
+    {
+      "path": "/usr/local/bin/radae_tx",
+      "bytes": 71824,
+      "sha256": "db07afc4b442aa9e5e93c9c0455b409e2d66598bb88c1ca30e2afe33e0dadb5f"
+    },
+    {
+      "path": "/usr/local/bin/radae_rx",
+      "bytes": 72104,
+      "sha256": "346a67556bfdc36a2b0a2f36e71f289b15121b3423aaf65b9bf250a283820d1e"
+    },
+    {
+      "path": "/usr/local/bin/lpcnet_demo",
+      "bytes": 1337496,
+      "sha256": "f6d107decda630e75055607ff844813ba777001ac0658379974a3812b5344090"
+    },
+    {
+      "path": "/usr/local/bin/rade_tx_wav",
+      "bytes": 434800,
+      "sha256": "de56427b3c91eb9408eaafc489a67f0526372629bd91f314e2c842a0f9877e25"
+    },
+    {
+      "path": "/usr/local/bin/rade_rx_wav",
+      "bytes": 967440,
+      "sha256": "c4e8e0dfc844e385ef326edcd96e03a667ac9ad59c802105ab27184c47eaeca0"
+    },
+    {
+      "path": "/usr/local/bin/real2iq",
+      "bytes": 70904,
+      "sha256": "7e98f4f07fc041a7bc0b2e1e61c002a065d7d21508f1e9f6c0aca3b1f08aef04"
+    },
+    {
+      "path": "/usr/local/lib/librade.so.0.1",
+      "bytes": 29386176,
+      "sha256": "8137597ad2c8ec867b90906ef7010217a24a37049fbe1ab50f666473c10ef7aa"
+    }
+  ],
+  "validation": {
+    "v1TextTestsPassed": "6/6",
+    "nativeSpeechRoundTrip": true,
+    "wavSpeechRoundTrip": true,
+    "actualPiRORxPipelineDecodedSeconds": 9.43,
+    "rfTransmission": false
+  },
+  "otherTools": {
+    "WhisperSTT": "optional; server and model not installed",
+    "RNNoise": "optional; not installed; hidden in current UI",
+    "otherRadioModes": "bundled assets and current prerequisites present"
+  }
+}

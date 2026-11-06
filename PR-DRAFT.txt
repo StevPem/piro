@@ -28,7 +28,7 @@ See docs/icom-lan-hardware-validation.md for observations and limits.
 Integrated validation: TEST_RETRIES=0 npm run test:ci passed 65/65 file
 groups (68 LAN subtests) in 338 seconds. Syntax and diff checks passed.
 The hardware report records the exact scope and remaining limits.
-No new runtime dependencies. No credentials are included in this change.
+No new npm dependencies. No credentials are included in this change.
 The Pi now runs integrated build v136, including the RADE hotfix and shared
 radio manager. A receive-only live disconnect/reconnect test released all
 three radio UDP sockets, restored audio and scope, retained tuning/mode, and
@@ -49,7 +49,10 @@ Contains asynchronous child pipe failures and stops pipelines before notifying
 callers. Failed TX clears buffered playback and requests PTT off while keeping
 raw mic muted until confirmed release. Verified by 91 pipeline/bridge checks
 and a live missing-codec RX smoke check: same PID, zero restarts, audio and
-scope recovered after disabling FreeDV. Native RADE tools are still absent.
+scope recovered after disabling FreeDV. Native RADE tools have subsequently
+been built and installed; native and actual PiRO RX software round trips
+passed without RF, and the V1 text tests passed6/6. Whisper STT is still optional
+and unconfigured. Installation evidence is recorded in the hardware report.
 
 
 Shared radio connection manager:
