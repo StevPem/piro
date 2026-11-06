@@ -318,3 +318,14 @@ verify termination occurs only after native work settles. Transmit producers
 are cancelled before shutdown waits for decoder cleanup.
 
 Fixture/browser observations are in `icom-lan-hardware-results/idle-*.json`.
+
+
+### Idle preference after physical deployment
+
+Deployed v138 code0b8c865 to the Pi on2026-11-06. The real server loaded
+60 minutes, saved60 in the service user's private radio-connection.json
+(mode0600), and a newly opened second WebSocket client saw60. The radio stayed
+connected and the process remained PID3105039 with no restart during this
+check. No RF was transmitted. A real60-minute hardware wait was not performed;
+expiry itself was validated with fake clocks and the one-minute wall-clock
+synthetic-radio check. See `icom-lan-hardware-results/idle-live-check.json`.

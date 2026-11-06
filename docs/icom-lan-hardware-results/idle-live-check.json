@@ -1,0 +1,15 @@
+{
+  "time": "2026-11-06T22:42:43.153Z",
+  "rfTransmission": false,
+  "mainPidBefore": "3105039",
+  "loadedMinutes": 60,
+  "radioStateBefore": "connected",
+  "savedMinutes": 60,
+  "settingsFile": "/home/s53zo/.config/piro/radio-connection.json",
+  "settingsMode": 384,
+  "freshBrowserSeesMinutes": 60,
+  "radioStateAfter": "connected",
+  "nextIdleDisconnectAt": 1794008563474,
+  "mainPidAfter": "3105039",
+  "passed": true
+}

@@ -87,3 +87,10 @@ Final idle validation:
 cases; shared browser settings at five viewport sizes; one-minute synthetic
 wall-clock expiry; Off/custom settings survive normal process restart.
 DeepCW load/decode-close regressions verify graceful native teardown.
+
+
+Deployment of v138:
+Real server persisted the shared60-minute preference and a fresh client saw
+it; the radio remained connected and the process stayed stable. Expiry was
+verified using fake clocks and one-minute synthetic-radio wall time, not an
+hour-long RF-hardware test. No RF was transmitted for idle validation.
