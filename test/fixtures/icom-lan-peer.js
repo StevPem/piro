@@ -150,7 +150,10 @@ class IcomPeer extends EventEmitter {
     } else if (p.length === 144 && p[21] === 3) {
       this.streamRequest = Buffer.from(p);
       const grant = envelope(144, 0, a.sid, a.client);
+      grant[20] = 3;
+      grant[21] = 0;
       a.authId.copy(grant, 26);
+      this.radioId.copy(grant, 32);
       grant[96] = 1;
       this.tracked('control', grant, a);
     }

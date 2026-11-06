@@ -173,7 +173,7 @@ class CwTxBridge {
     if (dropped.length) info.dropped = dropped;
     try {
       const mode = (await civ.getMode()).mode;
-      if (mode !== 'CW' && mode !== 'CW-R') throw new Error('Put the radio in CW first.');
+      if (mode !== 'CW' && mode !== 'CW_R' && mode !== 'CW-R') throw new Error('Put the radio in CW first.');
       prevSpeed = await civ.getKeySpeed().catch(() => null);
       prevBreakIn = await civ.getBreakIn().catch(() => null);
       if (prevSpeed !== speed) {

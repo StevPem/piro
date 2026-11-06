@@ -4,6 +4,8 @@
 // connect to the already configured PiRO server through its browser protocol.
 // node test/manual-lan-hardware.js [--controls] [--tx-dummy-load]
 // PIRO_TEST_URL, PIRO_TEST_OUTPUT; PIRO_TEST_SELF_SIGNED=1 for a local test cert.
+// TX defaults to 1 W and 200 ms PCM; PIRO_TEST_TX_WATTS (1..5),
+// PIRO_TEST_TX_MS (100..600, multiples of 20) may override those limits.
 const fs = require('node:fs');
 const assert = require('node:assert/strict');
 const WebSocket = require('ws');
@@ -12,6 +14,12 @@ const report = { startedAt: new Date().toISOString(), tests: [], restoration: []
 const delay = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
 const controls = process.argv.includes('--controls');
 const tx = process.argv.includes('--tx-dummy-load');
+const txWatts = Number(process.env.PIRO_TEST_TX_WATTS || 1);
+const txMs = Number(process.env.PIRO_TEST_TX_MS || 200);
+if (tx) {
+  assert.ok(Number.isInteger(txWatts) && txWatts >= 1 && txWatts <= 5, 'TX test power must be 1..5 W');
+  assert.ok(Number.isInteger(txMs) && txMs >= 100 && txMs <= 600 && txMs % 20 === 0, 'TX test PCM duration must be 100..600 ms in 20 ms frames');
+}
 const pending = new Map();
 const events = [];
 const stats = { audioFrames: 0, samples: 0, squares: 0, peak: 0, clipped: 0, scopeFrames: 0, pointCounts: {} };
@@ -117,7 +125,7 @@ async function main() {
         return { changed };
       } finally { other.terminate(); await request('setFrequency', original.Frequency); }
     });
-    for (const mode of ['LSB', 'USB', 'AM', 'FM', 'RTTY', 'CW']) await check(`mode ${mode}`, async () => {
+    for (const mode of ['LSB', 'USB', 'AM', 'FM', 'RTTY', 'RTTY_R', 'CW', 'CW_R']) await check(`mode ${mode}`, async () => {
       await request('setMode', { mode, filter: 1 });
       const actual = (await request('getMode')).value;
       assert.equal(actual.mode, mode); return actual;
@@ -150,12 +158,12 @@ async function main() {
   }
   if (tx) {
     report.txAuthorization = 'Operator confirmed dummy load and brief low-power transmission';
-    await check('5 W power setting', async () => {
-      await request('setTxPower', { watts: 5 });
+    await check(`${txWatts} W power setting`, async () => {
+      await request('setTxPower', { watts: txWatts });
       const watts = (await request('getTxPower')).watts;
-      assert.ok(watts <= 6 && watts > 0); return { requestedWatts: 5, readWatts: watts };
+      assert.ok(watts <= Math.min(5, txWatts + 1) && watts > 0); return { requestedWatts: txWatts, readWatts: watts };
     });
-    assert.ok((await request('getTxPower')).watts <= 6, 'Refusing TX above 6 W');
+    assert.ok((await request('getTxPower')).watts <= Math.min(5, txWatts + 1), 'Refusing TX above the test power limit');
     await request('setMode', { mode: 'USB', filter: 1 });
     await request('setDataMode', { on: false });
     for (const dataMode of [false, true]) await check(`brief ${dataMode ? 'DATA' : 'voice'} PTT with PCM tone`, async () => {
@@ -165,24 +173,29 @@ async function main() {
           try { ws.send(JSON.stringify({ id: 'watchdog-off', type: 'setPtt', value: false })); }
           catch (error) { report.watchdogError = error.message; }
         }
-      }, 2500);
+      }, 1500);
       const started = Date.now();
       try {
         await request('setPtt', { value: true });
-        for (let frame = 0; frame < 30; ++frame) {
+        for (let frame = 0; frame < txMs / 20; ++frame) {
           const pcm = Buffer.alloc(1921); pcm[0] = 1;
           for (let n = 0; n < 960; n++) pcm.writeInt16LE(Math.round(2000 * Math.sin((frame * 960 + n) * 2 * Math.PI * 700 / 48000)), 1 + n * 2);
           ws.send(pcm); await delay(20);
         }
-        return { pcmMilliseconds: 600, elapsedBeforeReleaseMs: Date.now() - started, toneHz: 700,
+        return { pcmMilliseconds: txMs, elapsedBeforeReleaseMs: Date.now() - started, toneHz: 700,
           swrRaw: (await request('getSWR')).value, alcRaw: (await request('getAlc')).value };
       } finally {
         try { await request('setPtt', { value: false }); }
         finally { clearTimeout(watchdog); }
       }
     });
-    await check('brief typed CW completion', async () => {
-      await request('setMode', { mode: 'CW', filter: 1 });
+    await check('reverse RTTY rejects audio PTT', async () => {
+      await request('setMode', { mode: 'RTTY_R', filter: 1 });
+      try { await assert.rejects(request('setPtt', { value: true }), /FSK RTTY/); }
+      finally { await request('setPtt', { value: false }); }
+    });
+    for (const mode of ['CW', 'CW_R']) await check(`brief typed ${mode} completion`, async () => {
+      await request('setMode', { mode, filter: 1 });
       const since = events.length;
       try {
         await request('sendCw', { text: 'E', wpm: 20 });
@@ -210,6 +223,21 @@ async function main() {
         }
         return events.slice(since).filter((e) => e.type === 'cw-tx-status').map((e) => e.data);
       } finally { await request('abortCw'); await request('setPtt', { value: false }); }
+    });
+    await check('reverse CW paddle element', async () => {
+      const since = events.length;
+      try {
+        await request('cwKey', { session: `audit-${Date.now()}`, t: 0, d: 60 });
+        const deadline = Date.now() + 1500;
+        while (!events.slice(since).some((e) => e.type === 'ptt' && e.data.value === false)) {
+          assert.ok(Date.now() < deadline, 'Paddle release was not confirmed');
+          await delay(20);
+        }
+        const edges = events.slice(since).filter((e) => e.type === 'ptt').map((e) => e.data.value);
+        assert.ok(edges.includes(true));
+        assert.equal(edges.at(-1), false);
+        return { mode: 'CW_R', requestedKeyDownMs: 60, edges };
+      } finally { await request('setPtt', { value: false }); }
     });
   }
 }

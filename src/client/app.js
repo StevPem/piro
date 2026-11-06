@@ -1064,14 +1064,24 @@ function radioReadyForPolling() {
   return radioConnectionInfo?.transport !== 'lan' || radioConnectionInfo.state === 'connected';
 }
 
+function syncTtySendAvailability() {
+  const mode = ttyMode();
+  let available = link.connected && radioReadyForPolling();
+  if (mode === 'VARA') available = available && !!varaStatus?.available && varaStatus.state === 'connected';
+  else if (mode === 'JS8') available = available && !!js8Status?.available
+    && (!!js8Status.sending || !!js8Status.canTransmit);
+  ttySendBtn.disabled = !available;
+}
+
 function syncRadioControls() {
   const available = link.connected && radioReadyForPolling();
-  const controls = [pttBtn, cwSendBtn, cwDotBtn, cwDashBtn, ttySendBtn,
+  const controls = [pttBtn, cwSendBtn, cwDotBtn, cwDashBtn,
     tunerBtn, tuneBtn, txPowerSelect, rxGainSlider, freqDisplay, freqInput,
     ...Object.values(freqStepButtonEls),
     ...FUNCTION_CONTROLS.map((control) => control.buttonEl),
     ...bandsEl.querySelectorAll('button'), ...modesEl.querySelectorAll('button')];
   for (const control of controls) if (control) control.disabled = !available;
+  syncTtySendAvailability();
   scopeSpanSlider.disabled = !available || !scopeEnabled;
   if (!available) {
     audioPipeline?.stopTransmitting();
@@ -2593,11 +2603,8 @@ function updateTtyUi() {
   else if (ttyShownMode === 'JS8' && !ttyTxInFlight) {
     ttySendBtn.textContent = 'Send';
     ttySendBtn.classList.remove('ptt--active');
-    ttySendBtn.disabled = false;
   }
-  // VARA sends only within a QSO.
-  if (mode === 'VARA') ttySendBtn.disabled = varaStatus?.state !== 'connected';
-  else if (ttyShownMode === 'VARA') ttySendBtn.disabled = false;
+  syncTtySendAvailability();
   if (mode !== null) {
     pttBtn.hidden = true;
     pttHintEl.textContent = TTY_HINT[mode];
@@ -2898,6 +2905,7 @@ function renderVaraStatus(v) {
     varaCqBtn.disabled = true;
     varaQsydBtn.disabled = true;
     varaQsyuBtn.disabled = true;
+    if (ttyMode() === 'VARA') syncTtySendAvailability();
     return;
   }
   const st = v.state;
@@ -2966,7 +2974,7 @@ function renderVaraStatus(v) {
       varaHeardEl.appendChild(b);
     }
   }
-  if (ttyMode() === 'VARA') ttySendBtn.disabled = st !== 'connected';
+  if (ttyMode() === 'VARA') syncTtySendAvailability();
   // A QSO this page started on a slot has ended: back to where it was.
   const wasBusy = varaShownState === 'calling' || varaShownState === 'connected' || varaShownState === 'disconnecting';
   varaShownState = st;
@@ -3184,7 +3192,7 @@ function renderJs8SendButton() {
   const sending = !!v?.sending;
   ttySendBtn.textContent = sending ? 'Stop' : 'Send';
   ttySendBtn.classList.toggle('ptt--active', sending);
-  ttySendBtn.disabled = !v?.available || (!sending && !v.canTransmit);
+  syncTtySendAvailability();
 }
 
 /** Shows JS8's state: the status line, CQ, and the Send/Stop button. */

@@ -196,8 +196,8 @@ class IcomLanDriver extends CivDriver {
     if (!this.prepared) throw new Error('LAN radio is not ready');
     const mode = (await this.getMode()).mode;
     // CW paddle/PTT has no modulation source. Typed CW uses sendCw instead.
-    if (mode === 'CW' || mode === 'CW-R') return;
-    if (mode === 'RTTY' || mode === 'RTTY-R') throw new Error('LAN audio TX requires an audio modulation mode, not FSK RTTY');
+    if (mode === 'CW' || mode === 'CW_R' || mode === 'CW-R') return;
+    if (mode === 'RTTY' || mode === 'RTTY_R' || mode === 'RTTY-R') throw new Error('LAN audio TX requires an audio modulation mode, not FSK RTTY');
     const parameter = await this.getDataMode() ? MK2.modData : MK2.modOff;
     const settings = [{ parameter, value: MK2.lanSource, level: false }];
     if (this.options.modLevel !== undefined) settings.push({ parameter: MK2.modLevel, value: this.options.modLevel, level: true });

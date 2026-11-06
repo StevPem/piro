@@ -145,7 +145,11 @@ class IcomSession extends EventEmitter {
       this.advertisedAddress = p[148];
       this.requestStreams();
     } else if (p.length === 144) {
-      if (!this.granted && this.requested && p[96] === 1) {
+      // ConnInfo also carries other notifications. A grant must describe
+      // the radio requested on this authenticated association. Tokens may
+      // rotate here (as in the reference clients), so don't require equality.
+      if (!this.granted && this.requested && this.authenticated && p[20] === 3 && p[21] === 0
+        && this.radioId && p.subarray(32, 48).equals(this.radioId) && p[96] === 1) {
         this.granted = true;
         this.authId = Buffer.from(p.subarray(26, 32));
         this.status('opening-streams');
