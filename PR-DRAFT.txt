@@ -29,7 +29,8 @@ Integrated validation: TEST_RETRIES=0 npm run test:ci passed 65/65 file
 groups (68 LAN subtests) in 338 seconds. Syntax and diff checks passed.
 The hardware report records the exact scope and remaining limits.
 No new runtime dependencies. No credentials are included in this change.
-The running Pi installation remains on its previously validated source.
+The Pi retains the earlier LAN build with only the separately verified RADE
+broken-pipe hotfix; the full integrated build has not been deployed.
 
 Limits:
 No independent RF power/spectrum or digital decoder measurement, firmware
@@ -39,3 +40,11 @@ build. The manual mode sweep restores the originally active mode/filter;
 other modes' stored filter preferences are not restored.
 
 This is a preparation draft, not a published PR.
+
+
+RADE crash follow-up:
+Contains asynchronous child pipe failures and stops pipelines before notifying
+callers. Failed TX clears buffered playback and requests PTT off while keeping
+raw mic muted until confirmed release. Verified by 91 pipeline/bridge checks
+and a live missing-codec RX smoke check: same PID, zero restarts, audio and
+scope recovered after disabling FreeDV. Native RADE tools are still absent.

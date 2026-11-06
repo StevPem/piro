@@ -2,6 +2,7 @@
 'use strict';
 
 const { EventEmitter } = require('events');
+const { spawnSync } = require('child_process');
 const { RadePipeline } = require('../src/audio/rade-pipeline');
 
 let failures = 0;
@@ -81,6 +82,71 @@ async function flush() {
 }
 
 async function run() {
+  // Native stdin errors are asynchronous stream events, not write() throws.
+  for (const stageIndex of [0, 1]) {
+    const spawnFn = makeSpawnFn();
+    const pipeline = new RadePipeline({ label: 'broken-pipe', spawnFn,
+      stages: [{ bin: 'first' }, { bin: 'second' }] });
+    const errors = [];
+    let stoppedBeforeNotification = false;
+    pipeline.on('error', (err) => {
+      errors.push(err);
+      stoppedBeforeNotification = !pipeline._running && pipeline.procs.length === 0;
+    });
+    pipeline.start();
+    let escaped = false;
+    try { spawnFn.spawned[stageIndex].stdin.emit('error', Object.assign(new Error('write EPIPE'), { code: 'EPIPE' })); }
+    catch { escaped = true; }
+    check(!escaped && errors.length === 1 && /stdin.*EPIPE/.test(errors[0].message), `stage ${stageIndex + 1} stdin EPIPE is reported without escaping the stream event`);
+    check(stoppedBeforeNotification && spawnFn.spawned.every((proc) => proc.killed === 'SIGTERM'), 'a broken pipe stops every stage before notifying the bridge');
+    pipeline.stop();
+  }
+
+  {
+    const spawnFn = makeSpawnFn();
+    const pipeline = new RadePipeline({ spawnFn, stages: [{ bin: 'write-failure' }] });
+    const errors = [];
+    pipeline.on('error', (err) => errors.push(err));
+    pipeline.start();
+    spawnFn.spawned[0].stdin.write = () => { throw new Error('synchronous broken pipe'); };
+    pipeline.write(Buffer.from('audio'));
+    check(errors.length === 1 && !pipeline._running, 'a synchronous write failure is surfaced and stops the pipeline');
+    pipeline.stop();
+  }
+
+  {
+    const spawnFn = makeSpawnFn();
+    const pipeline = new RadePipeline({ spawnFn, stages: [{ bin: 'restartable' }] });
+    const errors = [];
+    pipeline.on('error', (err) => errors.push(err));
+    pipeline.start();
+    const old = spawnFn.spawned[0];
+    pipeline.stop();
+    pipeline.start();
+    old.emit('exit', 1, null);
+    let escaped = false;
+    try { old.stdin.emit('error', new Error('late EPIPE')); }
+    catch { escaped = true; }
+    check(!escaped && errors.length === 0 && pipeline._running && !spawnFn.spawned[1].killed, 'late errors from a stopped child cannot crash or stop a replacement pipeline');
+    pipeline.stop();
+  }
+
+  {
+    const source = `
+      const { RadePipeline } = require(${JSON.stringify(require.resolve('../src/audio/rade-pipeline'))});
+      const p = new RadePipeline({ stages: [{ bin: '__piro_missing_rade_rx__' }, { bin: '__piro_missing_lpcnet__' }] });
+      let errors = 0, stopped = false;
+      let writer;
+      const finish = () => { clearInterval(writer); p.stop(); console.log(JSON.stringify({ errors, stopped })); process.exit(errors === 1 && stopped ? 0 : 1); };
+      p.on('error', () => { errors++; stopped = !p._running && p.procs.length === 0; setTimeout(finish, 100); });
+      p.start();
+      writer = setInterval(() => p.write(Buffer.alloc(8192)), 1);
+      setTimeout(finish, 4000);
+    `;
+    const child = spawnSync(process.execPath, ['-e', source], { encoding: 'utf8', timeout: 5000 });
+    check(child.status === 0, `real missing codec tools with default stdbuf wrapping are contained (${child.stderr.trim() || child.stdout.trim()})`);
+  }
+
   // --- start() spawns every stage with the right argv, in order ---
   {
     const spawnFn = makeSpawnFn();

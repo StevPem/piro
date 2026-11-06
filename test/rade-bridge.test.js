@@ -591,6 +591,82 @@ async function run() {
     bridge2.stop();
   }
 
+  // A failed encoder must never expose raw microphone audio while keyed.
+  {
+    const controlServer = new StubControlServer();
+    const audioBridge = makeStubAudioBridge();
+    const pipelineFactory = makePipelineFactory();
+    const bridge = new RadeBridge({ controlServer, audioBridge, pipelineFactory });
+    let released, flushed = false;
+    audioBridge.playback.restart = () => { flushed = true; };
+    controlServer.setPttFromServer = () => new Promise((resolve) => {
+      released = () => { controlServer.emit('ptt', false); resolve(); };
+    });
+    bridge.setActive(true);
+    controlServer.emit('ptt', true);
+    const tx = pipelineFactory.created[1];
+    tx.emit('error', new Error('encoder EPIPE'));
+    tx.emit('data', sampleComplexFloat32(1, 0, 20));
+    check(tx.stopped && flushed && typeof released === 'function', 'failed TX codec stops the chain, flushes playback and requests PTT release');
+    check(audioBridge.txMuted && audioBridge.playback.written.length === 0, 'failed TX remains muted and rejects stale encoded output while release is pending');
+    if (released) released();
+    await new Promise((resolve) => setImmediate(resolve));
+    check(!audioBridge.txMuted, 'raw TX is unmuted only after confirmed PTT-off');
+    bridge.stop();
+  }
+
+  {
+    const controlServer = new StubControlServer();
+    const audioBridge = makeStubAudioBridge();
+    const pipelineFactory = makePipelineFactory();
+    const bridge = new RadeBridge({ controlServer, audioBridge, pipelineFactory });
+    controlServer.setPttFromServer = async () => { throw new Error('radio release failed'); };
+    bridge.setActive(true);
+    controlServer.emit('ptt', true);
+    pipelineFactory.created[1].emit('error', new Error('encoder failed'));
+    await new Promise((resolve) => setImmediate(resolve));
+    check(audioBridge.txMuted, 'unconfirmed PTT release after codec failure keeps raw microphone playback muted');
+    check(controlServer.broadcasts.some((b) => b.data.context === 'rade-tx-unkey' && /radio release failed/.test(b.data.message)), 'failed codec cleanup reports the PTT release error');
+    bridge.stop();
+  }
+
+  {
+    const controlServer = new StubControlServer();
+    const audioBridge = makeStubAudioBridge();
+    const pipelineFactory = makePipelineFactory();
+    const bridge = new RadeBridge({ controlServer, audioBridge, pipelineFactory });
+    let releases = 0;
+    controlServer.setPttFromServer = async () => { releases++; };
+    bridge.setActive(true);
+    controlServer.emit('ptt', true);
+    const old = pipelineFactory.created[1];
+    controlServer.emit('ptt', false);
+    controlServer.emit('ptt', true);
+    const current = pipelineFactory.created[3];
+    old.emit('error', new Error('late old encoder error'));
+    check(releases === 0 && !current.stopped && audioBridge.txMuted, 'a previous encoder error cannot release a newer transmission');
+    bridge.stop();
+  }
+
+  {
+    const controlServer = new StubControlServer();
+    const audioBridge = makeStubAudioBridge();
+    const created = [];
+    const pipelineFactory = (opts) => {
+      const pipeline = new StubPipeline(opts);
+      if (opts.label === 'rade-tx') pipeline.start = () => { throw new Error('sync start failed'); };
+      created.push(pipeline);
+      return pipeline;
+    };
+    const bridge = new RadeBridge({ controlServer, audioBridge, pipelineFactory });
+    let releases = 0, escaped = false;
+    controlServer.setPttFromServer = async () => { releases++; };
+    bridge.setActive(true);
+    try { controlServer.emit('ptt', true); } catch { escaped = true; }
+    check(!escaped && releases === 1 && created[1].stopped && audioBridge.txMuted, 'synchronous encoder start failure is contained, requests release, and keeps TX muted');
+    bridge.stop();
+  }
+
   // --- a pipeline error is broadcast as an AUDIO_ERROR event ---
   {
     const controlServer = new StubControlServer();

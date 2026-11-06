@@ -161,3 +161,29 @@ separate lint or typecheck command is defined. The first full run identified
 a key-line test that still scanned the old serial-factory location; adding
 `src/server/radio-connection.js` to that scan fixed it, and the fresh complete
 run passed without retries. No integration code was deployed by this check.
+
+
+## Subsequent RADE broken-pipe fix
+
+The optional-codec crash observed above was reproduced and fixed separately
+from the upstream merge. Child stdin/stdout/stderr failures and synchronous
+spawn/write failures now stop the pipeline before notification. Late callbacks
+from stopped children cannot affect a new pipeline. TX failure flushes playback
+and requests PTT off while keeping raw microphone playback muted until release
+is confirmed; a failed release is reported instead of exposing raw audio.
+
+The pipeline and bridge test files passed **30 + 61 checks** on both the local
+machine and Linux/Pi, with failures reproduced before the fix. Those two files
+also passed against the original deployed LAN source before restart. The full
+65-group integration run above preceded this bounded fix; its four changed
+source/test files were verified separately rather than rerunning unrelated
+signal-processing suites.
+
+Only this four-file fix was applied to the working Pi, on branch
+`fix/rade-pipe-crash`; the integrated upstream build remains undeployed. A live
+receive-only check selected RADE with the native tools still absent: PiRO
+reported the codec error, retained MainPID 3079631 with zero restarts, and after
+FreeDV was disabled delivered 76 RX audio frames and 48 scope frames during the
+short check. The result is in `icom-lan-hardware-results/rade-crash-fix.json`.
+No RF transmission was made for this check. The missing native RADE tools
+still prevent actual FreeDV encoding/decoding; that remains separate setup work.
