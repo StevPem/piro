@@ -275,6 +275,24 @@ const VARA_FREQUENCIES = {
   '10m': 28105000,
   '6m': 50330000,
 };
+// JS8 dial frequencies (USB): JS8Call's own list (FrequencyList.cpp in
+// JS8Call-improved), all inside the Australian allocations. Signals sit
+// 300-2700 Hz above the dial; most are near 1000-2000 Hz.
+const JS8_FREQUENCIES = {
+  '160m': 1843500,
+  '80m': 3578000,
+  '40m': 7078000,
+  '30m': 10130000,
+  '20m': 14078000,
+  '17m': 18104000,
+  '15m': 21078000,
+  '12m': 24922000,
+  '10m': 28078000,
+  '6m': 50318000,
+};
+const JS8_DEFAULT_TX_HZ = 1500;
+const JS8_MIN_TX_HZ = 300; // same limits as the server (server/js8-bridge.js)
+const JS8_MAX_TX_HZ = 2700;
 const HELL_MIN_TONE_HZ = 300; // same limits as the server (audio/hell-rx.js)
 const HELL_MAX_TONE_HZ = 2700;
 
@@ -445,7 +463,7 @@ const WSPR_MAX_ROWS = 100;
 // --- DOM refs ---
 const panelTitleEl = document.querySelector('.panel__title');
 const appVersionEl = document.getElementById('app-version');
-const appSourceLinkEl = document.getElementById('app-source-link');
+const appTitleLinkEl = document.getElementById('app-title-link');
 const ledDot = document.getElementById('led-dot');
 const ledText = document.getElementById('led-text');
 const errorLine = document.getElementById('error-line');
@@ -506,6 +524,11 @@ const hellRxEl = document.getElementById('hell-rx');
 const hellRxTextEl = document.getElementById('hell-rx-text');
 const oliviaSignalEl = document.getElementById('olivia-signal');
 const oliviaTuneBtn = document.getElementById('olivia-tune-btn');
+const js8RxEl = document.getElementById('js8-rx');
+const js8StatusEl = document.getElementById('js8-status');
+const js8CqBtn = document.getElementById('js8-cq-btn');
+const js8HeardEl = document.getElementById('js8-heard');
+const js8TableBodyEl = document.getElementById('js8-table-body');
 const varaRxEl = document.getElementById('vara-rx');
 const varaRxTextEl = document.getElementById('vara-rx-text');
 const varaStatusEl = document.getElementById('vara-status');
@@ -643,7 +666,11 @@ const VARAC_SLOT_WAIT_MS = 120 * 1000;
 let varaAnswer = null; // {call, offsetHz, time}: the heard CQ last tapped
 let varaReturnHz = null; // where to go back to when a QSO started on a slot ends
 let varaShownState = null;
-const ttyFreqByMode = { JTTY: 1450, OLIVIA: OLIVIA_DEFAULT_CENTRE_HZ, HELL: HELL_DEFAULT_TONE_HZ };
+// JS8: between Olivia and VARA on the TTY button; app-level on USB + DATA MODE.
+let js8Active = false;
+let js8UsbSeen = false;
+let js8Status = null; // the server's state.js8 (EVENT.JS8_STATUS)
+const ttyFreqByMode = { JTTY: 1450, OLIVIA: OLIVIA_DEFAULT_CENTRE_HZ, JS8: JS8_DEFAULT_TX_HZ, HELL: HELL_DEFAULT_TONE_HZ };
 let ttyTxInFlight = false;
 let ttyShownMode = null; // which TTY mode updateTtyUi() last laid the composer out for
 let ttyLastDefaultText = ''; // the CQ text updateTtyUi() last pre-filled, so a later mode switch only replaces text the operator never touched
@@ -874,6 +901,11 @@ const scopeDisplay = new ScopeDisplay({
       setOliviaCentre(hz);
       return;
     }
+    if (js8Active && !ft8Active) {
+      // JS8: the click sets the transmit offset (the lowest tone). Every signal in the passband is decoded anyway.
+      setJs8TxHz(hz);
+      return;
+    }
     if (hellActive && !ft8Active) {
       // Feld-Hell: the click sets the tone the picture is painted from and the next transmission uses.
       setHellTone(hz);
@@ -893,11 +925,11 @@ const scopeDisplay = new ScopeDisplay({
   },
 });
 link.addEventListener('scope-line', (event) => {
-  if (ft8Active || wsprActive || jttyActive || oliviaActive || hellActive || sstvActive || faxActive || easypalActive) return; // audio-domain FFT spectrum takes over the display; see the 'ft8-spectrum' listener below
+  if (ft8Active || wsprActive || jttyActive || oliviaActive || js8Active || hellActive || sstvActive || faxActive || easypalActive) return; // audio-domain FFT spectrum takes over the display; see the 'ft8-spectrum' listener below
   scopeDisplay.pushLine(event.detail);
 });
 link.addEventListener('ft8-spectrum', (event) => {
-  if (!ft8Active && !wsprActive && !jttyActive && !oliviaActive && !hellActive && !sstvActive && !easypalActive) return;
+  if (!ft8Active && !wsprActive && !jttyActive && !oliviaActive && !js8Active && !hellActive && !sstvActive && !easypalActive) return;
   // The audio spectrum comes from the RX audio, not the radio's scope, so it
   // works with CIV_SCOPE_ENABLED off: don't leave the "scope not enabled"
   // notice over it (which would also hide the Feld-Hell picture).
@@ -1030,24 +1062,17 @@ link.addEventListener('connected', (event) => {
 
   if (data.screenTitle) {
     document.title = data.screenTitle;
-    if (panelTitleEl) panelTitleEl.textContent = data.screenTitle;
+    if (appTitleLinkEl) appTitleLinkEl.textContent = data.screenTitle;
+    else if (panelTitleEl) panelTitleEl.textContent = data.screenTitle;
   }
   // Small version number to the right of the title, matching the
   // "Connected" led text's size/color (.app-version reuses .led's
   // font-size) per explicit request — see docs/ui-notes.md.
   if (appVersionEl) appVersionEl.textContent = data.appVersion ? `v${data.appVersion}` : '';
-  // AGPL-3.0-only §13 compliance link — see README.md's "Licence" section
-  // and server/index.js's SOURCE_CODE_URL doc comment. Hidden entirely
-  // (not just empty) when unset, same "hide, don't just blank" pattern
-  // as other optional-feature UI elsewhere in this file.
-  if (appSourceLinkEl) {
-    if (data.sourceCodeUrl) {
-      appSourceLinkEl.href = data.sourceCodeUrl;
-      appSourceLinkEl.hidden = false;
-    } else {
-      appSourceLinkEl.hidden = true;
-    }
-  }
+  // The title links to the source (AGPL-3.0-only §13; README.md's
+  // "Licence"): the server's SOURCE_CODE_URL, or PiRO's repository, which
+  // is already in the page.
+  if (appTitleLinkEl && data.sourceCodeUrl) appTitleLinkEl.href = data.sourceCodeUrl;
   // Static for the server's process lifetime, same as screenTitle — see
   // docs/ui-notes.md. Configuring the sequencer here (rather than only
   // once at page load) means a server restart with newly-set
@@ -1057,6 +1082,8 @@ link.addEventListener('connected', (event) => {
   setSstvTxInfo(data.sstvTx);
   setEasypalTxInfo(data.easypalTx);
   renderVaraStatus(data.vara);
+  renderJs8Status(data.js8);
+  renderSttStatus(data.stt);
   stationGrid = data.stationGrid || null;
   ft8Qso.configure({ myCall: stationCallsign, myGrid: stationGrid });
   if (data.frequency != null) updateFrequencyDisplay(data.frequency);
@@ -1356,6 +1383,11 @@ for (const band of BANDS) {
       tuneOliviaToBand(band.name);
       return;
     }
+    // And in JS8: the band's JS8 frequency.
+    if (js8Active && JS8_FREQUENCIES[band.name] != null) {
+      tuneJs8ToBand(band.name);
+      return;
+    }
     // And in VARA: the band's VarAC calling frequency.
     if (varaActive && VARA_FREQUENCIES[band.name] != null) {
       tuneVaraToBand(band.name);
@@ -1495,6 +1527,7 @@ for (const entry of MODE_CHIPS) {
       if (freeDvActive) exitFreeDvMode();
       if (jttyActive) exitJttyMode();
       if (oliviaActive) exitOliviaMode();
+      if (js8Active) exitJs8Mode();
       if (varaActive) exitVaraMode();
       if (hellActive) exitHellMode();
       if (sstvActive) exitSstvMode();
@@ -1529,6 +1562,7 @@ for (const entry of MODE_CHIPS) {
       if (wsprActive) exitWsprMode();
       if (jttyActive) exitJttyMode();
       if (oliviaActive) exitOliviaMode();
+      if (js8Active) exitJs8Mode();
       if (varaActive) exitVaraMode();
       if (hellActive) exitHellMode();
       if (sstvActive) exitSstvMode();
@@ -1550,12 +1584,13 @@ for (const entry of MODE_CHIPS) {
       if (faxActive) exitFaxMode();
       if (easypalActive) exitEasypalMode();
       // First click selects RTTY; after that the button cycles RTTY ->
-      // JTTY -> Olivia -> VARA -> Feld-Hell -> RTTY ... until a non-TTY
-      // mode is picked (which resets it to "TTY").
+      // JTTY -> Olivia -> JS8 -> VARA -> Feld-Hell -> RTTY ... until a
+      // non-TTY mode is picked (which resets it to "TTY").
       const now = ttyMode();
       if (now === 'RTTY') enterJttyMode();
       else if (now === 'JTTY') switchJttyToOlivia();
-      else if (now === 'OLIVIA') switchOliviaToVara();
+      else if (now === 'OLIVIA') switchOliviaToJs8();
+      else if (now === 'JS8') switchJs8ToVara();
       else if (now === 'VARA') switchVaraToHell();
       else selectRttyMode();
     });
@@ -1572,6 +1607,7 @@ for (const entry of MODE_CHIPS) {
       if (freeDvActive) exitFreeDvMode();
       if (jttyActive) exitJttyMode();
       if (oliviaActive) exitOliviaMode();
+      if (js8Active) exitJs8Mode();
       if (varaActive) exitVaraMode();
       if (hellActive) exitHellMode();
       if (sstvActive) exitSstvMode();
@@ -1609,6 +1645,7 @@ for (const entry of MODE_CHIPS) {
       if (freeDvActive) exitFreeDvMode();
       if (jttyActive) exitJttyMode();
       if (oliviaActive) exitOliviaMode();
+      if (js8Active) exitJs8Mode();
       if (varaActive) exitVaraMode();
       if (hellActive) exitHellMode();
       if (sstvActive) exitSstvMode();
@@ -1627,7 +1664,7 @@ for (const entry of MODE_CHIPS) {
 
 /** True while one of the app-level modes layered on LSB/USB is selected. */
 function appModeActive() {
-  return ft8Active || wsprActive || freeDvActive || jttyActive || oliviaActive || varaActive || hellActive || sstvActive || faxActive || easypalActive;
+  return ft8Active || wsprActive || freeDvActive || jttyActive || oliviaActive || js8Active || varaActive || hellActive || sstvActive || faxActive || easypalActive;
 }
 
 /** Leaves whichever app-level mode is selected (picking SSB or SSTV). */
@@ -1637,6 +1674,7 @@ function exitAppModes() {
   if (freeDvActive) exitFreeDvMode();
   if (jttyActive) exitJttyMode();
   if (oliviaActive) exitOliviaMode();
+  if (js8Active) exitJs8Mode();
   if (varaActive) exitVaraMode();
   if (hellActive) exitHellMode();
   if (sstvActive) exitSstvMode();
@@ -1656,6 +1694,7 @@ function applyAppModes(s) {
   // The audio frequencies first, so a mode entered below shows them.
   if (Number.isFinite(s.jttyTxHz)) ttyFreqByMode.JTTY = s.jttyTxHz;
   if (Number.isFinite(s.oliviaCentreHz)) ttyFreqByMode.OLIVIA = s.oliviaCentreHz;
+  if (Number.isFinite(s.js8TxHz)) ttyFreqByMode.JS8 = s.js8TxHz;
   if (Number.isFinite(s.hellToneHz)) ttyFreqByMode.HELL = s.hellToneHz;
   // Whatever was switched off...
   if (!s.ft8Active) exitFt8Mode({ local: true });
@@ -1663,6 +1702,7 @@ function applyAppModes(s) {
   if (!s.freeDvActive) exitFreeDvMode({ local: true });
   if (!s.jttyActive) exitJttyMode({ local: true });
   if (!s.oliviaActive) exitOliviaMode({ local: true });
+  if (!s.js8Active) exitJs8Mode({ local: true });
   if (!s.varaActive) exitVaraMode({ local: true });
   if (!s.hellActive) exitHellMode({ local: true });
   if (!s.sstvActive) exitSstvMode({ local: true });
@@ -1674,6 +1714,7 @@ function applyAppModes(s) {
   if (s.freeDvActive) reflectFreeDvActiveFromServer();
   if (s.jttyActive) reflectJttyActiveFromServer();
   if (s.oliviaActive) reflectOliviaActiveFromServer(s.oliviaCentreHz);
+  if (s.js8Active) reflectJs8ActiveFromServer(s.js8TxHz);
   if (s.varaActive) reflectVaraActiveFromServer();
   if (s.hellActive) reflectHellActiveFromServer(s.hellToneHz);
   if (s.sstvActive) reflectSstvActiveFromServer();
@@ -1681,7 +1722,7 @@ function applyAppModes(s) {
   if (s.easypalActive) reflectEasypalActiveFromServer();
   // A new audio frequency in the mode already shown (unless it's being typed here).
   const mode = ttyMode();
-  if ((mode === 'JTTY' || mode === 'OLIVIA' || mode === 'HELL') && document.activeElement !== ttyFreqEl) {
+  if ((mode === 'JTTY' || mode === 'OLIVIA' || mode === 'JS8' || mode === 'HELL') && document.activeElement !== ttyFreqEl) {
     const hz = ttyFreqByMode[mode];
     if (Number(ttyFreqEl.value) !== hz) {
       ttyFreqEl.value = String(hz);
@@ -1701,7 +1742,7 @@ link.addEventListener('app-modes', (event) => applyAppModes(event.detail));
  * page carries on and re-arms it.
  */
 function syncAppModesOnConnect(data) {
-  const serverAny = data.ft8Active || data.wsprActive || data.freeDvActive || data.jttyActive || data.oliviaActive || data.varaActive || data.hellActive || data.sstvActive || data.faxActive || data.easypalActive;
+  const serverAny = data.ft8Active || data.wsprActive || data.freeDvActive || data.jttyActive || data.oliviaActive || data.js8Active || data.varaActive || data.hellActive || data.sstvActive || data.faxActive || data.easypalActive;
   const radio = data.mode?.mode;
   const fits = sstvActive || freeDvActive ? radio === 'LSB' || radio === 'USB' : radio === 'USB';
   if (!serverAny && appModeActive() && fits) {
@@ -1710,6 +1751,7 @@ function syncAppModesOnConnect(data) {
     if (freeDvActive) link.request('setFreeDvActive', { active: true }).catch(() => {});
     if (jttyActive) link.request('setJttyActive', { active: true, txHz: ttyFreqByMode.JTTY }).catch(() => {});
     if (oliviaActive) link.request('setOliviaActive', { active: true, centreHz: ttyFreqByMode.OLIVIA }).catch(() => {});
+    if (js8Active) link.request('setJs8Active', { active: true, txHz: ttyFreqByMode.JS8 }).catch(() => {});
     if (varaActive) link.request('setVaraActive', { active: true }).catch(() => {});
     if (hellActive) link.request('setHellActive', { active: true, toneHz: ttyFreqByMode.HELL }).catch(() => {});
     if (sstvActive) link.request('setSstvActive', { active: true }).catch(() => {});
@@ -1766,6 +1808,10 @@ function updateModeButtons(mode) {
     if (mode === 'USB') oliviaUsbSeen = true;
     else if (oliviaUsbSeen) leaveOlivia();
   }
+  if (js8Active) {
+    if (mode === 'USB') js8UsbSeen = true;
+    else if (js8UsbSeen) leaveJs8();
+  }
   if (varaActive) {
     if (mode === 'USB') varaUsbSeen = true;
     else if (varaUsbSeen) leaveVara();
@@ -1779,7 +1825,7 @@ function updateModeButtons(mode) {
   updateTtyUi();
 }
 
-// --- TTY mode (RTTY / JTTY / Olivia / VARA / Feld-Hell) ---
+// --- TTY mode (RTTY / JTTY / Olivia / JS8 / VARA / Feld-Hell) ---
 
 /**
  * Which TTY mode is currently in effect: 'JTTY' (app-level, on USB + DATA
@@ -1790,6 +1836,7 @@ function updateModeButtons(mode) {
 function ttyMode() {
   if (jttyActive) return 'JTTY';
   if (oliviaActive) return 'OLIVIA';
+  if (js8Active) return 'JS8';
   if (varaActive) return 'VARA';
   if (hellActive) return 'HELL';
   if (currentMode === 'RTTY' && !ft8Active && !wsprActive && !freeDvActive) return 'RTTY';
@@ -1805,11 +1852,12 @@ function selectRttyMode() {
       // after the mode change so the radio shows it as the mark frequency.
       const bandName = currentFreqHz != null ? bandNameForFrequency(currentFreqHz) : null;
       if (bandName) tuneRttyToBand(bandName);
-      // Leaving JTTY, Olivia, VARA or Feld-Hell turns DATA MODE back off (see
-      // leaveJtty() / leaveOlivia() / leaveVara() / leaveHell()); done after the mode
+      // Leaving JTTY, Olivia, JS8, VARA or Feld-Hell turns DATA MODE back off (see
+      // leaveJtty() / leaveOlivia() / leaveJs8() / leaveVara() / leaveHell()); done after the mode
       // change is confirmed so the chip never flickers via "TTY".
       leaveJtty();
       leaveOlivia();
+      leaveJs8();
       leaveVara();
       leaveHell();
       updateModeButtons('RTTY');
@@ -1974,20 +2022,96 @@ function exitOliviaMode(opts) {
 }
 
 /**
- * TTY chip click while in Olivia: on to VARA. Both run on USB with DATA
- * MODE on, so the radio's mode is left alone; the receiver stops and the
- * modem starts.
+ * TTY chip click while in Olivia: on to JS8. Both run on USB with DATA
+ * MODE on, so the radio's mode is left alone; the Olivia receiver stops
+ * and JS8 starts.
  */
-function switchOliviaToVara() {
+function switchOliviaToJs8() {
   oliviaActive = false;
   oliviaUsbSeen = false;
   link.request('setOliviaActive', { active: false }).catch(() => {});
+  enterJs8Mode({ radioReady: true });
+}
+
+/**
+ * Enters JS8: USB + DATA MODE (unless already there, coming from Olivia),
+ * the band's JS8 frequency, and the server's JS8 started (it decodes every
+ * 15-second slot; see server/js8-bridge.js).
+ */
+function enterJs8Mode({ radioReady = false } = {}) {
+  js8Active = true;
+  js8UsbSeen = radioReady && currentMode === 'USB';
+  const bandName = currentFreqHz != null ? bandNameForFrequency(currentFreqHz) : null;
+  if (bandName) tuneJs8ToBand(bandName);
+  if (!radioReady) {
+    link
+      .request('setMode', { mode: 'USB' })
+      .then(() => updateModeButtons('USB'))
+      .catch((err) => showError(`Couldn't set USB for JS8: ${err.message}`));
+    link
+      .request('setDataMode', { on: true })
+      .catch((err) => showError(`Couldn't enable DATA MODE for JS8: ${err.message}`));
+  }
+  link.request('setJs8Active', { active: true, txHz: ttyFreqByMode.JS8 }).catch((err) => {
+    showError(`Couldn't start JS8: ${err.message}`);
+    js8StatusEl.textContent = `couldn't start: ${err.message}`;
+  });
+  setRttyTickerVisible(false);
+  updateTtyUi();
+}
+
+/** Tunes to a band's JS8 frequency. */
+function tuneJs8ToBand(bandName) {
+  const hz = JS8_FREQUENCIES[bandName];
+  if (hz == null) return;
+  link
+    .request('setFrequency', { value: hz })
+    .then(() => updateFrequencyDisplay(hz))
+    .catch((err) => showError(`Couldn't tune to ${bandName} JS8 frequency: ${err.message}`));
+}
+
+/** Ends JS8 locally and restores DATA MODE (not with `local`; see leaveJtty()). Returns false if JS8 wasn't active. */
+function leaveJs8({ local = false } = {}) {
+  if (!js8Active) return false;
+  js8Active = false;
+  js8UsbSeen = false;
+  if (local) return true;
+  link.request('setDataMode', { on: false }).catch((err) => showError(`Couldn't disable DATA MODE: ${err.message}`));
+  link.request('setJs8Active', { active: false }).catch(() => {});
+  return true;
+}
+
+/** JS8 was already selected when this page connected: reflect it without re-sending radio changes. */
+function reflectJs8ActiveFromServer(txHz) {
+  if (Number.isFinite(txHz)) ttyFreqByMode.JS8 = txHz;
+  if (js8Active) return;
+  js8Active = true;
+  js8UsbSeen = false;
+  setRttyTickerVisible(false);
+  updateTtyUi();
+}
+
+/** Leaves JS8 because the operator (or, with `local`, another browser) picked some other mode. */
+function exitJs8Mode(opts) {
+  if (!leaveJs8(opts)) return;
+  updateTtyUi();
+}
+
+/**
+ * TTY chip click while in JS8: on to VARA. Both run on USB with DATA MODE
+ * on, so the radio's mode is left alone; JS8 stops (a message being sent
+ * is cut off) and the VARA modem starts.
+ */
+function switchJs8ToVara() {
+  js8Active = false;
+  js8UsbSeen = false;
+  link.request('setJs8Active', { active: false }).catch(() => {});
   enterVaraMode({ radioReady: true });
 }
 
 /**
  * Enters VARA chat: USB + DATA MODE (unless already there, coming from
- * Olivia), the band's VarAC calling frequency, and the server's VARA modem
+ * JS8), the band's VarAC calling frequency, and the server's VARA modem
  * started (it listens for calls, and keys PTT itself; see
  * server/vara-bridge.js).
  */
@@ -2196,25 +2320,27 @@ const TTY_HINT = {
   JTTY: 'Type your text and press Send (or Enter). Received JTTY appears above; tap a line to transmit on its frequency. The radio is on USB with DATA MODE on.',
   OLIVIA:
     'Type your text and press Send (or Enter). Olivia 8/250 sends about 1.5 characters a second. Received text appears above; click the spectrum to set the centre frequency (the receiver searches 125 Hz either side). The radio is on USB with DATA MODE on.',
+  JS8: 'JS8Call (Normal speed, 15-second slots). Type a message and press Send (or Enter): start it with a callsign to send it to that station (VK2ABC SNR?, VK2ABC HELLO), or @ALLCALL for everyone; otherwise it goes out as "YOURCALL: text". It goes out one frame a slot from the next slot, at the Offset (click the spectrum to set it). Every signal in the passband is decoded. No automatic replies are sent. The radio is on USB with DATA MODE on.',
   VARA:
     'VARA chat, as VARA Chat and VarAC (basic QSOs). Call CQ, or enter a callsign and press Connect. Once connected, type a line and press Send (or Enter); the modem resends anything lost. The radio is on USB with DATA MODE on, and the server keys PTT itself while VARA is selected.',
   HELL:
     'Type your text and press Send (or Enter). Feld-Hell sends about 2.5 characters a second, drawn rather than coded. Received signals are painted in the scope as they arrive, and the text read from the picture appears below it (on weak signals, trust the picture). Click the spectrum on a signal to set the tone. The radio is on USB with DATA MODE on.',
 };
-const TTY_PLACEHOLDER = { RTTY: 'CQ CQ DE VK2IO K', JTTY: 'CQ VK2IO CQ', OLIVIA: 'CQ CQ CQ DE VK2IO VK2IO K', VARA: 'Connect first, then type here', HELL: 'CQ CQ DE VK2IO VK2IO K' };
-const TTY_MAX_CHARS = { RTTY: 200, JTTY: 80, OLIVIA: 300, VARA: 1000, HELL: 400 }; // Olivia/Feld-Hell: match OLIVIA_MAX_CHARS/HELL_MAX_CHARS in audio/tty-bridge.js; VARA: REQUEST.VARA's limit
-const TTY_CHIP_LABEL = { RTTY: 'RTTY', JTTY: 'JTTY', OLIVIA: 'Olivia', VARA: 'VARA', HELL: 'Feld-Hell' };
-const TTY_FREQ_LABEL = { JTTY: 'TX audio', OLIVIA: 'Centre', HELL: 'Tone' };
-const TTY_FREQ_RANGE = { JTTY: [200, 2800], OLIVIA: [OLIVIA_MIN_CENTRE_HZ, OLIVIA_MAX_CENTRE_HZ], HELL: [HELL_MIN_TONE_HZ, HELL_MAX_TONE_HZ] };
+const TTY_PLACEHOLDER = { RTTY: 'CQ CQ DE VK2IO K', JTTY: 'CQ VK2IO CQ', OLIVIA: 'CQ CQ CQ DE VK2IO VK2IO K', JS8: 'VK2ABC SNR?', VARA: 'Connect first, then type here', HELL: 'CQ CQ DE VK2IO VK2IO K' };
+const TTY_MAX_CHARS = { RTTY: 200, JTTY: 80, OLIVIA: 300, JS8: 300, VARA: 1000, HELL: 400 }; // Olivia/Feld-Hell: match OLIVIA_MAX_CHARS/HELL_MAX_CHARS in audio/tty-bridge.js; JS8: MAX_TEXT in server/js8-bridge.js; VARA: REQUEST.VARA's limit
+const TTY_CHIP_LABEL = { RTTY: 'RTTY', JTTY: 'JTTY', OLIVIA: 'Olivia', JS8: 'JS8', VARA: 'VARA', HELL: 'Feld-Hell' };
+const TTY_FREQ_LABEL = { JTTY: 'TX audio', OLIVIA: 'Centre', JS8: 'Offset', HELL: 'Tone' };
+const TTY_FREQ_RANGE = { JTTY: [200, 2800], OLIVIA: [OLIVIA_MIN_CENTRE_HZ, OLIVIA_MAX_CENTRE_HZ], JS8: [JS8_MIN_TX_HZ, JS8_MAX_TX_HZ], HELL: [HELL_MIN_TONE_HZ, HELL_MAX_TONE_HZ] };
 const TTY_FREQ_ARIA = {
   JTTY: 'JTTY transmit audio frequency in hertz',
   OLIVIA: 'Olivia centre audio frequency in hertz',
+  JS8: 'JS8 transmit offset (lowest tone) in hertz',
   HELL: 'Feld-Hell tone audio frequency in hertz',
 };
 
 /** The CQ text the composer starts a TTY session with (empty if STATION_CALLSIGN isn't configured). */
 function ttyDefaultText(mode) {
-  if (!stationCallsign || mode === 'VARA') return ''; // VARA: CQ is a button, and the text box is for the QSO
+  if (!stationCallsign || mode === 'VARA' || mode === 'JS8') return ''; // VARA, JS8: CQ is a button, and the text box is for the QSO
   if (mode === 'JTTY') return `CQ ${stationCallsign} CQ`;
   if (mode === 'OLIVIA') return `CQ CQ CQ DE ${stationCallsign} ${stationCallsign} K`;
   return `CQ CQ DE ${stationCallsign} ${stationCallsign} K`;
@@ -2234,16 +2360,17 @@ function updateTtyUi() {
   ttyModeBtn.textContent = mode ? TTY_CHIP_LABEL[mode] : 'TTY';
   ttyModeBtn.classList.toggle('chip--active', mode !== null);
   ttyComposerEl.hidden = mode === null;
-  const freqMode = mode === 'JTTY' || mode === 'OLIVIA' || mode === 'HELL';
+  const freqMode = mode === 'JTTY' || mode === 'OLIVIA' || mode === 'JS8' || mode === 'HELL';
   ttyFreqLabelEl.hidden = !freqMode;
   jttyRxEl.hidden = mode !== 'JTTY';
   oliviaRxEl.hidden = mode !== 'OLIVIA';
+  js8RxEl.hidden = mode !== 'JS8';
   varaRxEl.hidden = mode !== 'VARA';
-  // "PSK Spot" (the FT8 one, the same setting) also reports VARA stations heard.
+  // "PSK Spot" (the FT8 one, the same setting) also reports JS8 and VARA stations heard.
   const pskSpotToggle = document.querySelector('.psk-spot-toggle'); // made further down this file
-  if (pskSpotToggle) pskSpotToggle.hidden = !(ft8Active || mode === 'VARA');
+  if (pskSpotToggle) pskSpotToggle.hidden = !(ft8Active || mode === 'VARA' || mode === 'JS8');
   hellRxEl.hidden = mode !== 'HELL';
-  // JTTY, Olivia and Feld-Hell show the 0-3 kHz audio spectrum (like FT8/FT4), so the RF span buttons don't apply.
+  // JTTY, Olivia, JS8 and Feld-Hell show the 0-3 kHz audio spectrum (like FT8/FT4), so the RF span buttons don't apply.
   scopeSpansEl.hidden = ft8Active || wsprActive || freqMode || sstvActive || faxActive || easypalActive;
   easypalRxEl.hidden = !easypalActive;
   sstvRxEl.hidden = !sstvActive;
@@ -2284,6 +2411,13 @@ function updateTtyUi() {
   // VARA and Feld-Hell send exactly what is typed (fldigi's Feld-Hell font draws
   // most, not all, lower-case letters as capitals), so it must show the real case.
   ttyInputEl.classList.toggle('tty-composer__input--as-typed', mode === 'OLIVIA' || mode === 'VARA' || mode === 'HELL');
+  // JS8: Send becomes Stop while a message is going out.
+  if (mode === 'JS8') renderJs8SendButton();
+  else if (ttyShownMode === 'JS8' && !ttyTxInFlight) {
+    ttySendBtn.textContent = 'Send';
+    ttySendBtn.classList.remove('ptt--active');
+    ttySendBtn.disabled = false;
+  }
   // VARA sends only within a QSO.
   if (mode === 'VARA') ttySendBtn.disabled = varaStatus?.state !== 'connected';
   else if (ttyShownMode === 'VARA') ttySendBtn.disabled = false;
@@ -2342,6 +2476,19 @@ function setOliviaCentre(hz, { quiet = false } = {}) {
   }
 }
 
+/** Sets the JS8 transmit offset (the lowest tone): the box, the spectrum marker, and the server (every browser shows it). */
+function setJs8TxHz(hz, { quiet = false } = {}) {
+  const tx = Math.max(JS8_MIN_TX_HZ, Math.min(JS8_MAX_TX_HZ, Math.round(hz)));
+  ttyFreqByMode.JS8 = tx;
+  ttyFreqEl.value = String(tx);
+  scopeDisplay.setQsoFreq(tx);
+  if (js8Active) link.request('setJs8Active', { active: true, txHz: tx }).catch((err) => showError(`Couldn't set the JS8 offset: ${err.message}`));
+  if (!quiet) {
+    ttyStatusEl.hidden = false;
+    ttyStatusEl.textContent = `JS8 transmit offset set to ${tx} Hz (the signal is ${tx}–${tx + 50} Hz).`;
+  }
+}
+
 /** Sets the Feld-Hell tone: the box, the spectrum marker, and the receiver (which retunes, keeping the picture). */
 function setHellTone(hz, { quiet = false } = {}) {
   const tone = Math.max(HELL_MIN_TONE_HZ, Math.min(HELL_MAX_TONE_HZ, Math.round(hz)));
@@ -2358,6 +2505,7 @@ function setHellTone(hz, { quiet = false } = {}) {
 let oliviaRetuneTimer = null;
 let hellRetuneTimer = null;
 let jttyShareTimer = null;
+let js8ShareTimer = null;
 ttyFreqEl.addEventListener('input', () => {
   const mode = ttyMode();
   const hz = Number(ttyFreqEl.value);
@@ -2373,6 +2521,10 @@ ttyFreqEl.addEventListener('input', () => {
     if (Number.isFinite(hz) && hz >= OLIVIA_MIN_CENTRE_HZ && hz <= OLIVIA_MAX_CENTRE_HZ) {
       oliviaRetuneTimer = setTimeout(() => setOliviaCentre(hz, { quiet: true }), 600);
     }
+  } else if (mode === 'JS8') {
+    scopeDisplay.setQsoFreq(hz || null);
+    clearTimeout(js8ShareTimer);
+    if (Number.isFinite(hz) && hz >= JS8_MIN_TX_HZ && hz <= JS8_MAX_TX_HZ) js8ShareTimer = setTimeout(() => setJs8TxHz(hz, { quiet: true }), 600);
   } else if (mode === 'HELL') {
     scopeDisplay.setQsoFreq(hz || null);
     clearTimeout(hellRetuneTimer);
@@ -2388,6 +2540,10 @@ function sendTty() {
   if (!mode) return;
   if (ttyTxInFlight) {
     link.request('abortTty').catch((err) => showError(`Couldn't stop the transmission: ${err.message}`));
+    return;
+  }
+  if (mode === 'JS8') {
+    sendJs8();
     return;
   }
   const text = ttyInputEl.value.trim();
@@ -2412,6 +2568,7 @@ ttySendBtn.addEventListener('click', sendTty);
 ttyInputEl.addEventListener('keydown', (event) => {
   if (event.key !== 'Enter' || event.isComposing) return;
   event.preventDefault();
+  if (ttyMode() === 'JS8' && js8Status?.sending) return; // Enter never stops a JS8 message; the Stop button does
   if (!ttyTxInFlight) sendTty();
 });
 
@@ -2716,6 +2873,193 @@ function varaQsy(direction) {
 }
 varaQsydBtn.addEventListener('click', () => varaQsy(-1));
 varaQsyuBtn.addEventListener('click', () => varaQsy(1));
+
+// --- JS8 ---
+// The server decodes each 15-second slot (server/js8-bridge.js) and sends
+// the frames it found (EVENT.JS8_DECODES), and this station's own frames
+// as they go out. Like JS8Call's band activity, this page joins a
+// station's frames (at one offset, first to last) into one line per
+// message. Tapping a line or a heard call starts a reply to that station.
+const JS8_MAX_ROWS = 150;
+const JS8_HEARD_MAX = 12;
+const JS8_JOIN_HZ = 10; // frames this close in offset are one station's
+const JS8_OPEN_SLOTS = 4; // a message with no frame for this many slots is closed
+const js8Open = []; // messages still open: [{row, freq, own, lastSlot, text}]
+let js8Heard = []; // [{call, grid, snr, freq, time, cq}], newest first
+
+function js8IsMe(call) {
+  return !!stationCallsign && !!call && baseCall(call) === baseCall(stationCallsign);
+}
+
+function js8CloseOpen(o) {
+  o.row.classList.remove('jtty-table__row--live');
+  const i = js8Open.indexOf(o);
+  if (i >= 0) js8Open.splice(i, 1);
+}
+
+function js8NewRow() {
+  const row = document.createElement('div');
+  row.className = 'ft8-table__row';
+  row.setAttribute('role', 'row');
+  for (let i = 0; i < 4; i++) row.appendChild(document.createElement('span'));
+  row.addEventListener('click', () => {
+    if (row.dataset.from) js8ReplyTo(row.dataset.from);
+  });
+  js8TableBodyEl.appendChild(row);
+  while (js8TableBodyEl.children.length > JS8_MAX_ROWS) {
+    const oldest = js8TableBodyEl.firstElementChild;
+    const o = js8Open.find((x) => x.row === oldest);
+    if (o) js8CloseOpen(o);
+    oldest.remove();
+  }
+  return row;
+}
+
+/** Puts "CALL " in the text box, ready to type the rest of a message to that station. */
+function js8ReplyTo(call) {
+  if (!call || call.startsWith('<')) return;
+  ttyInputEl.value = `${call} `;
+  ttyInputEl.focus();
+}
+
+function addJs8Decode(d) {
+  if (!d || typeof d.text !== 'string') return;
+  const own = !!d.own;
+  // Close messages that have gone quiet.
+  for (const o of [...js8Open]) if (d.slotStartMs - o.lastSlot > JS8_OPEN_SLOTS * 15000) js8CloseOpen(o);
+  let open = js8Open.find((o) => o.own === own && Math.abs(o.freq - d.freq) <= JS8_JOIN_HZ);
+  if (open && d.first) {
+    js8CloseOpen(open);
+    open = null;
+  }
+  if (!open) {
+    open = { row: js8NewRow(), freq: d.freq, own, lastSlot: d.slotStartMs, text: '' };
+    open.row.classList.toggle('js8-table__row--own', own);
+    open.row.children[0].textContent = utcClock(d.slotStartMs);
+    js8Open.push(open);
+  }
+  const stick = js8TableBodyEl.parentElement.scrollTop + js8TableBodyEl.parentElement.clientHeight >= js8TableBodyEl.parentElement.scrollHeight - 8;
+  open.text += d.text;
+  open.freq = d.freq;
+  open.lastSlot = d.slotStartMs;
+  const cells = open.row.children;
+  cells[1].textContent = Number.isFinite(d.freq) ? String(Math.round(d.freq)) : '';
+  cells[2].textContent = Number.isFinite(d.snr) ? String(d.snr) : '';
+  cells[3].textContent = open.text.trim();
+  if (d.from && !d.from.startsWith('<') && !own) open.row.dataset.from = d.from;
+  if (d.to && js8IsMe(d.to) && !own) open.row.classList.add('js8-table__row--to-me');
+  open.row.title = `${open.text.trim()} (${Math.round(d.freq)} Hz${Number.isFinite(d.snr) ? `, ${d.snr} dB` : ''})${open.row.dataset.from ? `. Tap to reply to ${open.row.dataset.from}.` : ''}`;
+  open.row.classList.toggle('jtty-table__row--live', !d.last);
+  if (d.last) js8CloseOpen(open);
+  if (stick) js8TableBodyEl.parentElement.scrollTop = js8TableBodyEl.parentElement.scrollHeight;
+  if (!own && d.from && !d.from.startsWith('<') && !d.from.startsWith('@') && !js8IsMe(d.from)) {
+    const prev = js8Heard.find((h) => h.call === d.from);
+    js8Heard = [
+      { call: d.from, grid: d.grid || prev?.grid || '', snr: d.snr, freq: d.freq, time: d.slotStartMs, cq: !!d.cq },
+      ...js8Heard.filter((h) => h.call !== d.from),
+    ].slice(0, JS8_HEARD_MAX);
+    renderJs8Heard();
+  }
+}
+
+function renderJs8Heard() {
+  js8HeardEl.replaceChildren();
+  js8HeardEl.hidden = !js8Heard.length;
+  if (!js8Heard.length) return;
+  const label = document.createElement('span');
+  label.className = 'vara-rx__heard-label';
+  label.textContent = 'Heard:';
+  js8HeardEl.appendChild(label);
+  for (const h of js8Heard) {
+    const b = document.createElement('button');
+    b.type = 'button';
+    b.className = 'chip vara-rx__heard-call';
+    b.textContent = h.call;
+    if (h.cq) {
+      const t = document.createElement('span');
+      t.className = 'vara-rx__heard-slot';
+      t.textContent = ' CQ';
+      b.appendChild(t);
+    }
+    b.title = `${h.call}${h.grid ? ` (${h.grid})` : ''}${h.cq ? ' called CQ' : ''} at ${utcClock(h.time)} UTC, ${Math.round(h.freq)} Hz${Number.isFinite(h.snr) ? `, ${h.snr} dB` : ''}. Tap to start a message to ${h.call}.`;
+    b.addEventListener('click', () => js8ReplyTo(h.call));
+    js8HeardEl.appendChild(b);
+  }
+}
+
+link.addEventListener('js8-decodes', (event) => {
+  const u = event.detail;
+  if (!u) return;
+  if (u.replace) {
+    js8TableBodyEl.replaceChildren();
+    js8Open.length = 0;
+    js8Heard = [];
+    renderJs8Heard();
+  }
+  for (const d of u.decodes || []) addJs8Decode(d);
+});
+
+/** Send becomes Stop while a message is going out. */
+function renderJs8SendButton() {
+  if (ttyMode() !== 'JS8') return;
+  const v = js8Status;
+  const sending = !!v?.sending;
+  ttySendBtn.textContent = sending ? 'Stop' : 'Send';
+  ttySendBtn.classList.toggle('ptt--active', sending);
+  ttySendBtn.disabled = !v?.available || (!sending && !v.canTransmit);
+}
+
+/** Shows JS8's state: the status line, CQ, and the Send/Stop button. */
+function renderJs8Status(v) {
+  js8Status = v || null;
+  if (!v) {
+    js8StatusEl.textContent = 'not running on the server (needs audio set up; restart PiRO after updating)';
+    js8CqBtn.disabled = true;
+    renderJs8SendButton();
+    return;
+  }
+  let text;
+  if (!v.available) text = v.reason || 'JS8 is not available on this server.';
+  else if (v.sending) {
+    const { sent, total, startsAt } = v.sending;
+    const n = Math.min(sent + 1, total);
+    text = v.keyed ? `sending frame ${n} of ${total}` : sent === 0 ? `sending from ${utcClock(startsAt)} UTC (${total} frame${total === 1 ? '' : 's'})` : `frame ${n} of ${total} next slot`;
+  } else text = v.decoding ? 'listening · decoding' : 'listening';
+  if (v.available) text += ` · offset ${v.txHz} Hz`;
+  if (v.available && !v.canTransmit) text += ' · receive only (set STATION_CALLSIGN to send)';
+  js8StatusEl.textContent = text;
+  js8CqBtn.disabled = !v.available || !v.canTransmit || !!v.sending;
+  if (Number.isFinite(v.txHz)) {
+    ttyFreqByMode.JS8 = v.txHz;
+    if (ttyMode() === 'JS8' && document.activeElement !== ttyFreqEl && Number(ttyFreqEl.value) !== v.txHz) {
+      ttyFreqEl.value = String(v.txHz);
+      scopeDisplay.setQsoFreq(v.txHz);
+    }
+  }
+  renderJs8SendButton();
+}
+
+link.addEventListener('js8-status', (event) => renderJs8Status(event.detail));
+
+/** Send / Stop in JS8: sends the text box as a JS8 message, or stops the one going out. */
+function sendJs8() {
+  if (js8Status?.sending) {
+    link.request('js8', { action: 'stop' }).catch((err) => showError(`Couldn't stop: ${err.message}`));
+    return;
+  }
+  const text = ttyInputEl.value.trim();
+  if (!text) return;
+  link
+    .request('js8', { action: 'send', text })
+    .then(() => {
+      if (ttyInputEl.value.trim() === text) ttyInputEl.value = '';
+    })
+    .catch((err) => showError(`JS8: ${err.message}`));
+}
+
+js8CqBtn.addEventListener('click', () => {
+  link.request('js8', { action: 'cq' }).catch((err) => showError(`JS8: ${err.message}`));
+});
 
 // --- SSTV receive ---
 // While a picture comes in, its lines are drawn into the canvas as they
@@ -4841,7 +5185,7 @@ function setCwPaddleVisible(visible) {
   cwComposerEl.hidden = !visible;
   if (visible && !cwTextInput.value && stationCallsign) cwTextInput.value = `CQ CQ DE ${stationCallsign} ${stationCallsign} K`;
   pttHintEl.textContent = visible
-    ? "Type text and press Send (or Enter): the radio's own keyer sends it at the WPM set below. Or hold Dot/Dash to key by hand (iambic — hold both to alternate; CI-V round-trip latency makes that timing less precise than a hardware keyer)."
+    ? "Type text and press Send (or Enter): the radio's own keyer sends it at the WPM set below. Or hold Dot/Dash to key by hand (iambic: hold both to alternate). You hear a sidetone at once; the radio sends your keying a fixed moment later, with the timing you keyed."
     : 'Hold to transmit (or hold Space). First use will ask for microphone access.';
 
   cwTickerSectionEl.hidden = !visible;
@@ -5538,6 +5882,133 @@ if (freeDvFilterControl && freeDvFilterControl.buttonEl) {
   functionControlsEl.appendChild(freeDvSpotLabel);
 }
 
+// --- "STT" checkbox (directly below the Filter button) and the speech-to-text panel ---
+// A copy aid: while ticked, the server transcribes received speech in voice
+// modes with whisper.cpp (server/stt-bridge.js) and the text appears under
+// the S-meter. Off by default. The server holds the setting (every browser
+// shows the same), and turns it off when the last browser leaves.
+const sttRxEl = document.getElementById('stt-rx');
+const sttStatusEl = document.getElementById('stt-status');
+const sttRxTextEl = document.getElementById('stt-rx-text');
+const STT_MAX_LINES = 60;
+let sttStatus = null;
+
+const sttCheckbox = document.createElement('input');
+sttCheckbox.type = 'checkbox';
+sttCheckbox.id = 'stt-checkbox';
+sttCheckbox.checked = false;
+sttCheckbox.addEventListener('change', () => {
+  const enabled = sttCheckbox.checked;
+  sttRxEl.hidden = !enabled;
+  link.request('setSttEnabled', { enabled }).catch((err) => {
+    sttCheckbox.checked = !enabled;
+    sttRxEl.hidden = !sttCheckbox.checked;
+    showError(`Couldn't ${enabled ? 'start' : 'stop'} speech to text: ${err.message}`);
+  });
+});
+
+const sttLabel = document.createElement('label');
+sttLabel.className = 'chip function-control__button stt-toggle';
+sttLabel.title = 'Speech to text: show received speech as text, as a copy aid';
+sttLabel.hidden = true; // shown in voice modes only (the server says which, as stt.voice)
+sttLabel.appendChild(sttCheckbox);
+sttLabel.appendChild(document.createTextNode('STT'));
+{
+  const filterControl = FUNCTION_CONTROLS.find((c) => c.key === 'filter');
+  if (filterControl && filterControl.buttonEl) filterControl.buttonEl.insertAdjacentElement('afterend', sttLabel);
+  else functionControlsEl.appendChild(sttLabel);
+}
+
+/** Shows speech-to-text's state: the checkbox, the panel, and its status line. */
+function renderSttStatus(s) {
+  sttStatus = s || null;
+  if (!s) {
+    sttCheckbox.checked = false;
+    sttCheckbox.disabled = true;
+    sttLabel.title = 'Speech to text is not running on the server (needs audio set up; restart PiRO after updating)';
+    sttLabel.hidden = false;
+    sttRxEl.hidden = true;
+    return;
+  }
+  // Only in voice modes (LSB, USB, AM, FM, FreeDV). Left ticked in another
+  // mode, STT waits, hidden, and comes back with a voice mode.
+  sttLabel.hidden = !s.voice;
+  sttCheckbox.disabled = false;
+  sttCheckbox.checked = !!s.enabled;
+  sttRxEl.hidden = !s.enabled || !s.voice;
+  let text;
+  if (s.phase === 'error') text = s.note || s.reason || 'not available';
+  else if (s.phase === 'starting') text = s.note || 'starting…';
+  else if (s.phase === 'paused') text = `paused: ${s.note}`;
+  else if (s.phase === 'listening') {
+    text = s.busy ? 'transcribing…' : 'listening';
+    if (s.waiting) text += ` (${s.waiting} waiting)`;
+    // The last over, so it is clear something is happening even when nothing is shown.
+    if (s.last) text += ` · last over ${s.last.durationSec} s, ${s.last.kept ? `${s.last.seconds} s to transcribe` : 'nothing kept'}`;
+    if (s.note) text += ` · ${s.note}`;
+    // The audio leaves the station: say so.
+    if (s.engine === 'deepgram') text += ' · Deepgram (cloud)';
+  } else text = 'off';
+  sttStatusEl.textContent = text;
+}
+
+/**
+ * One transcribed over: "HH:MM:SSZ text [VK3TR]", doubtful words greyed.
+ * A long over comes in pieces (part 1, 2, ...): each joins its over's line.
+ */
+function appendSttOver(o) {
+  if (!o || typeof o.text !== 'string') return;
+  const stick = sttRxTextEl.scrollTop + sttRxTextEl.clientHeight >= sttRxTextEl.scrollHeight - 8;
+  let line = o.part > 0 && o.overId != null ? [...sttRxTextEl.children].reverse().find((l) => l.dataset.over === String(o.overId)) : null;
+  if (!line) {
+    line = document.createElement('div');
+    line.className = 'stt-rx__line';
+    if (o.overId != null) line.dataset.over = String(o.overId);
+    line.dataset.seconds = '0';
+    const time = document.createElement('span');
+    time.className = 'stt-rx__time';
+    time.textContent = `${utcClock(o.time).slice(0, 8)}Z`;
+    line.appendChild(time);
+    sttRxTextEl.appendChild(line);
+  }
+  const words = Array.isArray(o.words) && o.words.length ? o.words : o.text.split(' ').filter(Boolean).map((w) => ({ w }));
+  for (const wd of words) {
+    line.appendChild(document.createTextNode(' '));
+    if (wd.low) {
+      const span = document.createElement('span');
+      span.className = 'stt-rx__low';
+      span.title = `Whisper wasn't sure of this word (${Math.round((wd.p ?? 0) * 100)}%)`;
+      span.textContent = wd.w;
+      line.appendChild(span);
+    } else line.appendChild(document.createTextNode(wd.w));
+  }
+  for (const call of o.callsigns || []) {
+    line.appendChild(document.createTextNode(' '));
+    const c = document.createElement('span');
+    c.className = 'stt-rx__call';
+    c.textContent = `[${call}]`;
+    c.title = `${call}: the callsign spelled in this over`;
+    line.appendChild(c);
+  }
+  const total = Number(line.dataset.seconds) + (o.durationSec || 0);
+  line.dataset.seconds = String(total);
+  line.title = `${Math.round(total * 10) / 10} s over${o.part > 0 ? `, ${o.part + 1} pieces` : ''}; the last transcribed in ${o.seconds ?? '?'} s`;
+  while (sttRxTextEl.children.length > STT_MAX_LINES) sttRxTextEl.firstElementChild.remove();
+  if (stick) sttRxTextEl.scrollTop = sttRxTextEl.scrollHeight;
+}
+
+link.addEventListener('stt-status', (event) => renderSttStatus(event.detail));
+link.addEventListener('stt-text', (event) => {
+  const u = event.detail;
+  if (!u) return;
+  if (u.replace) {
+    sttRxTextEl.replaceChildren();
+    for (const o of u.overs || []) appendSttOver(o);
+    return;
+  }
+  appendSttOver(u);
+});
+
 // --- RTTY "Reverse" checkbox (lives inside the RTTY ticker section) ---
 // Swaps which tone (mark/space) the decoder treats as which — see
 // src/audio/rtty-decoder.js's own constructor doc comment for why this
@@ -5932,69 +6403,123 @@ window.addEventListener('keyup', (event) => {
 // releasePtt() themselves, since those also start/stop the microphone
 // audio pipeline, which CW keying has no use for.
 //
-// Latency caveat, worth being upfront about: there is no CI-V primitive
-// for "key down for N milliseconds" — the only way to produce a dot or
-// dash is toggling the same setPtt command used for voice PTT, once per
-// element, over the WebSocket + serial round trip. At typical WPM this
-// timing will be visibly less precise than a hardware keyer or the
-// radio's own internal one; the default 15 WPM here is a deliberately
-// conservative starting point given that latency, not a claim of
-// contest-grade keying. See docs/ui-notes.md.
+// The paddle's iambic keyer runs here, but the timing on air is made at the
+// radio's end (server/cw-paddle-bridge.js). Each element is sent as it
+// starts, as {session, t, d}: t from the keyer's own schedule (each element
+// starts one unit after the last ends), not from when a browser timer
+// happened to fire, so neither browser timers nor the network change what
+// is sent. The server holds the elements a fixed time (CW_PADDLE_DELAY_MS)
+// and replays them on its own clock. A sidetone plays here straight away,
+// so you hear your keying without the delay. See docs/ui-notes.md.
 let paddleDotDown = false;
 let paddleDashDown = false;
 let keyerLoopRunning = false;
 let lastKeyerElementWasDash = false; // alternates dot/dash when both paddles are squeezed
-let keyerSessionStartedAt = null;
+const CW_SESSION_IDLE_MS = 3000; // a new keying session after this long without an element (the server waits longer)
+const CW_SESSION_MAX_MS = 10 * 60 * 1000; // the server stops a session at 10 minutes too
+let cwSession = null; // {id, t0, lastEnd, failed}: times are performance.now() ms
 
 function keyerUnitMs() {
   const wpm = Math.max(5, Math.min(40, Number(cwWpmInput.value) || 15));
   return 1200 / wpm; // standard PARIS-word timing convention
 }
 
+// Shows this browser as keying (and the meter as SWR, which follows pttActive).
 function startKeyerSession() {
   if (pttActive) return;
   pttActive = true;
-  keyerSessionStartedAt = Date.now();
   updatePttVisual(true);
 }
 
 function endKeyerSession() {
   if (!pttActive) return;
   pttActive = false;
-  keyerSessionStartedAt = null;
   updatePttVisual(false);
-  link.request('setPtt', { value: false }).catch((err) => showError(err.message));
+  // Nothing to send: the server keys each element up itself, and ends the
+  // session a few seconds after the last one.
 }
+
+function cwKeyingSession(now) {
+  if (!cwSession || cwSession.failed || now - cwSession.lastEnd > CW_SESSION_IDLE_MS) {
+    cwSession = { id: `${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 8)}`, t0: now, lastEnd: -Infinity, failed: false };
+  }
+  return cwSession;
+}
+
+function sendCwElement(session, start, d) {
+  link.request('cwKey', { session: session.id, t: Math.round((start - session.t0) * 10) / 10, d: Math.round(d * 10) / 10 }).catch((err) => {
+    if (session.failed) return;
+    session.failed = true; // one message, and stop keying
+    paddleDotDown = false;
+    paddleDashDown = false;
+    showError(`CW paddle: ${err.message}`);
+  });
+}
+
+// Sidetone: a 600 Hz tone, scheduled on the audio clock so its elements are
+// exactly the lengths sent, with 4 ms ramps so it doesn't click.
+const SIDETONE_HZ = 600;
+const SIDETONE_LEVEL = 0.2;
+let sidetoneCtx = null;
+let sidetoneGain = null;
+function playSidetone(start, d) {
+  try {
+    if (!sidetoneCtx) {
+      sidetoneCtx = new (window.AudioContext || window.webkitAudioContext)();
+      const osc = sidetoneCtx.createOscillator();
+      osc.frequency.value = SIDETONE_HZ;
+      sidetoneGain = sidetoneCtx.createGain();
+      sidetoneGain.gain.value = 0;
+      osc.connect(sidetoneGain).connect(sidetoneCtx.destination);
+      osc.start();
+    }
+    if (sidetoneCtx.state === 'suspended') sidetoneCtx.resume();
+    const at = sidetoneCtx.currentTime + Math.max(0, (start - performance.now()) / 1000);
+    const len = d / 1000;
+    const ramp = Math.min(0.004, len / 4);
+    const g = sidetoneGain.gain;
+    g.setValueAtTime(0, at);
+    g.linearRampToValueAtTime(SIDETONE_LEVEL, at + ramp);
+    g.setValueAtTime(SIDETONE_LEVEL, at + len - ramp);
+    g.linearRampToValueAtTime(0, at + len);
+  } catch {
+    // no Web Audio: keying works without the sidetone
+  }
+}
+
+const sleepUntil = (t) => new Promise((resolve) => setTimeout(resolve, Math.max(0, t - performance.now())));
 
 async function runKeyerLoop() {
   if (keyerLoopRunning) return;
   keyerLoopRunning = true;
   startKeyerSession();
+  const now = performance.now();
+  const session = cwKeyingSession(now);
+  // Carrying on a session: never closer than one unit after the last element.
+  let next = Math.max(now, session.lastEnd + keyerUnitMs());
   try {
-    while (paddleDotDown || paddleDashDown) {
-      // Defense-in-depth against the 10-minute fail-safe: the server
-      // watchdog resets on every element's off-period (correctly, so
-      // normal keying never trips it — see docs/civ-notes.md), which
-      // means a genuinely stuck paddle producing continuous keying for
-      // the entire 10 minutes wouldn't hit that backstop the same way a
-      // held voice PTT would. This client-side session-length check
-      // closes that specific gap.
-      if (keyerSessionStartedAt != null && Date.now() - keyerSessionStartedAt > 10 * 60 * 1000) {
+    while ((paddleDotDown || paddleDashDown) && !session.failed) {
+      if (next - session.t0 > CW_SESSION_MAX_MS) {
         showError('CW keying automatically stopped after 10 minutes (fail-safe cutoff).');
         break;
       }
+      const unit = keyerUnitMs();
       const sendDash = paddleDotDown && paddleDashDown ? !lastKeyerElementWasDash : paddleDashDown;
       lastKeyerElementWasDash = sendDash;
+      const start = next;
+      const d = sendDash ? unit * 3 : unit;
+      sendCwElement(session, start, d);
+      playSidetone(start, d);
+      session.lastEnd = start + d;
+      await sleepUntil(start);
       cwDotBtn.classList.toggle('cw-paddle__btn--active', !sendDash);
       cwDashBtn.classList.toggle('cw-paddle__btn--active', sendDash);
-      const elementMs = sendDash ? keyerUnitMs() * 3 : keyerUnitMs();
-      await link.request('setPtt', { value: true }).catch((err) => showError(err.message));
-      await new Promise((resolve) => setTimeout(resolve, elementMs));
-      await link.request('setPtt', { value: false }).catch((err) => showError(err.message));
+      await sleepUntil(start + d);
       cwDotBtn.classList.remove('cw-paddle__btn--active');
       cwDashBtn.classList.remove('cw-paddle__btn--active');
       if (!paddleDotDown && !paddleDashDown) break;
-      await new Promise((resolve) => setTimeout(resolve, keyerUnitMs())); // inter-element gap
+      next = start + d + unit; // the gap between elements
+      await sleepUntil(next);
     }
   } finally {
     keyerLoopRunning = false;
@@ -6003,6 +6528,11 @@ async function runKeyerLoop() {
     endKeyerSession();
   }
 }
+
+// Another browser's paddle (or this one's session being stopped early).
+link.addEventListener('cw-keying', (event) => {
+  if (event.detail.message) showError(event.detail.message);
+});
 
 cwDotBtn.addEventListener('pointerdown', (event) => {
   cwDotBtn.setPointerCapture(event.pointerId);

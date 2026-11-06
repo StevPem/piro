@@ -327,14 +327,27 @@ test('Stop remains accepted when the CI-V polling queue is full', async (t) => {
   const { peer, driver } = await radio(t);
   peer.options.delayNextReply = 40;
   const current = driver.getMode();
-  const reads = Array.from({ length: 256 }, () => driver.getSMeter().catch((err) => err));
+  const reads = Array.from({ length: driver.maxQueue }, () => driver.getSMeter());
+  await assert.rejects(driver.getSMeter(), /queue full/);
   await driver.setPtt(false);
   await current;
-  const results = await Promise.all(reads);
-  assert.equal(results.filter((value) => value instanceof Error).length, 1);
-  assert.match(results.find((value) => value instanceof Error).message, /urgent stop/);
+  await Promise.all(reads);
   assert.equal(peer.ptt, false);
   assert.equal(driver._queue.length, 0);
+});
+
+test('LAN PTT preserves the urgent key option used by the CW paddle', async (t) => {
+  const { driver } = await radio(t);
+  await driver.setMode('CW');
+  const send = driver._send.bind(driver);
+  let keyed;
+  driver._send = (...args) => {
+    if (args[0] === 0x1c && args[1] === 0 && args[2]?.[0] === 1) keyed = args[3];
+    return send(...args);
+  };
+  await driver.setPtt(true, { urgent: true });
+  assert.equal(keyed?.urgent, true);
+  await driver.setPtt(false);
 });
 
 test('existing FT8 bridge sends its PCM through the LAN backend, drains the radio tail and cancels on loss', async (t) => {

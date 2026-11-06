@@ -4,35 +4,38 @@ PiRO can connect directly to an IC-7300MK2 over Ethernet for rig control,
 receive/transmit PCM, scope and typed CW, without USB/ALSA or another radio
 application. USB remains the default connection.
 
-The LAN implementation authenticates on the server, independently verifies
-radio identity, restores changed routing settings, bounds audio queues, and
-cancels pending transmit work after radio loss. Hardware validation found
-that identity discovery must use the LAN-advertised CI-V address. It also
-found a stale disabled scope snapshot after initial scope failure/reconnect;
-the candidate fixes both and adds regressions.
+Integrated upstream StevPem/piro main at da2d962, retaining its Origin checks,
+heartbeat/PTT ownership, queue ordering/stale-ACK protection, backpressure,
+CW keyline/paddle support, JS8, STT and DeepCW worker. Build/cache is v135.
 
-Validation:
+LAN initialization uses the authenticated session's advertised CI-V address
+then independently verifies the MK2 model, so custom addresses remain usable.
+Reconnect repairs cached scope status. LAN radio loss cancels paddle/JS8 work;
+JS8 waits for paced audio to drain before unkeying, and failed LAN watchdog
+release preserves unknown PTT state rather than falsely confirming receive.
+USB keyline configuration and upstream queue limits/order are preserved.
+The LAN suite uses a wrapper compatible with upstream's CI test runner.
+
+Hardware evidence predates integration:
 - Physical IC-7300MK2 receive/control sweep: frequency, six modes, filters,
   DATA, receive controls, meters, 475-point scope and three spans.
 - Operator-authorized 5 W dummy-load voice/DATA PCM, typed CW completion,
   active CW abort, PTT release and readback of restored active settings.
-- Candidate discovery verified on the actual radio without an explicit
-  CI-V address; clean service restart recovered receive audio and scope.
-- Full baseline npm test passed with the advertised-address fix. Final LAN
-  suite passed 59/59; the upstream-compatible test entry point was checked separately.
-- docs/icom-lan-hardware-validation.md contains exact evidence and limits.
+- Candidate discovery verified on the radio without an explicit address.
+- Clean service restart recovered receive audio and scope.
+See docs/icom-lan-hardware-validation.md for observations and limits.
 
-Before opening against StevPem/piro:main:
-The feature branch is 37 commits behind the verified upstream head da2d962.
-Integrate current upstream and preserve its Origin checks, heartbeat/PTT-owner
-release, queue ordering/stale-ACK protection, backpressure, CW keyline/paddle,
-JS8, STT and DeepCW-worker changes. Run the full upstream plus LAN suite on
-that integrated result. The test entry point is now compatible with the
-upstream CI runner, but integration itself has not been performed here.
+Integrated validation: TEST_RETRIES=0 npm run test:ci passed 65/65 file
+groups (68 LAN subtests) in 338 seconds. Syntax and diff checks passed.
+The hardware report records the exact scope and remaining limits.
+No new runtime dependencies. No credentials are included in this change.
+The running Pi installation remains on its previously validated source.
 
 Limits:
 No independent RF power/spectrum or digital decoder measurement, firmware
 record, two-hour soak, packet-loss/VPN test, or physical network/radio failure
-while transmitting. Other modes' stored filter preferences are not restored
-by the manual mode sweep; the originally active mode/filter is restored.
+while transmitting. Repeat hardware checks after deploying the integrated
+build. The manual mode sweep restores the originally active mode/filter;
+other modes' stored filter preferences are not restored.
+
 This is a preparation draft, not a published PR.

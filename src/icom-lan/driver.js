@@ -213,18 +213,18 @@ class IcomLanDriver extends CivDriver {
     if (errors.length) throw new Error(`Could not restore radio settings: ${errors.join('; ')}`);
   }
 
-  setPtt(on) {
+  setPtt(on, options = {}) {
     const revision = ++this.txRevision;
     // Cancel local audio immediately on release; serialize radio routing and
     // restoration so an older release cannot restore MIC after a newer key.
     if (!on) this.playback.setKeyed(false);
-    return this.queueSettings(() => this.transitionPtt(on, revision));
+    return this.queueSettings(() => this.transitionPtt(on, revision, options));
   }
 
-  async transitionPtt(on, revision) {
+  async transitionPtt(on, revision, options) {
     if (!on) {
       this.playback.setKeyed(false);
-      const result = await super.setPtt(false);
+      const result = await super.setPtt(false, options);
       // PTT was confirmed off independently of settings restoration. Report
       // restoration failure without leaving the server's TX state falsely on.
       await this.restore(this.txSaved).catch((err) => this.emit('restore-error', err));
@@ -235,7 +235,7 @@ class IcomLanDriver extends CivDriver {
       this.playback.arm();
       await this.prepareTx(revision);
       if (revision !== this.txRevision) throw new Error('PTT request was cancelled');
-      await super.setPtt(true);
+      await super.setPtt(true, options);
       if (revision !== this.txRevision) throw new Error('PTT request was cancelled');
       this.playback.setKeyed(true);
       return true;

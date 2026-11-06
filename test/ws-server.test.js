@@ -174,7 +174,7 @@ async function run() {
     helloA.data.mode && helloA.data.mode.mode === 'USB',
     'listen() primes state.mode from the radio before any client connects, so the first snapshot already has a real value'
   );
-  check(helloA.data.screenTitle === 'SPARC PiRO', 'screenTitle defaults to "SPARC PiRO" when not configured');
+  check(helloA.data.screenTitle === 'PiRO', 'screenTitle defaults to "PiRO" when not configured');
   check(
     helloA.data.stationCallsign === null && helloA.data.stationGrid === null,
     'stationCallsign/stationGrid default to null when not configured'
@@ -230,6 +230,21 @@ async function run() {
     badValueReply.id === '4' && badValueReply.ok === false,
     'invalid value type is rejected with an error, not thrown/crashed'
   );
+
+  // Numbers that used to reach the radio as garbage BCD are refused.
+  {
+    const before = civ._freq;
+    for (const [n, value] of [[-14074000, 'negative'], [0, 'zero'], [1e21, '1e21'], [1e10, 'over 10 digits']]) {
+      clientA.send(JSON.stringify({ id: `f${n}`, type: 'setFrequency', value: n }));
+      const r = await nextMessage(clientA);
+      check(r.ok === false && /from 1 to 9999999999/.test(r.error || ''), `setFrequency refuses ${value} with a clear error`);
+    }
+    check(civ._freq === before, 'and the radio is not touched');
+    clientA.send(JSON.stringify({ id: 'f-frac', type: 'setFrequency', value: 7074000.6 }));
+    const frac = await nextMessage(clientA);
+    await nextMessage(clientB); // the broadcast to the other browser
+    check(frac.ok === true && frac.data.value === 7074001 && civ._freq === 7074001 && server.state.frequency === 7074001, 'a fraction is rounded to whole Hz, and that is what is reported');
+  }
 
   clientA.send(JSON.stringify({ id: '5', type: 'setScopeBand', lowHz: 7000000, highHz: 7300000 }));
   const scopeBandReply = await nextMessage(clientA);
@@ -1235,6 +1250,72 @@ async function run() {
     await vServer.close();
   }
 
+  // JS8: setJs8Active (with the transmit offset), js8 requests (answered by the bridge), release when the last client leaves.
+  {
+    const jServer = new ControlServer({ civ: new StubCivDriver(), port: 0 });
+    const jPort = await jServer.listen();
+    const c = await connect(jPort);
+    const hello = await nextMessage(c);
+    check(hello.data.js8Active === false && hello.data.js8TxHz === 1500 && hello.data.js8 === null, 'connected snapshot reports js8Active=false, the offset and no JS8 state');
+    c.send(JSON.stringify({ id: 'j1', type: 'setJs8Active', active: true }));
+    const none = await nextMessage(c);
+    check(none.type === 'error' && /not set up/.test(none.error), 'setJs8Active fails without a JS8 bridge');
+    c.send(JSON.stringify({ id: 'j1b', type: 'js8', action: 'cq' }));
+    const none2 = await nextMessage(c);
+    check(none2.type === 'error' && /not set up/.test(none2.error), 'js8 fails without a JS8 bridge');
+    const actives = [];
+    const reqs = [];
+    jServer.on('js8-active', (a) => actives.push(a));
+    jServer.on('js8', async (r) => {
+      if (r.action === 'send' && !r.text) throw new Error('Nothing to send.');
+      reqs.push(r);
+      return { frames: 2, startsAt: 15000 };
+    });
+    c.send(JSON.stringify({ id: 'j2', type: 'setJs8Active', active: 'on' }));
+    check((await nextMessage(c)).type === 'error', 'setJs8Active rejects a non-boolean');
+    c.send(JSON.stringify({ id: 'j3', type: 'setJs8Active', active: true, txHz: 1234.4 }));
+    const ok = await nextMessage(c);
+    check(ok.data.active === true && ok.data.txHz === 1234 && jServer.state.js8Active === true && actives[0].txHz === 1234, 'setJs8Active arms JS8 with its offset');
+    c.send(JSON.stringify({ id: 'j3b', type: 'setJs8Active', active: true, txHz: 5000 }));
+    const high = await nextMessage(c);
+    check(high.data.txHz === 2700 && jServer.state.js8TxHz === 2700, 'an offset above the passband is clamped to 2700 Hz');
+    c.send(JSON.stringify({ id: 'j4', type: 'js8', action: 'jump' }));
+    check((await nextMessage(c)).type === 'error', 'js8 rejects an unknown action');
+    c.send(JSON.stringify({ id: 'j5', type: 'js8', action: 'send', text: 'VK2ABC SNR?' }));
+    const sent = await nextMessage(c);
+    check(sent.ok === true && sent.data.frames === 2 && reqs[0]?.text === 'VK2ABC SNR?', "js8 send is passed to the bridge and its answer returned");
+    c.send(JSON.stringify({ id: 'j6', type: 'js8', action: 'send', text: '' }));
+    const refused = await nextMessage(c);
+    check(refused.type === 'error' && refused.error === 'Nothing to send.', "the bridge's refusal goes back to the browser");
+    c.close();
+    await new Promise((r) => setTimeout(r, 100));
+    check(jServer.state.js8Active === false && actives.at(-1).active === false, 'last client disconnecting stops JS8');
+    await jServer.close();
+  }
+
+  // Speech to text: setSttEnabled (passed to the bridge), off when the last client leaves.
+  {
+    const tServer = new ControlServer({ civ: new StubCivDriver(), port: 0 });
+    const tPort = await tServer.listen();
+    const c = await connect(tPort);
+    const hello = await nextMessage(c);
+    check(hello.data.sttEnabled === false && hello.data.stt === null, 'connected snapshot reports sttEnabled=false and no STT state');
+    c.send(JSON.stringify({ id: 't1', type: 'setSttEnabled', enabled: true }));
+    const none = await nextMessage(c);
+    check(none.type === 'error' && /not set up/.test(none.error), 'setSttEnabled fails without an STT bridge');
+    const seen = [];
+    tServer.on('stt-enabled', (e) => seen.push(e));
+    c.send(JSON.stringify({ id: 't2', type: 'setSttEnabled', enabled: 'yes' }));
+    check((await nextMessage(c)).type === 'error', 'setSttEnabled rejects a non-boolean');
+    c.send(JSON.stringify({ id: 't3', type: 'setSttEnabled', enabled: true }));
+    const ok = await nextMessage(c);
+    check(ok.data.enabled === true && tServer.state.sttEnabled === true && seen[0] === true, 'setSttEnabled turns STT on');
+    c.close();
+    await new Promise((r) => setTimeout(r, 100));
+    check(tServer.state.sttEnabled === false && seen.at(-1) === false, 'last client disconnecting turns STT off');
+    await tServer.close();
+  }
+
   // SSTV: setSstvActive, endSstvPicture, getSstvPictures, release when the last client leaves.
   {
     const sServer = new ControlServer({ civ: new StubCivDriver(), port: 0 });
@@ -1618,6 +1699,308 @@ async function run() {
 
     client.close();
     await watchdogServer.close();
+  }
+
+  // The browser that keyed PTT disconnects mid-over (a phone losing its
+  // network): PTT is released at once, not after the 10-minute watchdog.
+  {
+    const pCiv = new StubCivDriver();
+    const pServer = new ControlServer({ civ: pCiv, port: 0, heartbeatMs: 0 });
+    const pPort = await pServer.listen();
+    const keyer = await connect(pPort);
+    const other = await connect(pPort);
+    await nextMessage(keyer);
+    await nextMessage(other);
+    keyer.send(JSON.stringify({ id: '1', type: 'setPtt', value: true }));
+    await nextMessage(keyer);
+    check((await nextMessage(other)).data.value === true, 'the other browser hears PTT go on');
+    check(pCiv._ptt === true, 'PTT is on before the keying browser goes');
+    keyer.terminate(); // no clean close, like a dropped connection
+    const off = await nextMessage(other);
+    check(off.type === 'ptt' && off.data.value === false, "the other browser gets 'ptt' false when the keying browser goes");
+    check(pCiv._ptt === false && pServer.state.ptt === false, 'PTT is released on the radio when the keying browser disconnects');
+    check(pServer._pttWatchdogTimer === null, 'the watchdog is cleared by that release');
+    other.close();
+    await pServer.close();
+  }
+
+  // Another browser leaving doesn't release PTT held by someone else.
+  {
+    const pCiv = new StubCivDriver();
+    const pServer = new ControlServer({ civ: pCiv, port: 0, heartbeatMs: 0 });
+    const pPort = await pServer.listen();
+    const keyer = await connect(pPort);
+    const other = await connect(pPort);
+    await nextMessage(keyer);
+    await nextMessage(other);
+    keyer.send(JSON.stringify({ id: '1', type: 'setPtt', value: true }));
+    await nextMessage(keyer);
+    other.terminate();
+    await sleep(100);
+    check(pCiv._ptt === true, 'a browser that did not key PTT leaving leaves PTT alone');
+    keyer.send(JSON.stringify({ id: '2', type: 'setPtt', value: false }));
+    await nextMessage(keyer);
+    keyer.close();
+    await sleep(50);
+    check(pCiv._ptt === false, 'a browser that already released PTT leaving changes nothing');
+    await pServer.close();
+  }
+
+  // PTT keyed by a bridge (no owner) isn't released by a browser leaving;
+  // the bridges handle that themselves.
+  {
+    const pCiv = new StubCivDriver();
+    const pServer = new ControlServer({ civ: pCiv, port: 0, heartbeatMs: 0 });
+    const pPort = await pServer.listen();
+    const c = await connect(pPort);
+    await nextMessage(c);
+    await pServer.setPttFromServer(true);
+    c.terminate();
+    await sleep(100);
+    check(pCiv._ptt === true, 'a bridge-keyed transmission is not released by a browser leaving');
+    await pServer.setPttFromServer(false);
+    await pServer.close();
+  }
+
+  // The browser goes while the radio is still being keyed: released as soon as keying completes.
+  {
+    const pCiv = new StubCivDriver();
+    let finishKeying;
+    pCiv.setPtt = function (on) {
+      if (!on) {
+        this._ptt = false;
+        return Promise.resolve(true);
+      }
+      return new Promise((resolve) => {
+        finishKeying = () => {
+          this._ptt = true;
+          resolve(true);
+        };
+      });
+    };
+    const pServer = new ControlServer({ civ: pCiv, port: 0, heartbeatMs: 0 });
+    const pPort = await pServer.listen();
+    const c = await connect(pPort);
+    await nextMessage(c);
+    c.send(JSON.stringify({ id: '1', type: 'setPtt', value: true }));
+    while (!finishKeying) await sleep(5);
+    c.terminate();
+    await sleep(50); // the server has seen the close
+    finishKeying();
+    await sleep(50);
+    check(pCiv._ptt === false && pServer.state.ptt === false, 'PTT keyed after its browser left is released straight away');
+    await pServer.close();
+  }
+
+  // Heartbeat: a browser that stops answering pings is dropped, and PTT it held is released.
+  {
+    const pCiv = new StubCivDriver();
+    const pServer = new ControlServer({ civ: pCiv, port: 0, heartbeatMs: 60 });
+    const pPort = await pServer.listen();
+    const live = await connect(pPort);
+    await nextMessage(live);
+    const dead = await new Promise((resolve, reject) => {
+      const ws = new WebSocket(`ws://localhost:${pPort}`, { autoPong: false });
+      ws.on('open', () => resolve(ws));
+      ws.on('error', reject);
+    });
+    await sleep(30);
+    dead.send(JSON.stringify({ id: '1', type: 'setPtt', value: true }));
+    await sleep(30);
+    check(pCiv._ptt === true, 'PTT on from the browser that will go silent');
+    const closed = new Promise((resolve) => dead.on('close', resolve));
+    await Promise.race([closed, sleep(1000)]);
+    check(dead.readyState === WebSocket.CLOSED, 'a browser that stops answering pings is dropped');
+    await sleep(20);
+    check(pCiv._ptt === false, 'PTT it held is released when it is dropped');
+    await sleep(200); // several more heartbeats
+    check(live.readyState === WebSocket.OPEN, 'a browser that answers pings stays connected');
+    live.close();
+    await pServer.close();
+  }
+
+  // Backpressure: live frames (audio, scope, spectrum) are skipped for a
+  // browser that is too far behind; picture frames and JSON never are.
+  {
+    const { BINARY_TYPE, EVENT } = require('../src/server/protocol');
+    const { LIVE_BACKLOG_BYTES } = require('../src/server/ws-server');
+    const bServer = new ControlServer({ civ: new StubCivDriver(), port: 0, heartbeatMs: 0 });
+    const log = console.log;
+    const warn = console.warn;
+    const lines = [];
+    // keep the server's [ws] lines to check them; pass the rest (the checks) through
+    console.log = (m, ...rest) => (String(m).startsWith('[ws]') ? lines.push(String(m)) : log(m, ...rest));
+    console.warn = (m, ...rest) => (String(m).startsWith('[ws]') ? lines.push(String(m)) : warn(m, ...rest));
+    try {
+      const fake = () => ({ OPEN: 1, readyState: 1, bufferedAmount: 0, sent: [], send(b) { this.sent.push(b); } });
+      const audio = Buffer.from([BINARY_TYPE.AUDIO, 1, 2]);
+      const scope = Buffer.from([BINARY_TYPE.SCOPE_LINE, 1]);
+      const sstv = Buffer.from([BINARY_TYPE.SSTV_LINE, 1]);
+      const fax = Buffer.from([BINARY_TYPE.FAX_LINE, 1]);
+      const hell = Buffer.from([BINARY_TYPE.HELL_COLUMNS, 1]);
+      const slow = fake();
+      const fast = fake();
+      bServer.clients.add(slow);
+      bServer.clients.add(fast);
+      slow.bufferedAmount = LIVE_BACKLOG_BYTES.pcm + 1;
+      bServer.broadcastBinary(audio);
+      bServer.broadcastBinary(scope);
+      check(slow.sent.length === 0 && bServer.isLagging(slow), 'a browser over its backlog limit gets no audio or scope frames');
+      check(fast.sent.length === 2 && !bServer.isLagging(fast), 'another browser at the same time gets them all');
+      bServer.broadcastBinary(sstv);
+      bServer.broadcastBinary(fax);
+      bServer.broadcastBinary(hell);
+      check(slow.sent.length === 3, 'SSTV, fax and Feld-Hell picture frames are still sent to the slow browser');
+      bServer.broadcastJsonEvent(EVENT.FREQUENCY, { value: 7074000 });
+      check(slow.sent.length === 4, 'and JSON events (state, text) are still sent');
+      slow.bufferedAmount = LIVE_BACKLOG_BYTES.pcm / 2; // under the limit, not yet a quarter
+      bServer.broadcastBinary(audio);
+      check(slow.sent.length === 4 && bServer.isLagging(slow), 'it keeps skipping until well caught up (under a quarter of the limit), not on and off each frame');
+      slow.bufferedAmount = 1000;
+      bServer.broadcastBinary(audio);
+      check(slow.sent.length === 5 && !bServer.isLagging(slow), 'once caught up it gets audio again');
+      check(lines.filter((l) => /falling behind/.test(l)).length === 1 && lines.filter((l) => /caught up after .* 3 audio\/scope frames were skipped/.test(l)).length === 1, 'one log line when it falls behind and one when it catches up, with the count: ' + lines.join(' | '));
+
+      // the limit follows the browser's audio format
+      bServer.setClientAudioCodec = (ws, codec) => codec;
+      const c = await (async () => {
+        const p2 = await bServer.listen();
+        const ws = await connect(p2);
+        await nextMessage(ws);
+        return ws;
+      })();
+      const serverSide = [...bServer.clients].find((w) => w !== slow && w !== fast);
+      c.send(JSON.stringify({ id: 'codec', type: 'setAudioCodec', codec: 'opus' }));
+      await nextMessage(c);
+      check(bServer._liveLimit.get(serverSide) === LIVE_BACKLOG_BYTES.compressed, 'a browser on compressed audio gets the smaller limit (seconds of Opus, not minutes)');
+      c.send(JSON.stringify({ id: 'codec2', type: 'setAudioCodec', codec: 'pcm' }));
+      await nextMessage(c);
+      check(bServer._liveLimit.get(serverSide) === LIVE_BACKLOG_BYTES.pcm, 'back on raw audio, the larger one');
+      c.close();
+      bServer.clients.delete(slow);
+      bServer.clients.delete(fast);
+    } finally {
+      console.log = log;
+      console.warn = warn;
+    }
+    await bServer.close();
+  }
+
+  // Backpressure with a real browser that stops reading: the server's
+  // backlog for it stays near the limit while another browser gets everything.
+  {
+    const { BINARY_TYPE } = require('../src/server/protocol');
+    const limit = 64 * 1024;
+    const rServer = new ControlServer({ civ: new StubCivDriver(), port: 0, heartbeatMs: 0, liveBacklogBytes: { pcm: limit, compressed: limit } });
+    const rPort = await rServer.listen();
+    // plain clients: connect() parses every message as JSON
+    const open = () =>
+      new Promise((resolve, reject) => {
+        const ws = new WebSocket(`ws://localhost:${rPort}`);
+        ws.on('open', () => resolve(ws));
+        ws.on('error', reject);
+      });
+    const stuck = await open();
+    let goodFrames = 0;
+    const good = await open();
+    good.on('message', (raw, isBinary) => {
+      if (isBinary) goodFrames++;
+    });
+    await sleep(50);
+    stuck._socket.pause(); // stops reading, like a phone whose link has stalled
+    const serverStuck = [...rServer.clients][0]; // the first to connect
+    const warn = console.warn;
+    console.warn = () => {};
+    const frame = Buffer.alloc(4096, 0);
+    frame[0] = BINARY_TYPE.AUDIO;
+    let maxBacklog = 0;
+    const total = 4000; // 16 MB: far more than the OS will buffer for the stalled socket
+    for (let i = 0; i < total; i++) {
+      rServer.broadcastBinary(frame);
+      maxBacklog = Math.max(maxBacklog, serverStuck.bufferedAmount);
+      if (i % 50 === 0) await new Promise((r) => setImmediate(r));
+    }
+    console.warn = warn;
+    check(rServer.isLagging(serverStuck), 'a browser that stops reading is detected as behind');
+    check(maxBacklog <= limit + frame.length, `the server never holds more than the limit plus one frame for it (most: ${Math.round(maxBacklog / 1024)} kB, limit ${limit / 1024} kB)`);
+    const t0 = Date.now();
+    while (goodFrames < total && Date.now() - t0 < 5000) await sleep(20);
+    check(goodFrames === total, `a browser reading normally meanwhile gets every frame (${goodFrames}/${total})`);
+    stuck.close();
+    good.close();
+    await rServer.close();
+  }
+
+  // CW paddle elements (REQUEST.CW_KEY) go to CwPaddleBridge.
+  {
+    const kServer = new ControlServer({ civ: new StubCivDriver(), port: 0, heartbeatMs: 0 });
+    const kPort = await kServer.listen();
+    const c = await connect(kPort);
+    check((await nextMessage(c)).data.cwKeying === false, 'cwKeying is in the connect snapshot');
+    c.send(JSON.stringify({ id: 'k1', type: 'cwKey', session: 's', t: 0, d: 60 }));
+    const none = await nextMessage(c);
+    check(none.ok === false && /not available/.test(none.error), 'cwKey without the paddle bridge is refused');
+    const seen = [];
+    kServer.cwPaddle = { key: (ws, msg) => (seen.push(msg), { delayMs: 250, lateMs: 0 }) };
+    c.send(JSON.stringify({ id: 'k2', type: 'cwKey', session: 's', t: 0, d: 60 }));
+    const r = await nextMessage(c);
+    check(r.ok && r.data.delayMs === 250 && seen[0].t === 0 && seen[0].d === 60, 'cwKey is handed to the paddle bridge, which replies at once');
+    c.close();
+    await kServer.close();
+  }
+
+  // Message size limit: one browser can't make the server hold a huge message.
+  {
+    const { MAX_MESSAGE_BYTES } = require('../src/server/ws-server');
+    check(MAX_MESSAGE_BYTES >= Math.ceil((4 * 1024 * 1024 * 4) / 3) + 1024, 'the limit is above the largest message the protocol allows (a 4 MB EasyPal JPEG as base64)');
+    const mServer = new ControlServer({ civ: new StubCivDriver(), port: 0, heartbeatMs: 0, maxMessageBytes: 64 * 1024 });
+    const mPort = await mServer.listen();
+    const c = await connect(mPort);
+    await nextMessage(c);
+    c.send(JSON.stringify({ id: 'big-ok', type: 'postNote', text: 'x'.repeat(10), pad: 'y'.repeat(32 * 1024) }));
+    const okReply = await nextMessage(c);
+    check(okReply.id === 'big-ok', 'a message under the limit is handled');
+    const closed = new Promise((resolve) => c.on('close', (code) => resolve(code)));
+    c.send(JSON.stringify({ id: 'too-big', type: 'postNote', text: 'x', pad: 'y'.repeat(100 * 1024) }));
+    const code = await Promise.race([closed, sleep(2000).then(() => 'still open')]);
+    check(code === 1009, `a message over the limit closes the socket with 1009 (message too big), got ${code}`);
+    await sleep(20);
+    check(mServer.clients.size === 0, 'and the server forgets that browser');
+    await mServer.close();
+  }
+
+  // Origin check: another web page can't open a socket to the radio.
+  {
+    const { originAllowed } = require('../src/server/ws-server');
+    check(originAllowed(undefined, 'pi:8080'), 'no Origin (not a browser) is allowed');
+    check(originAllowed('https://pi:8080', 'pi:8080'), 'the page this server serves is allowed');
+    check(originAllowed('https://PI:8080', 'pi:8080'), 'the origin check ignores case');
+    check(!originAllowed('https://evil.example', 'pi:8080'), 'another site is refused');
+    check(!originAllowed('https://pi:8081', 'pi:8080'), 'another port on the same host is refused');
+    check(!originAllowed('null', 'pi:8080'), 'an opaque "null" origin (sandboxed frame, file:) is refused');
+    check(originAllowed('https://radio.example.net', 'localhost:8080', ['https://radio.example.net']), 'an origin in ALLOWED_ORIGINS is allowed');
+
+    const oServer = new ControlServer({ civ: new StubCivDriver(), port: 0, heartbeatMs: 0 });
+    const oPort = await oServer.listen();
+    const refused = await new Promise((resolve) => {
+      const ws = new WebSocket(`ws://localhost:${oPort}`, { origin: 'https://evil.example' });
+      ws.on('open', () => {
+        ws.close();
+        resolve(false);
+      });
+      ws.on('error', () => resolve(true));
+    });
+    check(refused, 'a socket from another origin is refused at the upgrade');
+    const own = await new Promise((resolve) => {
+      const ws = new WebSocket(`ws://localhost:${oPort}`, { origin: `http://localhost:${oPort}` });
+      ws.on('open', () => {
+        ws.close();
+        resolve(true);
+      });
+      ws.on('error', () => resolve(false));
+    });
+    check(own, "a socket from the server's own page is accepted");
+    await oServer.close();
   }
 
   if (failures > 0) {

@@ -36,6 +36,10 @@ class FakeTransport extends EventEmitter {
     this.written.push(buf);
     if (cb) cb();
   }
+  set(opts, cb) {
+    (this.lineSets ??= []).push(opts);
+    if (cb) cb();
+  }
   close(cb) {
     this.isOpen = false;
     if (cb) cb();
@@ -77,6 +81,194 @@ async function testBasicRequestReply() {
   transport.sendFrame({ cmd: CMD.SEND_FREQ, data: freqToBCD(14195000) });
   const hz = await freqPromise;
   check(hz === 14195000, 'getFrequency() resolves with the value from the simulated reply');
+}
+
+async function testQueuePriorityAndStaleReplies() {
+  console.log('\n-- CI-V queue: PTT off jumps the queue, late OK/NG dropped, queue limit --');
+  const step = () => new Promise((resolve) => setImmediate(resolve));
+  const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
+  const cmdOf = (buf) => buf[4];
+  const pttByte = (buf) => (buf[4] === CMD.PTT ? buf[6] : null);
+
+  // PTT off goes ahead of queued polling.
+  {
+    const transport = new FakeTransport();
+    const driver = new CivDriver({ path: '/fake', radioAddr: RADIO_ADDR, transport });
+    await driver.open();
+    const inFlight = driver.getFrequency();
+    const polls = [driver.getMode(), driver.getSMeter(), driver.getFrequency()];
+    polls.forEach((p) => p.catch(() => {}));
+    const pttOff1 = driver.setPtt(false);
+    const pttOff2 = driver.setPtt(false);
+    await step();
+    check(transport.written.length === 1, 'only the first request is on the bus');
+    check(driver.queueLength === 5, `the rest wait (5), got ${driver.queueLength}`);
+    const order = () => transport.written.map((b) => (pttByte(b) === null ? cmdOf(b).toString(16) : `ptt${pttByte(b)}`));
+    // answer each request in turn
+    transport.sendFrame({ cmd: CMD.SEND_FREQ, data: freqToBCD(14074000) });
+    await inFlight;
+    await step();
+    transport.sendFrame({ cmd: CMD.OK });
+    await pttOff1;
+    await step();
+    transport.sendFrame({ cmd: CMD.OK });
+    await pttOff2;
+    await step();
+    check(order().slice(0, 3).join() === ['3', 'ptt0', 'ptt0'].join(), `both PTT offs go straight after the request on the bus, in order: got ${order().join(' ')}`);
+    check(cmdOf(driver._current.raw) === CMD.SEND_MODE && driver.queueLength === 2, 'then the polls resume in their order');
+    await driver.close();
+  }
+
+  // PTT off never overtakes a PTT on still in the queue (the server
+  // handles messages concurrently, so a quick on-off can queue both).
+  {
+    const transport = new FakeTransport();
+    const driver = new CivDriver({ path: '/fake', radioAddr: RADIO_ADDR, transport });
+    await driver.open();
+    const inFlight = driver.getFrequency();
+    const pollA = driver.getMode();
+    const on = driver.setPtt(true);
+    const pollB = driver.getSMeter();
+    const off = driver.setPtt(false);
+    await step();
+    const queued = driver._queue.map((j) => (j.cmd === CMD.PTT ? `ptt${j.raw[6]}` : j.cmd.toString(16)));
+    check(queued.join(' ') === '4 ptt1 ptt0 15', `PTT off goes straight after the PTT on, still ahead of later polls: got ${queued.join(' ')}`);
+    for (const p of [inFlight, pollA, on, pollB, off]) p.catch(() => {});
+    await driver.close();
+  }
+
+  // A late OK to a timed-out request is not taken as the answer to the next one.
+  {
+    const transport = new FakeTransport();
+    const stale = [];
+    const driver = new CivDriver({ path: '/fake', radioAddr: RADIO_ADDR, transport, requestTimeoutMs: 40, staleReplyGuardMs: 60 });
+    driver.on('stale-reply', (f) => stale.push(f));
+    await driver.open();
+    const slow = driver.setFrequency(7074000).then(
+      () => 'resolved',
+      (err) => err.message
+    );
+    const pttOff = driver.setPtt(false);
+    let pttSettled = null;
+    pttOff.then(
+      () => (pttSettled = 'ok'),
+      (err) => (pttSettled = err.message)
+    );
+    check(/timed out/.test(await slow), 'the unanswered request times out');
+    check(transport.written.length === 1, 'nothing more is sent during the pause after a timeout');
+    transport.sendFrame({ cmd: CMD.OK }); // the radio's late answer to setFrequency
+    await step();
+    check(stale.length === 1, "the late OK is dropped and reported as 'stale-reply'");
+    check(pttSettled === null, 'and does not resolve the PTT off still waiting');
+    await sleep(80); // the pause ends; PTT off is sent
+    check(transport.written.length === 2 && pttByte(transport.written[1]) === 0, 'PTT off is sent once the pause is over');
+    transport.sendFrame({ cmd: CMD.OK });
+    await pttOff;
+    check(pttSettled === 'ok', "PTT off resolves on the radio's own OK");
+
+    // An OK/NG with nothing waiting at all is dropped too.
+    transport.sendFrame({ cmd: CMD.NG });
+    await step();
+    check(stale.length === 2, 'an OK/NG with no request waiting is dropped');
+    await driver.close();
+  }
+
+  // Data replies (frequency, meters) carry their command, so they aren't held up by the pause.
+  {
+    const transport = new FakeTransport();
+    const freqs = [];
+    const driver = new CivDriver({ path: '/fake', radioAddr: RADIO_ADDR, transport, requestTimeoutMs: 30, staleReplyGuardMs: 60 });
+    driver.on('frequency', (hz) => freqs.push(hz));
+    await driver.open();
+    await driver.getMode().catch(() => {});
+    transport.sendFrame({ cmd: CMD.TRANSCEIVE_FREQ, data: freqToBCD(3573000) });
+    await step();
+    check(freqs[0] === 3573000, 'a front-panel frequency change during the pause still comes through');
+    await driver.close();
+  }
+
+  // Queue limit: polls are refused when full; PTT off never is.
+  {
+    const transport = new FakeTransport();
+    const driver = new CivDriver({ path: '/fake', radioAddr: RADIO_ADDR, transport, maxQueue: 3 });
+    await driver.open();
+    const held = [driver.getFrequency(), driver.getMode(), driver.getMode(), driver.getMode()];
+    held.forEach((p) => p.catch(() => {}));
+    let refused = null;
+    await driver.getSMeter().catch((err) => (refused = err.message));
+    check(/queue full/.test(refused || ''), `a request beyond maxQueue is refused at once, got ${refused}`);
+    const off = driver.setPtt(false);
+    off.catch(() => {});
+    check(driver.queueLength === 4 && driver._queue[0].urgent, 'PTT off is accepted even with the queue full, and goes first');
+    await driver.close();
+  }
+}
+
+async function testKeyLine() {
+  console.log('\n-- CW key line (USB Keying (CW)): dropped on open, set directly --');
+  const transport = new FakeTransport();
+  const driver = new CivDriver({ path: '/fake', radioAddr: RADIO_ADDR, transport, keyLine: 'dtr' });
+  await driver.open();
+  check(JSON.stringify(transport.lineSets?.[0]) === JSON.stringify({ dtr: false }), `with keyLine dtr, DTR is dropped as soon as the port opens (Linux raises it on open): ${JSON.stringify(transport.lineSets)}`);
+  const inFlight = driver.getFrequency().catch(() => {});
+  await driver.setKeyLine('dtr', true);
+  check(JSON.stringify(transport.lineSets.at(-1)) === JSON.stringify({ dtr: true }), 'setKeyLine keys at once, even with a CI-V request waiting for its reply');
+  await driver.setKeyLine('rts', false);
+  check(JSON.stringify(transport.lineSets.at(-1)) === JSON.stringify({ rts: false }), 'RTS too');
+  let bad = null;
+  await driver.setKeyLine('cts', true).catch((err) => (bad = err.message));
+  check(/dtr' or 'rts/.test(bad || ''), 'another line is refused');
+  transport.isOpen = false;
+  let closed = null;
+  await driver.setKeyLine('dtr', false).catch((err) => (closed = err.message));
+  check(/not open/.test(closed || ''), 'with the port closed it rejects');
+  await inFlight;
+
+  const plain = new FakeTransport();
+  const d2 = new CivDriver({ path: '/fake', radioAddr: RADIO_ADDR, transport: plain });
+  await d2.open();
+  check(!plain.lineSets, "without keyLine the lines are left alone (some CI-V cables are powered from them)");
+
+  // setPtt(true, {urgent: true}) for paddle elements goes ahead of polling
+  const t3 = new FakeTransport();
+  const d3 = new CivDriver({ path: '/fake', radioAddr: RADIO_ADDR, transport: t3 });
+  await d3.open();
+  const busy = d3.getFrequency().catch(() => {});
+  const poll = d3.getMode().catch(() => {});
+  const on = d3.setPtt(true, { urgent: true }).catch(() => {});
+  await new Promise((r) => setImmediate(r));
+  check(d3._queue[0]?.cmd === CMD.PTT && d3._queue[0].raw[6] === 1, 'setPtt(true, {urgent}) goes ahead of a queued poll');
+  const plainOn = d3.setPtt(true).catch(() => {});
+  await new Promise((r) => setImmediate(r));
+  check(d3._queue.at(-1).cmd === CMD.PTT && !d3._queue.at(-1).urgent, 'plain setPtt(true) still waits its turn');
+  await d3.close();
+  for (const p of [busy, poll, on, plainOn]) p.catch?.(() => {});
+}
+
+async function testForcePttOff() {
+  console.log('\n-- forcePttOff: emergency unkey ahead of the queue --');
+  const transport = new FakeTransport();
+  const driver = new CivDriver({ path: '/fake', radioAddr: RADIO_ADDR, transport, requestTimeoutMs: 200 });
+  await driver.open();
+  // A request in flight that the radio hasn't answered, and one queued behind it.
+  const pending = driver.getFrequency().catch(() => {});
+  const queued = driver.getMode().catch(() => {});
+  const before = transport.written.length;
+  const sent = await driver.forcePttOff();
+  check(sent === true, 'forcePttOff resolves true once written');
+  check(transport.written.length === before + 1, 'it writes at once, without waiting for the request in flight');
+  const frame = [...transport.written[transport.written.length - 1]];
+  check(frame.slice(4, 7).join() === [CMD.PTT, SUBCMD.PTT, 0x00].join(), `it sends 1C 00 00 (PTT off), got [${frame.join(',')}]`);
+  await Promise.all([pending, queued]);
+
+  transport.isOpen = false;
+  check((await driver.forcePttOff()) === false, 'with the port closed it resolves false rather than throwing');
+
+  const stuck = new FakeTransport();
+  stuck.write = () => {}; // never calls back
+  const d2 = new CivDriver({ path: '/fake', radioAddr: RADIO_ADDR, transport: stuck });
+  await d2.open();
+  check((await d2.forcePttOff({ timeoutMs: 30 })) === false, 'a write that never completes times out to false');
 }
 
 async function testCwKeyer() {
@@ -1210,6 +1402,9 @@ async function run() {
   await testFunctionAndTunerGetters();
   await testDataMode();
   await testCwKeyer();
+  await testForcePttOff();
+  await testKeyLine();
+  await testQueuePriorityAndStaleReplies();
   await testUsbAudioLevels();
   await testTuneScopeToRange();
   await testCenterScope();

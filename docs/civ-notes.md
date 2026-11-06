@@ -665,6 +665,35 @@ no way to notice a front-panel change without actively asking — see
 `docs/ui-notes.md` for how the UI polls these periodically to stay
 genuinely in sync rather than just reflecting its own last request.
 
+## CW keying with the USB serial port's DTR/RTS line (v131)
+
+Not a CI-V command, but it uses the same USB serial port. The IC-7300's
+**Menu > Set > Connectors > USB SEND/Keying > USB Keying (CW)** is OFF,
+DTR or RTS (default OFF); with DTR or RTS chosen, that modem-control line
+of the radio's USB virtual COM port keys CW, as fldigi and N1MM do. It
+can't be the same line as USB SEND (PTT). The IC-7300MK2 has two virtual
+COM ports and offers USB (A)/(B) DTR/RTS. Sources: the IC-7300 manual's
+USB SEND/Keying page, the fldigi wiki's IC7300 CW howto, N6TV's Dayton
+2019 "Everything USB" slides. Not yet checked on a real radio here.
+
+- As with a key on the KEY jack, the radio only transmits on it with
+  break-in on (semi or full); with break-in off it only sounds the
+  sidetone. CwPaddleBridge turns semi break-in on for a keying session and
+  puts it back, as CwTxBridge does for CI-V `17`.
+- `CivDriver#setKeyLine(line, on)` sets it with serialport's `port.set()`
+  (an ioctl), straight away, not through the CI-V queue: no reply to wait
+  for, so its timing is the Pi's (well under a millisecond plus Node's
+  timer accuracy).
+- **Linux raises DTR and RTS when a port is opened** (the tty driver does it
+  for any baud rate but B0). With USB Keying on that line, opening the
+  port keys the radio until something drops the line. CivDriver drops the
+  configured key line in the open callback; the window is short but not
+  zero, so the README says to leave break-in off when not sending CW. The
+  lines are left alone when no key line is set: some external CI-V
+  interfaces are powered from DTR/RTS.
+- Closing the port (and the process ending, even in a crash) drops DTR and
+  RTS again (HUPCL); `emergencyUnkey()` also drops the key line first.
+
 ## Antenna tuner (command 0x1C, sub-command 0x01)
 
 Lives under the same command group (`0x1C`) as PTT (sub-command `0x00`)
@@ -890,3 +919,25 @@ Fixed by also checking `subCmd` when the pending request specified one;
 regression-tested in `test/civ-driver.test.js`. Worth remembering if any
 future command family gets added that mixes occasional requests with
 frequent unsolicited pushes on the same command byte.
+
+## Late OK/NG replies, and PTT off ahead of the queue (v128)
+
+OK (`FB`) and NG (`FA`) don't say which command they answer, so
+`_frameMatchesCurrent` takes any OK/NG as the answer to the request in
+flight. When a request timed out and the radio answered it anyway, that
+late OK became the answer to the *next* request. If the next request was
+PTT off, it looked confirmed although the radio never answered it. Now,
+after a timeout the driver pauses `staleReplyGuardMs` (150 ms) before
+sending anything else, and drops any OK/NG that arrives then, or while
+no request is waiting (`'stale-reply'` event, logged by index.js). An
+answer later than timeout + 150 ms can still be misread; a radio that
+slow is already failing every request. Data replies carry their command
+byte and aren't affected.
+
+`setPtt(false)` is now `urgent`: it goes ahead of queued meter, scope and
+function polls, so unkeying waits at most for the one request already on
+the bus. It never goes ahead of an earlier request for the same command:
+the server handles browser messages concurrently, so a quick PTT on then
+off can both be queued, and off overtaking on would leave the radio
+keyed. The queue is limited to `maxQueue` (64) waiting requests; more are
+refused with "CI-V queue full", except urgent ones.

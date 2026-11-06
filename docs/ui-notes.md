@@ -4699,6 +4699,625 @@ model for how to approach that.
 - Tests: vara.test.js and manual-tty-ui.js match the shorter time.
   Service-worker cache v119.
 
+### JS8 in the TTY button (v120)
+
+- **New mode.** The TTY button now steps RTTY, JTTY, Olivia, **JS8**, VARA,
+  Feld-Hell. JS8 is JS8Call's keyboard mode at Normal speed (15-second
+  slots, 50 Hz wide). Entering it puts the radio on USB with DATA MODE on
+  and tunes to the band's JS8 frequency (JS8Call's list: 14.078 MHz on
+  20 m); band buttons then go to each band's. The frequency box is the
+  transmit **Offset** (300-2700 Hz, 1500 by default), shared by every
+  browser; a click on the audio spectrum sets it too.
+- **Receive.** `server/js8-bridge.js` cuts the audio (reduced to 12 kHz)
+  into UTC slots and decodes each in a worker (`audio/js8-worker.js`).
+  The decoder (`audio/js8/js8-decoder.js`) is a port of the core of
+  JS8Call-improved 3.0's: the coarse Costas search over symbol spectra
+  with its polynomial noise baseline, downsampling to 200 samples a
+  second, fine time and frequency, 8-tone magnitudes, JS8Call's whitened
+  bit likelihoods, belief propagation (four passes, with JS8Call's LDPC
+  feedback), the CRC-12, and subtraction of each decode before the next
+  pass. Left out for now: the frequency and timing trackers, coherent
+  likelihoods, soft combining across slots, the deep search, LDPC rescue
+  and re-demodulation.
+- **The panel** shows the status, CQ, the stations heard, and the band
+  activity: one line per message, its frames joined at one offset from
+  first to last (as JS8Call's band activity). Lines still coming have an
+  amber edge, messages to this station a green one, own messages are
+  amber. Tapping a line or a heard call puts "CALL " in the text box.
+- **Send.** The worker turns the text into frames as JS8Call's
+  `buildMessageFrames()` does (heartbeat/CQ, compound, directed with
+  JS8Call's command codes and checksums, then Huffman or word-list data
+  frames; plain text gets "MYCALL: " first). One frame goes out each slot
+  from the next boundary: DATA mode confirmed, PTT on, 12.6 s of audio
+  starting 0.5 s into the slot (allowing `VARA_AUDIO_LATENCY_MS`), PTT
+  off. Send becomes Stop; Stop drops the rest and unkeys at once. At most
+  300 characters and 40 frames (10 minutes). No automatic replies and no
+  heartbeats. JS8 stops when the last browser leaves.
+- **PSK Spot** is shown in JS8 and reports the senders of CQs, heartbeats
+  and directed frames as mode "JS8", at dial + offset, with their grid.
+- **The word list.** Data frames use JS8Call's 262,144-word list. It is
+  `audio/js8/jsc-words.txt.br` (866 kB, brotli; Node reads it with no
+  extra package), made from JS8Call's tables by
+  `third_party/js8call/make-wordlist.js`, which also checks that PiRO's
+  simpler lookup (the longest listed word) finds what JS8Call's search
+  finds. Two quirks are kept so PiRO sends what JS8Call sends: `@ALLCALL`
+  can't be found as a word, and "ROSIDS" steps over one character.
+- **Bugs found while building it.** The status line first read "frame NaN
+  of undefined": the client read `sent`/`total` from the state instead of
+  `state.sending`. The browser test's "QSYD and QSYU sit to the right of
+  CQ" check also matched JS8's controls, which reuse VARA's classes; it now
+  looks inside the VARA panel only.
+- **Sensitivity** (simulated, white noise): half of single frames decode
+  at −19 dB S/N in 2500 Hz, which JS8Call's S/N scale (ported as is)
+  reports as about −26. A slot with four signals took about 1.3 s on a
+  2.1 GHz PC.
+- Not tested with JS8Call itself, and not tested on air.
+- Tests: js8.test.js (new; in npm test), ws-server.test.js (setJs8Active,
+  js8, release on the last disconnect), manual-tty-ui.js (the JS8 step:
+  cycle, band chips, offset shared, slots decoded and joined, reply by
+  tap, send a frame a slot, Stop, CQ, the second browser following).
+  Service-worker cache v120.
+
+### Speech to text, a copy aid (v121)
+
+- **New:** an **STT** checkbox directly below the Filter button (off by
+  default). Ticked, received speech in voice modes is transcribed by
+  whisper.cpp and shown in a panel right below the S-meter, like the
+  Olivia transcript: one line per over, starting with its UTC time;
+  doubtful words grey; callsigns spelled in the over added in letters
+  (`[VK3TR]`). A note under it says it is a copy aid and nothing is saved.
+- **Engine:** whisper.cpp's own HTTP server, `whisper-server`, called
+  directly (no npm wrapper, no Python). With `STT_WHISPER_SERVER` and
+  `STT_MODEL`, PiRO starts it (127.0.0.1:`STT_PORT`, `STT_THREADS`,
+  English) when STT is ticked and stops it when unticked, so the model's
+  memory is only used then; or `STT_URL` points at one already running
+  elsewhere. Without either, ticking shows why it can't run.
+- **Overs:** `server/stt-bridge.js` runs the voice squelch's detector
+  (pitch of a voice, 0.3 s pre-roll, 1.5 s hang) on the raw received
+  audio, so an over is what the squelch would open for. Each over is
+  reduced to 16 kHz and posted to `/inference` as a WAV (verbose_json,
+  English, temperature 0 with no fallback, non-speech tokens suppressed,
+  a short ham prompt). Overs over 28 s go in parts. One is transcribed at
+  a time; if it falls behind, the oldest waiting is dropped. Paused while
+  transmitting and outside voice modes (checked each second, as the mode,
+  DATA mode and app modes have no event of their own). STT is turned off
+  when the last browser leaves (ws-server.js).
+- **Keeping only what was said** (`server/stt-text.js`): segments
+  whisper.cpp scores as not speech (over 0.6) or very unsure (average
+  log-probability under −1) are dropped, as is text Whisper invents from
+  noise (captions, "subscribe", [BLANK_AUDIO], music marks), and its
+  repetition loops are cut to one. Words under 40% probability are marked
+  doubtful. Callsigns come from runs of phonetic words, number words,
+  digits and short capitals ("Victor Kilo 2 Papa Kilo Hotel" → VK2PKH;
+  said twice, found once), and from callsigns written as such.
+- **Checked against the real program:** whisper.cpp (commit `482279b`)
+  built here, `whisper-server` started by the bridge with whisper.cpp's
+  test model; it accepted the form and the WAV (HTTP 200, the over's
+  duration right), and was stopped on untick. A real model couldn't be
+  downloaded here, so recognition itself is not tested yet, nor on air.
+- Tests: stt.test.js (new; in npm test), ws-server.test.js
+  (setSttEnabled, off on the last disconnect), manual-tty-ui.js (the
+  checkbox below Filter, the panel below the S-meter, an over shown with
+  its callsign and a greyed word, PTT pausing it, untick, the second
+  browser following). Service-worker cache v121.
+
+### Speech to text: Whisper's own silence rule, shorter encodes, 10 s pieces, a log line an over (v122)
+
+- **Reported:** with STT ticked, whisper-server ran at full CPU but no text
+  appeared. The Pi transcribes whisper.cpp's 11 s sample in 8.9 s with
+  base.en, so it keeps up.
+- **Real bug:** v121 dropped a segment if whisper.cpp's no_speech_prob was
+  over 0.6 *or* its average log-probability was under −1. On SSB speech
+  either one alone is common, so most real text was probably thrown away,
+  silently. OpenAI's own rule (transcribe()) treats a segment as silence
+  only when both hold. PiRO now does the same; text Whisper is known to
+  invent is still dropped.
+- **Speed:** Whisper's encoder works on 30 s of audio whatever the over's
+  length, so every over cost a full pass. Each request now sets
+  whisper.cpp's `audio_ctx` from the over's length plus 2 s (50 frames a
+  second, at least 512, at most 1500): a short over costs about a third.
+- **Seeing what happens:** the journal gets one line an over ("STT: 6.2 s
+  over, 3.1 s to transcribe: "…"" or "nothing kept; dropped silence
+  (no_speech 0.82, avg_logprob -1.31): "…""), and the status line shows the
+  last over's length and time, or "nothing kept".
+- **Long overs in 10 s pieces** (was 28 s; `STT_MAX_SEGMENT_SEC`, 5-28):
+  text from a long over now appears while the station is still talking,
+  each piece joining its over's line on the page. To keep the cost of
+  shorter pieces down:
+  - each is cut at the quietest 20 ms of its last 2 s, usually a gap
+    between words, not at exactly 10 s;
+  - each later piece is sent with the over's text so far (its last 200
+    characters) after the usual prompt, so Whisper carries on the
+    sentence;
+  - callsigns are looked for in the whole over so far, so one spelled
+    across a cut is found, once, with the piece that completes it.
+  Shorter pieces cost a little more CPU in all (about 20%), and a word
+  can still be split where nobody pauses.
+- Checked against the real whisper-server (it accepts `audio_ctx`).
+  Recognition on air is still to be seen.
+- Tests: stt.test.js (Whisper's rule both ways, the reasons given,
+  audio_ctx, the last over in the status; a 21 s over in three pieces,
+  the first cut in a gap, context passed on, a callsign across a cut).
+  Service-worker cache v122.
+
+### Speech to text: the STT checkbox only in voice modes, and FreeDV (v123)
+
+- The STT checkbox now shows only in voice modes: LSB, USB, AM and FM
+  with DATA mode off and no app mode, and FreeDV. The server decides
+  (it already paused STT outside them) and sends it as `stt.voice`,
+  ticked or not, so every browser agrees. ControlServer now emits an
+  internal `mode-changed` (mode, DATA mode, app modes), so this follows
+  straight away; a check each second still catches anything else.
+- Left ticked in another mode, STT stays on, paused, with its checkbox
+  and panel hidden. whisper-server keeps running, so going back to a
+  voice mode needs no reload of the model.
+- FreeDV is new as a voice mode. The radio's audio there is the modem
+  tones, so STT hears RadeBridge's `decoded-speech` instead, the same
+  audio the page plays. Moving between FreeDV and SSB switches the
+  source and ends any over in progress.
+- Test fix: one stt.test.js check needed the first cut of a long over at
+  9.2 s. Where the quietest moment falls depends on the test's synthetic
+  syllables (one shared random stream), so the new FreeDV checks moved it
+  to 8.1 s, still a quiet moment in the last 2 s. The check now takes the
+  last 2 s range.
+- Tests: stt.test.js (`voice` in and out of voice modes, ticked or not;
+  FreeDV hears the decoded speech and not the radio's audio, and goes
+  back to the radio on USB). manual-tty-ui.js: in CW the checkbox and
+  panel go in both browsers while STT stays ticked, and come back in SSB.
+  Hiding the checkbox moves the CW controls up, so the CW layout check
+  now waits for that first.
+
+### Architecture diagram and install guide brought up to date (v124)
+
+- `docs/architecture.drawio` was last updated at v104. It now has the
+  parts added since:
+  - bridges: Js8Bridge, VaraBridge and SttBridge, with SttBridge's link
+    to RadeBridge (FreeDV's decoded speech, routed above the bridges);
+  - server modules: varac, stt-text, audio-codecs, net-options;
+  - audio: js8-worker and the js8/ codec, decoder and modulator,
+    vara-worker and XaraModem, VoiceSquelch, HellTextReader (hell-ocr),
+    fax-tx;
+  - CI-V: data-mode-guard (ensureDataMode, watchDataMode);
+  - client: audio-codec (shared with the server), CallAlert, meter-modes;
+  - outside: whisper.cpp's whisper-server.
+- Page 2 (event wiring) has rows for JS8, VARA and STT. The ControlServer
+  row has the internal `mode-changed`, AudioBridge the voice squelch and
+  compressed audio, RadeBridge `decoded-speech`, HellDecoderBridge
+  `hell-text`. The notes say STT runs as its own program.
+- The title and the sw.js box name the build. The server and audio areas
+  grew to the right (the diagram is about 7100 units wide).
+  `docs/architecture.png` was made again from page 1 with draw.io's own
+  viewer in headless Chromium, at 0.45 scale (3188 x 918), in 128 colours.
+- `docs/install-debian.md` has a new step 12, "Extra components": what
+  RADE, STT and RNNoise need, and a link to the README's steps. The README's
+  architecture section names the separate programs.
+- No code changed. Service-worker cache v124.
+
+### Speech to text with Deepgram, in the cloud (v125)
+
+- STT can now use Deepgram instead of whisper.cpp: `DEEPGRAM_API_KEY`,
+  and `STT_ENGINE=deepgram` if whisper.cpp is set up too. An earlier copy
+  of PiRO had this, but it never reached the repository, so this is new
+  code. The old settings carry over.
+- Overs are found and cut exactly as for whisper.cpp (VoiceSquelch, 10 s
+  pieces). Each one goes to `POST /v1/listen` as a 16 kHz WAV, with
+  `Authorization: Token <key>`, `model` (nova-3), `language` (en),
+  `punctuate` and `smart_format`. One request at a time, as before; each
+  should take well under a second, so nothing waits.
+- Keyterms (`DEEPGRAM_KEYTERMS`): one `keyterm` parameter for each term,
+  as Deepgram asks (a comma list would be one literal term and boost
+  nothing). Older models get `keywords` instead. Terms may use spaces or
+  `%20` (the old settings used `%20`); quotes are taken off. Up to 100
+  (Deepgram's limit is 500 tokens). The built-in list: the phonetic
+  alphabet, numbers with "niner", "five nine", "five and nine", CQ, QSL,
+  QRZ, QTH, QSY, "seventy three", over, roger, copy.
+- stt-text.js `keepDeepgram()` reads the answer
+  (`results.channels[0].alternatives[0]`): the transcript, each word's
+  `punctuated_word` and confidence (under 0.4 is greyed, as for Whisper),
+  and the same filters for invented text and repeats. smart_format writes
+  numbers as figures ("Victor Kilo 3 Tango Romeo"); the callsign finder
+  already takes figures.
+- Ticking checks `api.deepgram.com` answers (up to 30 s), so no internet
+  shows as an error at once. A rejected key shows "Deepgram: HTTP 401
+  (check DEEPGRAM_API_KEY)"; 402 says no credit. The key goes only in the
+  request header: never in the log, the status or browser events (tested).
+- The status line ends "· Deepgram (cloud)", so it is clear the audio
+  leaves the station. `stt.engine` can now be `'deepgram'`.
+- HTTP requests from the STT bridge now use net-options (5 s for each
+  address), like the other outgoing requests: Deepgram is in the USA.
+- The architecture diagram has Deepgram beside whisper-server (title and
+  sw.js box v125); `docs/architecture.png` made again.
+- Tests: stt.test.js (the settings, including the old quoted, `%20` form;
+  the URL; `keepDeepgram()`; the bridge with a stand-in Deepgram: the
+  request, the text and callsign, a rejected key, the key kept private).
+  Not tried against the real service: this environment can't reach it.
+
+### Docs and diagram: Deepgram everywhere STT is described (v126)
+
+- README: "What to expect" says how Deepgram copies (and that it writes
+  numbers as figures), "How far it has been tested" says Deepgram was
+  checked against a stand-in only, the "no text" troubleshooting entry
+  covers both engines, the architecture section names Deepgram as a
+  service, and the file layout says stt-text.js reads both answers.
+- `piro.env.example`: the STT heading names both engines.
+- Architecture diagram: the SttBridge box shows `engine: whisper |
+  deepgram` and `_whisper()` / `_deepgram()`; the stt-text box shows
+  `keepDeepgram()`. The title and sw.js box say v126.
+  `docs/architecture.png` made again.
+- No code changed. Service-worker cache v126.
+
+
+### PTT safety: release on disconnect, heartbeat, unkey on stop and crash, Origin check (v127)
+
+Fixes from a code review. Not tested on air; checked against stub radios
+and a fake radio on a pseudo-terminal.
+
+- **PTT released when its browser goes.** ControlServer now remembers which
+  browser keyed PTT with `setPtt` (`_pttOwner`). When that browser
+  disconnects, PTT is released at once and every browser gets `ptt` false.
+  Before, nothing released it: a phone that lost its network mid-over left
+  the radio transmitting until the 10-minute watchdog. A browser that
+  didn't key PTT leaving changes nothing, and transmissions a bridge keyed
+  itself (FT8, WSPR, VARA, ...) have no owner; the bridges stop those when
+  the last browser leaves, as before. If the browser goes while the radio
+  is still being keyed, PTT is released as soon as keying finishes.
+- **Heartbeat.** The server pings every browser every 15 s
+  (`heartbeatMs`), and drops one that hasn't answered the previous ping.
+  A dead connection is noticed in 15 to 30 s, not when TCP gives up many
+  minutes later, and dropping it releases its PTT (above). Browsers answer
+  pings by themselves; a page that reconnects is unaffected.
+- **PTT off on stop and crash.** `shutdown()` now sends PTT off before
+  stopping anything, with the new `CivDriver#forcePttOff()`: it writes
+  `1C 00 00` straight to the port, ahead of the CI-V queue, and doesn't
+  wait for the reply (setPtt(false) could wait behind a second-long meter
+  or scope request). Before, voice and paddle PTT were never released on a
+  stop, and `controlServer.close()` cleared the watchdog, so a stop
+  mid-over left the radio transmitting. `uncaughtException` and
+  `unhandledRejection` now do the same, then exit 1 so systemd restarts
+  the service (Node used to exit at once, radio still keyed). Shutdown
+  also exits after 8 s if a step hangs (inside TimeoutStopSec=10).
+- **Malformed URLs.** `GET /%E0%A4%A` made `decodeURIComponent` throw
+  inside the HTTP request handler, which stopped the whole server. The
+  static handler now answers 400, as it does for a NUL in the path, and
+  ControlServer's request handler catches anything else with a 500.
+- **WebSocket Origin check.** The WebSocket only accepts a browser whose
+  `Origin` matches the `Host` it connected to (PiRO's own page), plus any
+  origin in the new `ALLOWED_ORIGINS` env var (for a reverse proxy that
+  changes `Host`). Before, any web page open in an operator's browser on
+  the LAN or VPN could open a socket to the radio and key it. Connections
+  with no Origin (scripts, the tests) are still accepted: a web page can't
+  leave it out. Refusals are logged. Not covered: DNS rebinding against
+  a plain-HTTP install (Origin and Host then match); TLS stops that,
+  since the certificate won't match the attacker's name.
+- **Serial port lost.** When the radio is switched off or its USB unplugged,
+  the serial port closes. Nothing listened for that, so PiRO ran on with
+  CI-V dead and systemd never restarted it. It now shuts down cleanly and
+  exits 1; systemd (`Restart=on-failure`, 5 s) starts it again, and each
+  start fails at opening the port until the radio is back. The port isn't
+  reopened in place because the radio's USB sound card goes and comes
+  back with it.
+- Tests: ws-server.test.js (PTT released when the keying browser
+  terminates; not when another browser leaves or after a normal release;
+  not for a bridge-keyed transmission; released when the browser left
+  while keying; a browser with pongs turned off dropped by the heartbeat
+  and its PTT released, a normal one kept; the Origin rules and a refused
+  upgrade), static-server.test.js (400 for a malformed escape and a NUL,
+  still serving afterwards), civ-driver.test.js (`forcePttOff` writes
+  `1C 00 00` while a request is in flight, false with the port closed or
+  a write that never completes). By hand, index.js against a fake radio
+  on a pseudo-terminal: SIGTERM and a forced uncaught exception while
+  keyed both send PTT off, and closing the port makes the server exit 1.
+  With the old code, SIGTERM left PTT on and the server didn't exit when
+  the port closed.
+- Service-worker cache v127. The architecture diagram still says v126.
+
+### CI-V queue: PTT off first, late replies dropped, queue limit (v128)
+
+Item 10 from the code review. Not tested on air; checked with the fake
+serial transport in civ-driver.test.js. Details in docs/civ-notes.md.
+
+- **PTT off goes ahead of polling.** `setPtt(false)` is now urgent in
+  CivDriver's queue. Before, it waited behind every meter, scope and
+  function poll queued from every browser, each up to a second if the
+  radio was slow. That held up the watchdog, the release when a browser
+  disconnects, and every bridge's unkey. It still waits for the request
+  already on the bus, and never overtakes an earlier PTT on: the server
+  handles messages concurrently, so on then off can both be queued, and
+  sending off first would unkey and then key up again, leaving the radio
+  keyed. (The first version of this change had that bug; the tests
+  caught it.)
+- **Late OK/NG dropped.** OK and NG don't say which command they answer.
+  A late OK to a request that had timed out was taken as the answer to
+  the next request, so a PTT off could look confirmed when the radio
+  never answered it. After a timeout the driver now pauses 150 ms before
+  sending the next request and drops any OK/NG that arrives in the pause,
+  or with no request waiting. They are logged ("Dropped a late OK from the
+  radio"). Unsolicited frequency and mode changes still come through
+  during the pause.
+- **Queue limit.** At most 64 requests wait; more are refused at once
+  with "CI-V queue full; is the radio answering?". PTT off is never
+  refused. Before, the queue had no limit when the radio stopped
+  answering.
+- Tests: civ-driver.test.js (PTT off goes straight after the request on
+  the bus, ahead of queued polls, and two in a row keep their order; PTT
+  off queued after a PTT on stays after it; a late OK during the pause is
+  dropped, doesn't resolve the waiting PTT off, and PTT off is sent and
+  resolves on its own OK after the pause; OK/NG with nothing waiting is
+  dropped; a front-panel frequency change during the pause still arrives;
+  requests beyond the limit are refused, PTT off is not). Against the old
+  driver these fail: the late OK answers the wrong request and the queue
+  goes out of step.
+- Service-worker cache v128.
+
+### Input checks: message size, DEEPGRAM_URL https only, frequency numbers (v129)
+
+Items 6, 7 and 12 from the code review. Not tested on air.
+
+- **Message size limit.** The WebSocket now refuses a message over 8 MiB
+  from a browser and closes that connection (code 1009). Before, `ws`'s
+  default of 100 MiB applied, so one browser could make the Pi hold that
+  much. 8 MiB is above the largest message the protocol allows:
+  `sendEasypal` takes a JPEG of up to 4 MB, about 5.6 MB as base64, and
+  `sendSstv`'s RGB is at most 3 MB (4 MB as base64). The web app draws
+  pictures onto a fixed-size canvas first, so what it really sends is far
+  smaller. `ControlServer`'s `maxMessageBytes` option sets it (tests use
+  a small one).
+- **DEEPGRAM_URL must be https.** The check accepted `http://` although its
+  warning said `https://` was needed, so the API key, which goes in a
+  header with every request, could have been sent unencrypted. Now
+  anything not starting with `https://` (and a host) is refused with a
+  warning and the default used. `STT_URL`, for a whisper-server on the
+  LAN, can still be `http://`: it has no key. `DEEPGRAM_URL` is now in the
+  configuration table.
+- **Frequency numbers.** `freqToBCD()` turned a negative number into bytes
+  holding its minus sign, and `1e21` (written "1e+21", 5 characters)
+  slipped past its length check, so either went to the radio as garbage
+  BCD. It now refuses anything that isn't a finite number of 0 or more
+  that fits the bytes. This covers every caller (setFrequency, scope
+  span, levels). The `setFrequency` request also refuses a value outside
+  1 to 9,999,999,999 Hz with a clear error before the radio is touched,
+  and rounds a fraction to whole Hz, as the radio was always set; the
+  reply, the broadcast and the server's state now hold that rounded
+  value. Whether the radio covers a frequency is still up to the radio,
+  which answers NG. Requiring whole numbers instead was considered, but
+  18 places in the web app set a frequency and one sending a fraction
+  (`14.074 * 1e6` is 14073999.999999998) would have broken.
+- Tests: frame.test.js (negative, 1e10, 1e21, NaN, Infinity, strings and
+  null refused; the largest 10-digit value, zero and rounding still
+  work), ws-server.test.js (setFrequency refuses negative, zero, 1e21 and
+  over 10 digits without touching the radio, and rounds 7074000.6 to
+  7074001 in the reply, the radio and the state; a message under the
+  limit is handled, one over it closes the socket with 1009 and the
+  browser is forgotten), stt.test.js (http://, HTTP://, ftp://, no scheme
+  and a bare https:// refused for the default with a warning; an https://
+  URL is used; STT_URL can still be http://). The new checks fail against
+  the old code.
+- Service-worker cache v129.
+
+### Backpressure: skip live frames for a browser that is behind (v130)
+
+Item 11 from the code review. Not tested on air (receive only, but not
+tried on a real phone on a weak link).
+
+- **The problem.** The server sent audio (about 50 frames a second),
+  scope lines and spectra to every browser without looking at whether it
+  was keeping up. For a phone on weak mobile data the frames piled up in
+  the Pi's memory (`ws` buffers whatever hasn't gone yet), and its audio
+  fell further and further behind. With a stalled test browser and 16 MB
+  sent, the old server held 11.8 MB for it.
+- **The fix.** `ControlServer#sendLive()` sends a live frame only if that
+  browser's backlog (`ws.bufferedAmount`) is under its limit. Over it, the
+  browser's live frames are skipped until the backlog is under a quarter
+  of the limit, so it doesn't flip on and off each frame. The same test
+  now holds at most 0.1 MB. A short gap in what that browser hears, rather
+  than growing delay.
+  - Live frames: raw, Opus and ADPCM audio, scope lines, spectra
+    (`LIVE_FRAME_TYPES`). `broadcastBinary()` and `sendBinary()` pick by
+    the frame's tag; AudioBridge sends its audio through `sendLive()`.
+  - Never skipped: SSTV and fax lines and Feld-Hell columns (a lost one
+    is a hole in the picture), and all JSON (state, decoded text).
+  - Limits (`LIVE_BACKLOG_BYTES`): 128 kB for a browser on raw audio
+    (about 96 kB/s, so a little over a second), 32 kB on Opus or ADPCM
+    (3 to 6 kB/s, so several seconds). Set when the browser chooses its
+    format (`setAudioCodec`); `liveBacklogBytes` overrides them.
+  - Data already handed to the operating system's network buffers isn't
+    counted; the limit is on top of that.
+  - Dropping audio packets is safe for the decoders in the browser: each
+    ADPCM frame carries its own starting sample and step, and Opus is
+    built to conceal lost packets.
+  - One log line when a browser starts skipping and one when it catches
+    up, with how long and how many frames.
+- Tests: ws-server.test.js (with a fake socket: a browser over its limit
+  gets no audio or scope while another gets everything; SSTV, fax,
+  Feld-Hell and JSON still sent; skipping goes on until under a quarter
+  of the limit, then audio resumes; one log line each way; the limit
+  follows `setAudioCodec`. With a real client that stops reading: it is
+  detected, the server never holds more than the limit plus one frame,
+  and a client reading normally gets all 4000 frames).
+  audio-bridge.test.js (raw, Opus and ADPCM all go through `sendLive`).
+- Service-worker cache v130.
+
+### CW paddle timed at the server, optional DTR/RTS keying (v131)
+
+Not tested on air: neither keying method has been tried on a real
+transmission.
+
+- **The bug.** `runKeyerLoop()` sent PTT on, waited for the reply, slept the
+  element, sent PTT off, waited for the reply, slept a unit. Each element
+  on air lasted from the radio getting PTT on to it getting PTT off, so it
+  was the element plus one full network round trip; each gap likewise. At
+  20 WPM (60 ms units) over a 100 ms mobile round trip: dots 160 ms (2.7
+  units), dashes 280 ms, gaps 160 ms. A dot nearly the length of a dash
+  and gaps nearly letter gaps: wrong characters at the other end, not just
+  loose timing. Jitter made it uneven as well, and there was no sidetone.
+- **The fix.** The browser still runs the iambic keyer, but sends each
+  element as it starts as `cwKey {session, t, d}`, with t from the keyer's
+  own schedule (each element one unit after the last ends), so neither
+  browser timers nor the network change what is sent. The new
+  `CwPaddleBridge` holds elements for `CW_PADDLE_DELAY_MS` (250) after the
+  first of a session arrives and replays them on the server's clock. Every
+  element and gap keeps its keyed length; the sending is a fixed delay
+  late. An element that arrives after its slot (a stall longer than the
+  delay) moves the rest of the session later instead of being squashed.
+  The network delay itself can't be removed; a steady one does no harm to
+  CW.
+- **Sidetone.** A 600 Hz tone in the browser, scheduled on the Web Audio
+  clock with 4 ms ramps, plays each element as it is keyed, with no delay.
+- **Keying.** `CW_KEY_LINE=dtr|rts` keys with that line of the CI-V USB
+  serial port (radio menu USB Keying (CW); see docs/civ-notes.md), set
+  directly, not through the CI-V queue; semi break-in is turned on for the
+  session and put back. Without it the paddle keys with CI-V PTT as
+  before, now timed on the server and sent `urgent` (`setPtt(true,
+  {urgent})` goes ahead of polling as PTT off already did).
+- **Safety.** One browser keys at a time; the key goes up at once when it
+  disconnects (pending elements dropped) and on stop; an element is at
+  most 1.5 s (a stuck paddle can't hold the key down); a session (elements
+  under 5 s apart) is stopped at 10 minutes, since keying the line is a
+  transmission the PTT watchdog doesn't see. Refused if the radio isn't in
+  CW, is transmitting, or CW text is being sent; CW text is refused while
+  the paddle keys. The key line is dropped when the port opens (Linux
+  raises DTR/RTS on open) and in `emergencyUnkey()`.
+- `cw-keying` `{active}` is broadcast when keying starts and stops
+  (`state.cwKeying` in the snapshot); a message (10-minute limit, an
+  error) is shown in every browser.
+- Tests: cw-paddle-bridge.test.js (new: with up to 180 ms of jitter,
+  delivered in order as a WebSocket does, every element and gap exact on a
+  fake clock and within 2 ms on real timers; a stall; refusals; disconnect
+  and stop; break-in set and put back; the 10-minute limit; CI-V PTT
+  urgent and timed), civ-driver.test.js (the key line dropped on open,
+  set at once while a CI-V reply is awaited, other lines refused, lines
+  untouched without keyLine; urgent PTT on ahead of polling),
+  ws-server.test.js (cwKey handed to the bridge, cwKeying in the
+  snapshot), cw-tx-bridge.test.js (CW text refused while the paddle keys),
+  manual-tty-ui.js (holding DOT at 20 WPM in Chromium: dots of 59 to 60 ms,
+  120 ms apart, on the stub radio about 250 ms after the press; every PTT
+  change from the bridge, none from the browser). Not tried: a real serial
+  port's DTR/RTS (the tests use a fake port), and a real phone on a poor
+  link.
+- Service-worker cache v131.
+
+### Diagnostic scripts drop the CW key line too (v132)
+
+- **The gap.** With the radio's USB Keying (CW) on DTR or RTS (v131), the
+  `test/manual-*.js` scripts that open the serial port left that line high
+  for their whole run: Linux raises DTR and RTS on open, and only the
+  server knew to drop the key line. With the radio in CW and break-in on,
+  that is a steady carrier for as long as the script runs.
+- **The fix.** New `src/civ/key-line.js`: `parseKeyLine()` (now also used by
+  index.js) and `scriptKeyLine()`. The scripts are run from a shell, not
+  by systemd, so they don't see `/etc/piro/piro.env`; `scriptKeyLine()`
+  takes `CW_KEY_LINE` from the environment, or else reads it from that
+  file, and says which. All six scripts that open the port pass it to
+  CivDriver, which drops the line on open as the server does. Without a
+  key line the serial lines are still left alone.
+- Not covered: other programs on the same port (a terminal program,
+  Hamlib, a logger on a PC). The README says to leave break-in off when
+  not sending CW.
+- Tests: key-line.test.js (new: values, quotes, off, a bad value; the env
+  file read with comments, `export` and the last value winning; the
+  environment winning over the file; no file; and every program that
+  opens the radio's real port, found by scanning `test/` and index.js,
+  passes a key line, which fails if one doesn't: checked by taking it
+  out of one script). By hand, `manual-civ-test.js` against a fake radio
+  on a pseudo-terminal prints where it found the key line and tries to
+  drop it (a pseudo-terminal has no DTR, so that is reported as an error).
+- Service-worker cache v132.
+
+### wsprnet over HTTPS, systemd hardening, "PiRO" everywhere, title links to the source (v133)
+
+Items 8 and 15 from the code review, and two requests. Not tested on air
+(no transmitting change).
+
+- **wsprnet.org over HTTPS (item 8).** Spots went to
+  `http://wsprnet.org/post/`, as WSJT-X does (its current source still
+  does). `WsprNetClient` now tries `https://wsprnet.org/post/` first and
+  falls back to HTTP only if wsprnet.org clearly didn't take the HTTPS
+  request: a connection or TLS failure, or a redirect or 4xx answer. A
+  timeout, a reset or a 5xx is not a reason to fall back, since the spot
+  may already have been taken and would be posted twice. The choice is
+  kept until PiRO restarts and logged once. Whether wsprnet.org accepts
+  HTTPS on /post/ couldn't be checked from here (this environment can't
+  reach it); the fallback means uploads keep working either way.
+- **systemd hardening (item 15).** `deploy/piro.service` gains
+  NoNewPrivileges, an empty CapabilityBoundingSet, RestrictSUIDSGID,
+  ProtectSystem=full, PrivateTmp, ProtectKernelTunables,
+  ProtectKernelModules, ProtectControlGroups, ProtectHostname,
+  RestrictNamespaces, LockPersonality, SystemCallArchitectures=native and
+  RestrictAddressFamilies (unix, inet, inet6, netlink). Left out, with the
+  reasons in the unit: PrivateDevices, DevicePolicy, ProtectClock and
+  ProtectKernelLogs (they restrict /dev, hiding the serial port and sound
+  card), MemoryDenyWriteExecute (Node's JIT and WebAssembly), ProtectHome
+  and ProtectSystem=strict (the save folders can be anywhere),
+  SystemCallFilter and RestrictRealtime (not tried on a Pi).
+  `systemd-analyze security --offline` rates the unit 4.1 ("OK"), the old
+  one 9.0 ("UNSAFE"); `systemd-analyze verify` passes. Not yet run on a
+  Pi: the README says how to turn a setting off with `systemctl edit`,
+  and that existing installs must re-run the install step to get it.
+- **The name.** "PiRO" throughout: the default `SCREEN_TITLE` (was "SPARC
+  PiRO"; set `SCREEN_TITLE` to keep a club name), the page title and
+  heading, the web app manifest, PSK Reporter's program id (was
+  "SPARC-PiRO"), `package.json` (`piro`; npm names are lower case), the
+  plain-text server reply, and the service-worker cache (`piro-shell-vN`;
+  the old `icom-rig-pwa-shell-*` cache is deleted by the usual cleanup).
+  The architecture diagram still shows the old cache name and v126.
+- **The title links to the source (AGPL).** The heading is now a link to
+  the source of the running copy: `SOURCE_CODE_URL`, which now defaults to
+  https://github.com/StevPem/piro. The page's HTML carries that link, so
+  it works before the page connects; the server's value replaces it. It
+  replaces the separate "Source" link, which only appeared when
+  `SOURCE_CODE_URL` was set, so an unconfigured copy offered no source.
+  The link looks like the title and is underlined on hover or focus.
+- Tests: wspr-bridge.test.js (HTTPS first; refused, 404 and a certificate
+  error fall back to HTTP and stay there; a timeout and a 5xx don't; once
+  HTTPS has worked a failure is reported, not switched; logged once), and
+  by hand Node's real error for a self-signed certificate
+  (DEPTH_ZERO_SELF_SIGNED_CERT) counts as not taken. ws-server.test.js and
+  psk-reporter.test.js for the new defaults. manual-tty-ui.js: the title
+  is a link to the repository, the old Source link is gone.
+- Service-worker cache v133.
+
+### CW mode audio dropouts: CW3 (DeepCW) moved to a worker thread (v134)
+
+- **The bug.** Reported: in CW mode, audio had frequent brief dropouts;
+  other modes were fine. The CW decoder only runs in CW mode, and CW3
+  (DeepCW, the default) did its heavy work on the server's main thread,
+  the same thread that sends audio to every browser. Every 8 s window,
+  measured on a 2.8 GHz PC:
+  - the spectrogram, a direct DFT computing `Math.cos` and `Math.sin` for
+    every term (about 9 million of each per window): 400-650 ms;
+  - then the inference: onnxruntime-node's `run()` returns at once but
+    keeps the main thread busy until it finishes, 60-200 ms, even with
+    one onnxruntime thread (so not CPU contention).
+
+  So the server stopped for half a second or more every 8 s (once 2.5 s
+  with the model load), and several times that on a Pi. No audio went out
+  meanwhile; the browser then got a burst and skipped the backlog. CW1
+  and CW2 held it at most 30-40 ms, under what the browser buffers.
+- **The fix.**
+  - The spectrogram and the model now run in a worker thread
+    (`src/audio/deepcw-worker.js`, `DeepCwEngine`), as CLAUDE.md's design
+    rules ask for long jobs. The main thread keeps the per-sample filter,
+    the decimation and the silence check, and hands each window over.
+    `inWorker: false` keeps it in-process (the tests compare the two).
+  - The DFT's cos/sin values are worked out once per decoder
+    (`dftTables()`): the spectrogram takes 35-40 ms instead of 400-650 ms,
+    with bit-for-bit the same values, which saves the Pi's CPU too.
+  - `CwDecoderBridge#stop()` closes the decoders, ending the worker. A
+    worker left open keeps a test process from exiting by itself (it
+    seems onnxruntime's own threads hold it); `process.exit()`, which the
+    server's shutdown uses, is not held up.
+- **Measured after:** CW3 decoding 40 s of real-time CW holds the main
+  thread at most 35 ms, as CW1 and CW2 do (was 2.5 s), and decodes the
+  same text. Not yet heard on a Pi.
+- Tests: deepcw-decoder.test.js (the tabled DFT bit-for-bit the same as
+  the original on random frames; the worker decodes the same text as
+  in-process, and while it decodes the main thread is never held more
+  than a few ms (in-process: over 300 ms); a missing model is reported
+  from the worker; every decoder closed at the end).
+- Service-worker cache v134.
+
+## Native LAN branch history (before upstream integration)
+
 ### Native IC-7300MK2 LAN connection (v120)
 
 - Added `CIV_CONNECTION=lan` with server-side radio host, credentials and
@@ -4755,3 +5374,20 @@ model for how to approach that.
   level changes, two transceive timings and real VARA/ControlServer keying.
   Final checks are recorded in `icom-lan-plan.md`.
 - Build/cache v122. Not tested on a physical radio or on air.
+
+
+### Native IC-7300MK2 LAN integrated with upstream (v135)
+
+- Integrated upstream through v134, preserving USB, JS8, STT, DeepCW worker,
+  Origin checking, PTT ownership/heartbeat, backpressure, queue ordering and
+  CW keyline/paddle support.
+- Native LAN discovery uses the advertised CI-V address and still verifies
+  the MK2 identity. Reconnect updates cached scope availability.
+- Preserve USB keyline selection; LAN paddles use CI-V and discard queued
+  elements on radio loss. JS8 cancels stale encode results, drains LAN audio,
+  and cannot let an old completion replace a newer transmission.
+- Failed LAN watchdog release reports unknown PTT while stopping local
+  producers. The LAN test wrapper remains compatible with upstream CI.
+- Earlier physical-radio evidence and remaining checks are recorded in
+  `docs/icom-lan-hardware-validation.md`; the integrated build needs a fresh
+  hardware sweep after deployment. Service-worker cache v135.

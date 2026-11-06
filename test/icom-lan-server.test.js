@@ -22,12 +22,15 @@ test('configuration preserves USB defaults and rejects invalid LAN settings', ()
   assert.equal(usb.path, '/dev/ttyUSB0');
   assert.equal(usb.baudRate, 19200);
   assert.equal(usb.session, undefined);
+  assert.equal(createRadio({ CW_KEY_LINE: 'rts' }).keyLine, 'rts');
+  assert.equal(createRadio({ CW_KEY_LINE: 'off' }).keyLine, null);
   const env = { CIV_CONNECTION: 'lan', ICOM_LAN_HOST: '127.0.0.1', ICOM_LAN_USERNAME: 'beer', ICOM_LAN_PASSWORD: 'beer' };
   for (const patch of [{ CIV_CONNECTION: 'tcp' }, { AUDIO_CHANNELS: '2' }, { AUDIO_SAMPLE_RATE: '16000' },
     { ICOM_LAN_CONTROL_PORT: '1junk' }, { CIV_RADIO_ADDR: 'E0' }, { ICOM_LAN_HOST: '' },
     { ICOM_LAN_PASSWORD: '' }, { ICOM_LAN_MOD_LEVEL: '256' }]) assert.throws(() => createRadio({ ...env, ...patch }));
   const driver = createRadio({ ...env, CIV_RADIO_ADDR: 'B4' });
   assert.equal(driver.radioAddr, 0xb4);
+  assert.equal(driver.keyLine, null);
 });
 
 test('normal PiRO process starts without ALSA and carries control, PCM and scope through the real browser protocol', { timeout: 15000 }, async (t) => {

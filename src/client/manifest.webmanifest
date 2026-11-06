@@ -1,5 +1,5 @@
 {
-  "name": "SPARC PiRO",
+  "name": "PiRO",
   "short_name": "PiRO",
   "description": "Remote control for an Icom transceiver over CI-V, with audio, served from a Raspberry Pi on the shack LAN.",
   "start_url": "/",

@@ -1,12 +1,13 @@
 'use strict';
 
 const { clampOliviaCentre } = require('../audio/olivia-dsp');
+const { clampJs8TxHz } = require('./js8-bridge');
 const { clampHellTone } = require('../audio/hell-rx');
 const http = require('http');
 const https = require('https');
 const { EventEmitter } = require('events');
 const { WebSocketServer } = require('ws');
-const { REQUEST, EVENT, makeResult, makeError, makeEvent } = require('./protocol');
+const { REQUEST, EVENT, BINARY_TYPE, makeResult, makeError, makeEvent } = require('./protocol');
 const { createStaticHandler } = require('./static-server');
 
 // Operator notes (REQUEST.POST_NOTE)
@@ -14,6 +15,71 @@ const NOTES_KEEP = 3;
 const NOTE_MAX_CHARS = 200;
 const NOTES_IDLE_MS = 60 * 60 * 1000; // cleared after an hour with no new note
 const NOTES_EMPTY_GRACE_MS = 2 * 60 * 1000; // ...or two minutes after the last browser leaves
+
+// How often each browser is pinged. A browser that hasn't answered the
+// previous ping by the next one is dropped, so a phone that lost its
+// network is noticed in 15-30 s, not when TCP gives up many minutes later.
+const HEARTBEAT_MS = 15 * 1000;
+
+// The largest WebSocket message accepted from a browser. The biggest the
+// protocol allows is REQUEST.SEND_EASYPAL: a JPEG of up to 4 MB, about
+// 5.6 MB as base64 (SEND_SSTV's RGB is at most 3 MB, 4 MB as base64).
+// Bigger messages are refused and the socket closed (code 1009), so one
+// browser can't make the Pi hold ws's default of 100 MiB.
+const MAX_MESSAGE_BYTES = 8 * 1024 * 1024;
+
+// Backpressure. A browser that can't keep up (a phone on weak mobile data)
+// would otherwise have audio, scope and spectrum frames pile up in the
+// Pi's memory, and hear the band later and later. When more than this is
+// waiting to go to one browser, its live frames are skipped until the
+// backlog is under a quarter of it: a short gap instead of growing delay.
+// Raw PCM is about 96 kB/s, so 128 kB is a little over a second of it;
+// compressed audio is 3 to 6 kB/s, so 32 kB is several seconds. (Data
+// already handed to the network stack isn't counted; this is on top.)
+const LIVE_BACKLOG_BYTES = { pcm: 128 * 1024, compressed: 32 * 1024 };
+
+// Binary frames that are only worth showing now, so may be skipped for a
+// browser that is behind. Picture data (SSTV and fax lines, Feld-Hell
+// columns) is never skipped: a lost line would leave a hole in the picture.
+// JSON (state, decoded text) is never skipped either.
+const LIVE_FRAME_TYPES = new Set([
+  BINARY_TYPE.AUDIO,
+  BINARY_TYPE.AUDIO_OPUS,
+  BINARY_TYPE.AUDIO_ADPCM,
+  BINARY_TYPE.SCOPE_LINE,
+  BINARY_TYPE.FT8_SPECTRUM,
+]);
+
+// CI-V carries a frequency as 10 BCD digits.
+const MAX_FREQUENCY_HZ = 9999999999;
+
+/**
+ * Whether a WebSocket upgrade may go ahead, judged by its Origin header.
+ * A browser always sends Origin; another web page open in the operator's
+ * browser would send its own, so only the page this server serves (same
+ * host and port as the request's Host header) or an origin in
+ * `allowedOrigins` gets through. No Origin means no browser (a script or
+ * a test), which a web page can't fake.
+ */
+function originAllowed(origin, host, allowedOrigins = []) {
+  if (!origin) return true;
+  const o = String(origin).trim().toLowerCase().replace(/\/+$/, '');
+  if (allowedOrigins.some((a) => a === '*' || a === o)) return true;
+  let url;
+  try {
+    url = new URL(o);
+  } catch {
+    return false;
+  }
+  if (url.protocol !== 'http:' && url.protocol !== 'https:') return false;
+  return !!host && url.host === String(host).trim().toLowerCase();
+}
+
+/** "a, b" (ALLOWED_ORIGINS) or an array -> lower-case origins without a trailing slash. */
+function parseAllowedOrigins(value) {
+  const list = Array.isArray(value) ? value : String(value || '').split(',');
+  return list.map((o) => String(o).trim().toLowerCase().replace(/\/+$/, '')).filter(Boolean);
+}
 
 /**
  * Bridges the (single, shared) CI-V driver to any number of WebSocket
@@ -62,6 +128,10 @@ class ControlServer extends EventEmitter {
     rnnoiseLevelCount = 5,
     sourceCodeUrl,
     pttWatchdogMs = 10 * 60 * 1000,
+    heartbeatMs = HEARTBEAT_MS,
+    maxMessageBytes = MAX_MESSAGE_BYTES,
+    liveBacklogBytes = LIVE_BACKLOG_BYTES,
+    allowedOrigins = [],
     notesIdleMs = NOTES_IDLE_MS,
     notesEmptyGraceMs = NOTES_EMPTY_GRACE_MS,
   }) {
@@ -85,6 +155,20 @@ class ControlServer extends EventEmitter {
     // real minutes for the timeout to fire — see docs/civ-notes.md.
     this.pttWatchdogMs = pttWatchdogMs;
     this._pttWatchdogTimer = null;
+    // The browser that keyed PTT with REQUEST.SET_PTT, while it's keyed.
+    // If that browser goes (closed, network lost, heartbeat missed), PTT
+    // is released at once rather than when the watchdog fires.
+    this._pttOwner = null;
+    // Ping every heartbeatMs (0 turns it off); see HEARTBEAT_MS.
+    this.heartbeatMs = heartbeatMs;
+    this._heartbeatTimer = null;
+    // Backpressure limits (see LIVE_BACKLOG_BYTES), and each browser's
+    // limit (by its audio format) and whether it's skipping frames now.
+    this.liveBacklogBytes = { ...LIVE_BACKLOG_BYTES, ...liveBacklogBytes };
+    this._liveLimit = new WeakMap();
+    this._lagging = new WeakMap(); // ws -> {since, dropped}
+    // Origins allowed besides this server's own page; see originAllowed().
+    this.allowedOrigins = parseAllowedOrigins(allowedOrigins);
     // Operator notes (REQUEST.POST_NOTE): cleared after notesIdleMs with no
     // new note, or once nobody has been connected for notesEmptyGraceMs (a
     // grace period, so one person reloading the page doesn't wipe them).
@@ -97,16 +181,32 @@ class ControlServer extends EventEmitter {
     const staticHandler = staticDir ? createStaticHandler(staticDir) : null;
     const requestHandler = (req, res) => {
       if (staticHandler) {
-        staticHandler(req, res);
+        // Belt and braces: nothing a browser sends should be able to throw
+        // out of here and take the server (and the radio's PTT) down.
+        try {
+          staticHandler(req, res);
+        } catch (err) {
+          console.error(`[http] ${req.method} ${req.url} failed:`, err.message);
+          if (!res.headersSent) res.writeHead(500, { 'Content-Type': 'text/plain' });
+          res.end('Server error');
+        }
         return;
       }
       res.writeHead(200, { 'Content-Type': 'text/plain' });
-      res.end('icom-rig-pwa control server\n');
+      res.end('PiRO control server\n');
     };
     this.httpServer = this.tls
       ? https.createServer({ cert: this.tls.cert, key: this.tls.key }, requestHandler)
       : http.createServer(requestHandler);
-    this.wss = new WebSocketServer({ server: this.httpServer });
+    this.wss = new WebSocketServer({
+      server: this.httpServer,
+      maxPayload: maxMessageBytes,
+      verifyClient: ({ origin, req }) => {
+        if (originAllowed(origin, req.headers.host, this.allowedOrigins)) return true;
+        console.warn(`[ws] refused a connection from origin ${origin} (Host: ${req.headers.host}); see ALLOWED_ORIGINS`);
+        return false;
+      },
+    });
     this.clients = new Set();
 
     // Cached last-known state so a newly-connected client gets an
@@ -120,7 +220,7 @@ class ControlServer extends EventEmitter {
       radioAddr: this.civ.radioAddr ?? null,
       audio: null, // set via setAudioInfo() once/if an AudioBridge is attached
       scope: null, // set via setScopeInfo() once/if a ScopeBridge is attached
-      screenTitle: screenTitle || 'SPARC PiRO', // static for the process lifetime, see docs/ui-notes.md
+      screenTitle: screenTitle || 'PiRO', // static for the process lifetime, see docs/ui-notes.md
       // The app's own version (from package.json), shown client-side in
       // small text next to screenTitle. Static for the process lifetime,
       // same as screenTitle — see docs/ui-notes.md. null (rather than a
@@ -174,6 +274,17 @@ class ControlServer extends EventEmitter {
       // Same reasons as jttyActive.
       hellActive: false,
       hellToneHz: 1000,
+      // Whether the client has JS8 selected, and its transmit offset (see
+      // REQUEST.SET_JS8_ACTIVE / server/js8-bridge.js), and JS8's state
+      // (state.js8, kept by Js8Bridge; null when it isn't set up).
+      js8Active: false,
+      js8TxHz: 1500,
+      js8: null,
+      // Speech-to-text copy aid (REQUEST.SET_STT_ENABLED / server/stt-bridge.js):
+      // the "STT" checkbox, and its state (state.stt, kept by SttBridge; null
+      // when it isn't set up).
+      sttEnabled: false,
+      stt: null,
       // Whether the client has VARA chat selected (REQUEST.SET_VARA_ACTIVE /
       // server/vara-bridge.js), and the modem's state (state.vara, kept by
       // VaraBridge; null when it isn't set up).
@@ -304,7 +415,9 @@ class ControlServer extends EventEmitter {
       // button): the NOTES_KEEP most recent, newest last, each {id, text,
       // time} with time in epoch ms. See REQUEST.POST_NOTE.
       notes: [],
+      cwKeying: false, // the CW paddle is keying (EVENT.CW_KEYING); see cw-paddle-bridge.js
     };
+    this.cwPaddle = null; // set by CwPaddleBridge#start()
 
     this._wireCivEvents();
     this._wireWsConnections();
@@ -319,6 +432,8 @@ class ControlServer extends EventEmitter {
     this.civ.on('mode', (value) => {
       this.state.mode = value;
       this._broadcast(makeEvent(EVENT.MODE, { value }));
+      // Internal: the radio's mode, DATA mode or an app mode changed (STT follows it).
+      this.emit('mode-changed');
     });
     this.civ.on('error', (err) => {
       this._broadcast(makeEvent(EVENT.RIG_ERROR, { message: err.message }));
@@ -343,19 +458,61 @@ class ControlServer extends EventEmitter {
         }
         this._handleMessage(ws, raw);
       });
-      ws.on('close', () => {
-        this.clients.delete(ws);
-        this._broadcastClientCount();
-        this.emit('client-disconnected', ws);
-        this._releaseJttyIfAlone();
+      ws.isAlive = true;
+      ws.on('pong', () => {
+        ws.isAlive = true;
       });
-      ws.on('error', () => {
-        this.clients.delete(ws);
-        this._broadcastClientCount();
-        this.emit('client-disconnected', ws);
-        this._releaseJttyIfAlone();
-      });
+      ws.on('close', () => this._onClientGone(ws));
+      ws.on('error', () => this._onClientGone(ws));
     });
+    if (this.heartbeatMs > 0) {
+      this._heartbeatTimer = setInterval(() => this._heartbeat(), this.heartbeatMs);
+      this._heartbeatTimer.unref?.();
+    }
+  }
+
+  /** A browser closed, errored or was dropped by the heartbeat ('close' and 'error' may both call this). */
+  _onClientGone(ws) {
+    this.clients.delete(ws);
+    this._broadcastClientCount();
+    this.emit('client-disconnected', ws);
+    this._releaseJttyIfAlone();
+    this._releasePttIfOwnerGone(ws);
+  }
+
+  /**
+   * Unkeys the radio if `ws` keyed it with REQUEST.SET_PTT and is still
+   * holding it. Without this a phone that loses its network mid-over
+   * would leave the transmitter on until the 10-minute watchdog.
+   * Transmissions a bridge keyed itself (FT8, WSPR, ...) have no owner;
+   * the bridges stop those when the last browser leaves.
+   */
+  _releasePttIfOwnerGone(ws) {
+    if (!this._pttOwner || this._pttOwner !== ws) return;
+    this._pttOwner = null; // first, so 'close' after 'error' doesn't send it twice
+    if (!this.state.ptt) return;
+    console.warn('[ws] the browser holding PTT disconnected; releasing PTT');
+    this.setPttFromServer(false).catch((err) => {
+      console.error('[ws] releasing PTT after a disconnect failed:', err.message);
+      this._broadcast(makeEvent(EVENT.RIG_ERROR, { message: `Releasing PTT after a browser disconnected failed: ${err.message}` }));
+    });
+  }
+
+  /** Pings every browser; drops any that didn't answer the last ping. */
+  _heartbeat() {
+    for (const ws of this.clients) {
+      if (ws.isAlive === false) {
+        console.warn('[ws] a browser stopped answering pings; dropping it');
+        ws.terminate(); // 'close' follows, which calls _onClientGone()
+        continue;
+      }
+      ws.isAlive = false;
+      try {
+        ws.ping();
+      } catch {
+        // not open any more; 'close' deals with it
+      }
+    }
   }
 
   /**
@@ -385,6 +542,8 @@ class ControlServer extends EventEmitter {
       jttyTxHz: s.jttyTxHz,
       oliviaActive: s.oliviaActive,
       oliviaCentreHz: s.oliviaCentreHz,
+      js8Active: s.js8Active,
+      js8TxHz: s.js8TxHz,
       hellActive: s.hellActive,
       hellToneHz: s.hellToneHz,
       varaActive: s.varaActive,
@@ -398,6 +557,7 @@ class ControlServer extends EventEmitter {
   /** Tells every browser except `except` (which has its own reply) about the app modes now. */
   _broadcastAppModes(except) {
     this._broadcast(makeEvent(EVENT.APP_MODES, this.appModes()), except);
+    this.emit('mode-changed');
   }
 
   _setJttyActive(active) {
@@ -411,6 +571,19 @@ class ControlServer extends EventEmitter {
     if (centreHz !== undefined) this.state.oliviaCentreHz = centreHz;
     // Handled by OliviaDecoderBridge (internal-only event, same pattern as 'jtty-active').
     this.emit('olivia-active', { active, centreHz: this.state.oliviaCentreHz });
+  }
+
+  _setSttEnabled(enabled) {
+    this.state.sttEnabled = enabled;
+    // Handled by SttBridge (internal-only event).
+    this.emit('stt-enabled', enabled);
+  }
+
+  _setJs8Active(active, txHz) {
+    this.state.js8Active = active;
+    if (txHz !== undefined) this.state.js8TxHz = txHz;
+    // Handled by Js8Bridge (internal-only event).
+    this.emit('js8-active', { active, txHz: this.state.js8TxHz });
   }
 
   _setHellActive(active, toneHz) {
@@ -469,6 +642,10 @@ class ControlServer extends EventEmitter {
     }
     if (this.state.jttyActive) this._setJttyActive(false);
     if (this.state.oliviaActive) this._setOliviaActive(false);
+    // JS8 too: a message may be being sent.
+    if (this.state.js8Active) this._setJs8Active(false);
+    // Speech-to-text: off until someone ticks it again (it starts a speech engine).
+    if (this.state.sttEnabled) this._setSttEnabled(false);
     if (this.state.hellActive) this._setHellActive(false);
     // VARA too: it transmits on its own (answering calls, acknowledging).
     if (this.state.varaActive) this._setVaraActive(false);
@@ -532,17 +709,24 @@ class ControlServer extends EventEmitter {
           if (typeof msg.value !== 'number') {
             throw new Error('"value" must be a number (Hz)');
           }
-          await this.civ.setFrequency(msg.value);
-          this.state.frequency = msg.value;
-          ws.send(makeResult(id, { value: msg.value }));
-          this._broadcast(makeEvent(EVENT.FREQUENCY, { value: msg.value }), ws);
+          // Above zero and within CI-V's 10 digits, rounded to whole Hz as
+          // the radio is set. Whether the radio covers it is up to the
+          // radio: it answers NG if not.
+          const hz = Math.round(msg.value);
+          if (!Number.isFinite(msg.value) || hz < 1 || hz > MAX_FREQUENCY_HZ) {
+            throw new Error(`"value" must be a frequency in Hz from 1 to ${MAX_FREQUENCY_HZ}`);
+          }
+          await this.civ.setFrequency(hz);
+          this.state.frequency = hz;
+          ws.send(makeResult(id, { value: hz }));
+          this._broadcast(makeEvent(EVENT.FREQUENCY, { value: hz }), ws);
           // Client-requested frequency changes (e.g. FT8's auto-tune)
           // don't necessarily round-trip back through civ's own
           // 'frequency' event in time for internal listeners (that
           // depends on the radio auto-transceiving) — emit directly here
           // too so bridges that track frequency (see 'frequency' in this
           // class's own doc comment) see it immediately either way.
-          this.emit('frequency', msg.value);
+          this.emit('frequency', hz);
           break;
         }
         case REQUEST.GET_MODE: {
@@ -556,6 +740,7 @@ class ControlServer extends EventEmitter {
           await this.civ.setMode(msg.mode, msg.filter);
           const value = { mode: msg.mode, filter: msg.filter ?? 1 };
           this.state.mode = value;
+          this.emit('mode-changed');
           ws.send(makeResult(id, { value }));
           this._broadcast(makeEvent(EVENT.MODE, { value }), ws);
           break;
@@ -566,6 +751,7 @@ class ControlServer extends EventEmitter {
           }
           await this.civ.setDataMode(msg.on);
           this.state.dataMode = msg.on;
+          this.emit('mode-changed');
           ws.send(makeResult(id, { on: msg.on }));
           this._broadcast(makeEvent(EVENT.DATA_MODE, { on: msg.on }), ws);
           break;
@@ -583,7 +769,7 @@ class ControlServer extends EventEmitter {
           // Excludes the requesting client from the broadcast, same as
           // setFrequency/setMode above — that client already gets its own
           // confirmation via the result reply below.
-          await this.setPttFromServer(msg.value, { except: ws });
+          await this.setPttFromServer(msg.value, { except: ws, owner: ws });
           ws.send(makeResult(id, { value: msg.value }));
           break;
         }
@@ -628,6 +814,40 @@ class ControlServer extends EventEmitter {
           this._setOliviaActive(msg.active, centreHz);
           ws.send(makeResult(id, { active: msg.active, centreHz: this.state.oliviaCentreHz }));
           this._broadcastAppModes(ws);
+          break;
+        }
+        case REQUEST.SET_STT_ENABLED: {
+          if (typeof msg.enabled !== 'boolean') throw new Error('"enabled" must be a boolean');
+          if (msg.enabled && !this.listenerCount('stt-enabled')) throw new Error('Speech-to-text is not set up on this server (it needs audio).');
+          this._setSttEnabled(msg.enabled);
+          ws.send(makeResult(id, { enabled: msg.enabled }));
+          break;
+        }
+        case REQUEST.SET_JS8_ACTIVE: {
+          if (typeof msg.active !== 'boolean') {
+            throw new Error('"active" must be a boolean');
+          }
+          if (msg.txHz !== undefined && (typeof msg.txHz !== 'number' || !Number.isFinite(msg.txHz))) {
+            throw new Error('"txHz" must be a number (Hz) if provided');
+          }
+          if (msg.active && !this.listenerCount('js8-active')) throw new Error('JS8 is not set up on this server (it needs audio).');
+          const txHz = msg.txHz === undefined ? undefined : clampJs8TxHz(msg.txHz);
+          this._setJs8Active(msg.active, txHz);
+          ws.send(makeResult(id, { active: msg.active, txHz: this.state.js8TxHz }));
+          this._broadcastAppModes(ws);
+          break;
+        }
+        case REQUEST.JS8: {
+          if (!['send', 'cq', 'stop'].includes(msg.action)) {
+            throw new Error('"action" must be "send", "cq" or "stop"');
+          }
+          if (msg.text !== undefined && typeof msg.text !== 'string') throw new Error('"text" must be a string');
+          if (typeof msg.text === 'string' && msg.text.length > 1000) throw new Error('"text" is too long');
+          if (!this.listenerCount('js8')) throw new Error('JS8 is not set up on this server (it needs audio).');
+          // Handled by Js8Bridge#request (its listener); it resolves with the result or rejects with why not.
+          const handler = this.listeners('js8')[0];
+          const result = await handler({ action: msg.action, text: msg.text });
+          ws.send(makeResult(id, result || {}));
           break;
         }
         case REQUEST.SET_HELL_ACTIVE: {
@@ -776,6 +996,7 @@ class ControlServer extends EventEmitter {
           // per browser, not shared: AudioBridge keeps it (setClientAudioCodec)
           if (!this.setClientAudioCodec) throw new Error('Audio is not enabled on this server');
           const codec = this.setClientAudioCodec(ws, msg.codec);
+          this._liveLimit.set(ws, codec === 'pcm' ? this.liveBacklogBytes.pcm : this.liveBacklogBytes.compressed);
           ws.send(makeResult(id, { codec }));
           break;
         }
@@ -848,6 +1069,13 @@ class ControlServer extends EventEmitter {
           // 'ft8-send').
           this.emit('tty-send', { mode: msg.mode, text: msg.text, freqHz: msg.freqHz });
           ws.send(makeResult(id, { accepted: true }));
+          break;
+        }
+        case REQUEST.CW_KEY: {
+          // One paddle element; see cw-paddle-bridge.js. Replies at once: the
+          // element is keyed later, on the server's clock.
+          if (!this.cwPaddle) throw new Error('The CW paddle is not available on this server');
+          ws.send(makeResult(id, this.cwPaddle.key(ws, msg)));
           break;
         }
         case REQUEST.SEND_CW: {
@@ -1211,15 +1439,51 @@ class ControlServer extends EventEmitter {
 
   /** Send a raw binary payload (e.g. an Opus packet) to one client. */
   sendBinary(ws, buffer) {
-    if (ws.readyState === ws.OPEN) ws.send(buffer);
+    if (LIVE_FRAME_TYPES.has(buffer[0])) this.sendLive(ws, buffer);
+    else if (ws.readyState === ws.OPEN) ws.send(buffer);
   }
 
   /** Send a raw binary payload to all clients except `except`. */
   broadcastBinary(buffer, except) {
+    const live = LIVE_FRAME_TYPES.has(buffer[0]);
     for (const client of this.clients) {
       if (client === except) continue;
-      if (client.readyState === client.OPEN) client.send(buffer);
+      if (live) this.sendLive(client, buffer);
+      else if (client.readyState === client.OPEN) client.send(buffer);
     }
+  }
+
+  /**
+   * Sends a live frame (audio, scope, spectrum) to one browser unless it
+   * is too far behind (see LIVE_BACKLOG_BYTES). Once over its limit it
+   * skips live frames until its backlog is under a quarter of the limit,
+   * so it doesn't flip on and off each frame. One log line when it starts
+   * skipping and one when it catches up. Returns whether it was sent.
+   */
+  sendLive(ws, buffer) {
+    if (ws.readyState !== ws.OPEN) return false;
+    const limit = this._liveLimit.get(ws) ?? this.liveBacklogBytes.pcm;
+    const backlog = ws.bufferedAmount;
+    const lag = this._lagging.get(ws);
+    if (lag) {
+      if (backlog > limit / 4) {
+        lag.dropped++;
+        return false;
+      }
+      this._lagging.delete(ws);
+      console.log(`[ws] a browser caught up after ${((Date.now() - lag.since) / 1000).toFixed(1)} s; ${lag.dropped} audio/scope frames were skipped`);
+    } else if (backlog > limit) {
+      this._lagging.set(ws, { since: Date.now(), dropped: 1 });
+      console.warn(`[ws] a browser is falling behind (${Math.round(backlog / 1024)} kB waiting); skipping its audio and scope frames until it catches up`);
+      return false;
+    }
+    ws.send(buffer);
+    return true;
+  }
+
+  /** Whether `ws` is skipping live frames because it is behind. */
+  isLagging(ws) {
+    return this._lagging.has(ws);
   }
 
   /**
@@ -1298,12 +1562,16 @@ class ControlServer extends EventEmitter {
    * weaken the fail-safe — it's just reusing the one safety mechanism
    * rather than needing a separate exemption path for automated TX.
    */
-  async setPttFromServer(on, { except } = {}) {
-    await this.civ.setPtt(on);
+  async setPttFromServer(on, { except, owner, urgent = false } = {}) {
+    await this.civ.setPtt(on, { urgent });
     this.state.ptt = on;
+    // `owner`: the browser that keyed it (REQUEST.SET_PTT); none when a bridge keyed it.
+    this._pttOwner = on ? owner ?? null : null;
     this._armOrClearPttWatchdog(on);
     this._broadcast(makeEvent(EVENT.PTT, { value: on }), except);
     this.emit('ptt', on);
+    // The browser went while the radio was being keyed: unkey now.
+    if (on && owner && !this.clients.has(owner)) this._releasePttIfOwnerGone(owner);
   }
 
   _armOrClearPttWatchdog(pttOn) {
@@ -1318,17 +1586,22 @@ class ControlServer extends EventEmitter {
 
   async _onPttWatchdogTimeout() {
     this._pttWatchdogTimer = null;
+    this._pttOwner = null;
+    let confirmed = false;
     try {
       await this.civ.setPtt(false);
+      confirmed = true;
     } catch (err) {
       // Still tell clients what happened even if the force-off itself
       // failed to confirm — better to surface it than fail silently on
       // exactly the kind of malfunction this watchdog exists to catch.
       this._broadcast(makeEvent(EVENT.RIG_ERROR, { message: `PTT watchdog fired but the force-off failed: ${err.message}` }));
     }
-    this.state.ptt = false;
+    // A lost LAN link cannot confirm the radio released its transmitter.
+    // Still stop local producers below while keeping that uncertainty visible.
+    this.state.ptt = confirmed || !this.civ.session ? false : null;
     this._broadcast(makeEvent(EVENT.PTT_TIMEOUT, { pttWatchdogMs: this.pttWatchdogMs }));
-    this._broadcast(makeEvent(EVENT.PTT, { value: false }));
+    this._broadcast(makeEvent(EVENT.PTT, { value: this.state.ptt }));
     this.emit('ptt', false); // internal, server-side-only — see the SET_PTT handler's matching emission
   }
 
@@ -1339,6 +1612,8 @@ class ControlServer extends EventEmitter {
       clearTimeout(this._pttWatchdogTimer);
       this._pttWatchdogTimer = null;
     }
+    clearInterval(this._heartbeatTimer);
+    this._heartbeatTimer = null;
     return new Promise((resolve) => {
       for (const client of this.clients) client.terminate();
       this.wss.close(() => this.httpServer.close(() => resolve()));
@@ -1346,4 +1621,4 @@ class ControlServer extends EventEmitter {
   }
 }
 
-module.exports = { ControlServer };
+module.exports = { ControlServer, originAllowed, parseAllowedOrigins, HEARTBEAT_MS, MAX_MESSAGE_BYTES, MAX_FREQUENCY_HZ, LIVE_BACKLOG_BYTES, LIVE_FRAME_TYPES };

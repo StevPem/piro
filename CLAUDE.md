@@ -22,7 +22,9 @@ operators, so frequency tables follow the WIA band plans.
 
 ## Testing
 - `npm test` runs everything that needs no hardware. It must pass before
-  a commit.
+  a commit. CI (`.github/workflows/test.yml`) runs the same files on every
+  PR through `test/run-all.js`, retrying a failed file once; a new test
+  file goes in the `npm test` script, and CI picks it up from there.
 - `test/manual-tty-ui.js` drives the real client in headless Chromium
   against a real ControlServer with a stub radio, with several browsers
   at once. It isn't in `npm test`; run it for any UI change. It needs
@@ -61,6 +63,10 @@ operators, so frequency tables follow the WIA band plans.
   RF tone.
 - CI-V CW text (`17`) takes 30 characters per command, answers NG when
   its buffer is full, and only transmits with break-in on.
+- CW can also be keyed with the USB serial port's DTR or RTS line (radio
+  menu USB Keying (CW); `CW_KEY_LINE`), also only with break-in on. Linux
+  raises DTR and RTS when a port opens: CivDriver drops the key line on
+  open. Don't touch the lines when no key line is set.
 - Australian class licence: remotely controlled transmissions stop after
   10 minutes (the PTT watchdog in ws-server.js). Anything that transmits
   without PTT needs its own limit.

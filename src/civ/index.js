@@ -4,6 +4,7 @@ const { CivDriver } = require('./driver');
 const frame = require('./frame');
 const commands = require('./commands');
 const scope = require('./scope');
+const keyLine = require('./key-line');
 
 module.exports = {
   CivDriver,
@@ -14,4 +15,6 @@ module.exports = {
   encodeFrame: frame.encodeFrame,
   ScopeLineAssembler: scope.ScopeLineAssembler,
   decodeScopeChunk: scope.decodeScopeChunk,
+  parseKeyLine: keyLine.parseKeyLine,
+  scriptKeyLine: keyLine.scriptKeyLine,
 };

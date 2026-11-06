@@ -49,6 +49,8 @@ const BROADCAST_ADDR = 0x00;
  *                                      the radio actually supports/cooperates —
  *                                      see docs/civ-notes.md
  *   'unknown-frame', (frame)        - any frame not otherwise handled
+ *   'stale-reply', (frame)          - an OK/NG dropped as a late reply to a
+ *                                      request that already timed out
  */
 class CivDriver extends EventEmitter {
   /**
@@ -58,6 +60,15 @@ class CivDriver extends EventEmitter {
    * @param {number} [opts.controllerAddr=0xE0] - our (host) CI-V address
    * @param {number} [opts.radioAddr] - radio's CI-V address, if known
    * @param {number} [opts.requestTimeoutMs=1000]
+   * @param {number} [opts.staleReplyGuardMs=150] - after a request times out,
+   *   how long to wait before sending the next one, dropping any OK/NG that
+   *   arrives meanwhile (see _dequeueNext())
+   * @param {number} [opts.maxQueue=64] - most requests waiting at once; more
+   *   are refused at once (urgent ones never are)
+   * @param {'dtr'|'rts'} [opts.keyLine] - the serial line that keys CW (the
+   *   radio's USB Keying (CW) setting). Linux raises DTR and RTS when a
+   *   port is opened, which would key the radio; this line is dropped as
+   *   soon as the port reports open. See setKeyLine().
    * @param {object} [opts.transport] - inject a serial-port-like object
    *   (must support write(buf, cb), on(event, cb), isOpen, close(cb)) instead
    *   of opening a real SerialPort. May expose async open() for a LAN session.
@@ -72,12 +83,18 @@ class CivDriver extends EventEmitter {
     this.controllerAddr = opts.controllerAddr ?? DEFAULT_CONTROLLER_ADDR;
     this.radioAddr = opts.radioAddr ?? null;
     this.requestTimeoutMs = opts.requestTimeoutMs ?? 1000;
+    this.staleReplyGuardMs = opts.staleReplyGuardMs ?? 150;
+    this.maxQueue = opts.maxQueue ?? 64;
+    this.keyLine = opts.keyLine ?? null;
     this._transport = opts.transport ?? null;
 
     this.port = null;
     this._parser = new FrameParser();
     this._queue = [];
     this._current = null;
+    // Set after a request times out: until it passes, nothing is sent and
+    // any OK/NG that arrives is a late reply to the timed-out request.
+    this._guardTimer = null;
 
     this._scope = new ScopeLineAssembler();
     this._scope.on('line', (line) => this.emit('scope-line', line));
@@ -91,6 +108,7 @@ class CivDriver extends EventEmitter {
         this.port = this._transport;
         this._wirePortEvents();
         Promise.resolve(this.port.open?.()).then(() => {
+          this._dropKeyLineOnOpen();
           this.emit('open');
           resolve();
         }, reject);
@@ -103,11 +121,38 @@ class CivDriver extends EventEmitter {
             reject(err);
             return;
           }
+          this._dropKeyLineOnOpen();
           this.emit('open');
           resolve();
         }
       );
       this._wirePortEvents();
+    });
+  }
+
+  /** First thing after open: drop the CW key line Linux raised (see opts.keyLine). */
+  _dropKeyLineOnOpen() {
+    if (!this.keyLine) return;
+    this.setKeyLine(this.keyLine, false).catch((err) => this.emit('error', new Error(`Could not drop the CW key line (${this.keyLine}): ${err.message}`)));
+  }
+
+  /**
+   * Keys (on) or unkeys CW with the serial port's DTR or RTS line, for the
+   * radio's USB Keying (CW) setting. Set straight on the port, not through
+   * the CI-V queue: it is a modem-control line, not a CI-V command, so its
+   * timing is the Pi's. Resolves when the port has done it.
+   */
+  setKeyLine(line, on) {
+    return new Promise((resolve, reject) => {
+      if (line !== 'dtr' && line !== 'rts') {
+        reject(new Error(`The key line must be 'dtr' or 'rts', not ${line}`));
+        return;
+      }
+      if (!this.port || !this.port.isOpen || typeof this.port.set !== 'function') {
+        reject(new Error('The serial port is not open'));
+        return;
+      }
+      this.port.set({ [line]: !!on }, (err) => (err ? reject(err) : resolve(true)));
     });
   }
 
@@ -152,6 +197,16 @@ class CivDriver extends EventEmitter {
     // what we just wrote (common on USB CI-V links). They carry no new
     // information, so discard them unconditionally.
     if (frame.from === this.controllerAddr) return;
+
+    // OK/NG say nothing about which command they answer. One arriving
+    // while nothing is waiting, or during the pause after a timeout, is a
+    // late reply to a request that already timed out: drop it, so it
+    // can't be taken as the answer to the next request (a PTT off that
+    // the radio never confirmed, say).
+    if ((frame.cmd === CMD.OK || frame.cmd === CMD.NG) && (!this._current || this._guardTimer)) {
+      this.emit('stale-reply', frame);
+      return;
+    }
 
     if (this._current && this._frameMatchesCurrent(frame)) {
       clearTimeout(this._current.timer);
@@ -219,9 +274,15 @@ class CivDriver extends EventEmitter {
   /**
    * Send a command and wait for its reply. Requests are queued and sent
    * one at a time, since CI-V is a shared half-duplex bus.
+   *
+   * `urgent` requests (PTT off or CW stop) go ahead of everything queued, behind only
+   * the request already on the bus, other urgent ones, and any earlier
+   * request for the same command (so PTT on then off keeps that order).
+   * Unkeying never waits behind meter or scope polling. Urgent requests
+   * are never refused for a full queue.
    * @returns {Promise<object>} the parsed reply frame
    */
-  _send(cmd, subCmd, data) {
+  _send(cmd, subCmd, data, { urgent = false } = {}) {
     if (!this.port?.isOpen) return Promise.reject(new Error('CI-V connection is not open'));
     if (this.radioAddr === null || this.radioAddr === undefined) {
       return Promise.reject(
@@ -236,24 +297,37 @@ class CivDriver extends EventEmitter {
         subCmd,
         data,
       });
-      const job = { raw, cmd, subCmd, resolve, reject };
-      // Stop commands go ahead of queued meter/scope reads. Leave the one
-      // in-flight transaction alone: CI-V ACKs have no transaction identifier.
-      const urgent = (cmd === CMD.PTT && subCmd === SUBCMD.PTT && data?.[0] === 0)
-        || (cmd === CMD.SEND_CW && data?.[0] === 0xff);
-      if (this._queue.length >= 256) {
-        if (!urgent) { reject(new Error('CI-V command queue is full')); return; }
-        // A flood of polling must not make Stop fail at the queue cap.
-        this._queue.pop().reject(new Error('CI-V request superseded by urgent stop'));
+      const job = { raw, cmd, subCmd, urgent, resolve, reject };
+      if (urgent) {
+        // Ahead of everything else, but never ahead of an urgent job or
+        // the same command already waiting: a PTT off must not overtake a
+        // PTT on still in the queue, or the radio would unkey and then
+        // key up again and stay keyed.
+        let i = 0;
+        this._queue.forEach((queued, k) => {
+          if (queued.urgent || (queued.cmd === cmd && queued.subCmd === subCmd)) i = k + 1;
+        });
+        this._queue.splice(i, 0, job);
+      } else {
+        if (this._queue.length >= this.maxQueue) {
+          // The radio isn't keeping up (or isn't answering): refuse rather
+          // than let requests pile up without limit.
+          reject(new Error(`CI-V queue full (${this._queue.length} waiting); is the radio answering?`));
+          return;
+        }
+        this._queue.push(job);
       }
-      if (urgent) this._queue.unshift(job);
-      else this._queue.push(job);
       this._dequeueNext();
     });
   }
 
+  /** Requests waiting to be sent (not counting the one on the bus). */
+  get queueLength() {
+    return this._queue.length;
+  }
+
   _dequeueNext() {
-    if (this._current || this._queue.length === 0) return;
+    if (this._current || this._guardTimer || this._queue.length === 0) return;
     const job = this._queue.shift();
     this._current = job;
     job.timer = setTimeout(() => {
@@ -261,12 +335,22 @@ class CivDriver extends EventEmitter {
       job.reject(new Error(`CI-V request timed out (cmd 0x${job.cmd.toString(16)})`));
       // LAN replies carry no CI-V transaction IDs. Reset the association on a
       // timeout so a delayed ACK cannot confirm a different/newer command.
-      if (this.port.resetSession) {
+      if (typeof this.port.resetSession === 'function') {
         this.cancelPending(new Error('CI-V reply timed out; reconnecting LAN session'));
         this.port.resetSession('CI-V reply timed out; reconnecting LAN session');
         return;
       }
-      this._dequeueNext();
+      // The radio may still answer the request that timed out. Pause
+      // before the next one so that late OK/NG is dropped (see
+      // _handleFrame()) instead of answering the wrong request.
+      if (this.staleReplyGuardMs > 0) {
+        this._guardTimer = setTimeout(() => {
+          this._guardTimer = null;
+          this._dequeueNext();
+        }, this.staleReplyGuardMs);
+      } else {
+        this._dequeueNext();
+      }
     }, this.requestTimeoutMs);
 
     this.port.write(job.raw, (err) => {
@@ -281,6 +365,8 @@ class CivDriver extends EventEmitter {
   }
 
   cancelPending(error = new Error('CI-V requests cancelled')) {
+    clearTimeout(this._guardTimer);
+    this._guardTimer = null;
     if (this._current) {
       clearTimeout(this._current.timer);
       this._current.reject(error);
@@ -543,10 +629,46 @@ class CivDriver extends EventEmitter {
   }
 
   /** Key or unkey the transmitter. */
-  async setPtt(on) {
-    const frame = await this._send(CMD.PTT, SUBCMD.PTT, Buffer.from([on ? 1 : 0]));
+  async setPtt(on, { urgent = false } = {}) {
+    // PTT off always jumps the queue (see _send()); PTT on does when asked
+    // (the CW paddle, whose elements are timed).
+    const frame = await this._send(CMD.PTT, SUBCMD.PTT, Buffer.from([on ? 1 : 0]), { urgent: urgent || !on });
     this._throwIfNG(frame, 'set PTT');
     return true;
+  }
+
+  /**
+   * Emergency unkey, for shutdown and crashes only: writes PTT-off
+   * (1C 00 00) straight to the port, ahead of anything queued, and
+   * doesn't wait for the radio's reply. setPtt(false) could sit behind
+   * meter or scope requests (up to a second each) when there may be no
+   * time left. The radio's OK reply may be taken as the answer to
+   * whatever request is in flight, so don't use this in normal running.
+   * Resolves true once the bytes have left for the radio, false if they
+   * couldn't be written in `timeoutMs`; never rejects.
+   */
+  forcePttOff({ timeoutMs = 1000 } = {}) {
+    return new Promise((resolve) => {
+      if (!this.port || !this.port.isOpen || this.radioAddr === null || this.radioAddr === undefined) {
+        resolve(false);
+        return;
+      }
+      const timer = setTimeout(() => resolve(false), timeoutMs);
+      const done = (ok) => {
+        clearTimeout(timer);
+        resolve(ok);
+      };
+      try {
+        const raw = encodeFrame({ to: this.radioAddr, from: this.controllerAddr, cmd: CMD.PTT, subCmd: SUBCMD.PTT, data: Buffer.from([0]) });
+        this.port.write(raw, (err) => {
+          if (err) return done(false);
+          if (typeof this.port.drain === 'function') this.port.drain((drainErr) => done(!drainErr));
+          else done(true);
+        });
+      } catch {
+        done(false);
+      }
+    });
   }
 
   /**
@@ -602,7 +724,7 @@ class CivDriver extends EventEmitter {
 
   /** Stops the radio's CW keyer, dropping whatever is left to send (CI-V 17 FF). */
   async stopCw() {
-    const frame = await this._send(CMD.SEND_CW, undefined, Buffer.from([0xff]));
+    const frame = await this._send(CMD.SEND_CW, undefined, Buffer.from([0xff]), { urgent: true });
     this._throwIfNG(frame, 'stop CW');
     return true;
   }

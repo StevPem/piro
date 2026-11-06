@@ -46,6 +46,42 @@ function rejectOnce(peer, command) {
   };
 }
 
+test('PTT watchdog preserves unknown radio state when a LAN release cannot be confirmed', async (t) => {
+  const civ = new EventEmitter();
+  civ.session = {};
+  civ.setPtt = async () => { throw new Error('LAN disconnected'); };
+  const cs = new ControlServer({ civ, port: 0 });
+  await cs.listen();
+  t.after(() => cs.close());
+  const messages = [];
+  cs._broadcast = (message) => messages.push(JSON.parse(message));
+  const local = [];
+  cs.on('ptt', (on) => local.push(on));
+  cs.state.ptt = true;
+  await cs._onPttWatchdogTimeout();
+  assert.equal(cs.state.ptt, null);
+  assert.equal(messages.find((event) => event.type === 'ptt').data.value, null);
+  assert.deepEqual(local, [false]);
+});
+
+test('confirmed LAN receive after reconnect clears the previous watchdog and PTT owner', async (t) => {
+  const civ = new EventEmitter();
+  Object.assign(civ, { session: {}, radioAddr: 0xb6, async setPtt() {} });
+  const cs = new ControlServer({ civ, port: 0 });
+  await cs.listen();
+  t.after(() => cs.close());
+  wireRadioConnection(civ, cs);
+  await cs.setPttFromServer(true);
+  cs._pttOwner = {};
+  assert.ok(cs._pttWatchdogTimer);
+  civ.emit('transport-lost');
+  assert.equal(cs.state.ptt, null);
+  civ.emit('radio-ready');
+  assert.equal(cs.state.ptt, false);
+  assert.equal(cs._pttWatchdogTimer, null);
+  assert.equal(cs._pttOwner, null);
+});
+
 test('playback exceptions are contained and release PTT instead of escaping the WebSocket event', async () => {
   const cs = new EventEmitter();
   Object.assign(cs, { state: { ptt: true }, broadcastJsonEvent() {},

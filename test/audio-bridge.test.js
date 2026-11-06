@@ -940,6 +940,21 @@ async function testCompressedAudio() {
   check(binaries(a, BINARY_TYPE.AUDIO).length === 1 && binaries(b, BINARY_TYPE.AUDIO_OPUS).length === 2, 'but broadcastRxAudio() (decoded FreeDV speech) does, in each format');
   bridge.setRxMuted(false);
 
+  // backpressure: every audio format goes out through ControlServer#sendLive,
+  // so a browser that is behind has its audio skipped (see ws-server.test.js)
+  {
+    const sentLive = [];
+    const realSendLive = server.sendLive.bind(server);
+    server.sendLive = (ws, frame) => {
+      sentLive.push(frame[0]);
+      return realSendLive(ws, frame);
+    };
+    bridge.broadcastRxAudio(tone.subarray(0, 1920 * 2));
+    server.sendLive = realSendLive;
+    const kinds = new Set(sentLive);
+    check(kinds.has(BINARY_TYPE.AUDIO) && kinds.has(BINARY_TYPE.AUDIO_OPUS) && kinds.has(BINARY_TYPE.AUDIO_ADPCM), `raw, Opus and ADPCM audio all go through sendLive (backpressure): ${[...kinds].join(',')}`);
+  }
+
   // encoders only while wanted
   check((await request(b, 'setAudioCodec', { codec: 'pcm' })).data.codec === 'pcm', 'a browser can go back to raw PCM');
   c.close();

@@ -1,6 +1,6 @@
 'use strict';
 
-const { CivDriver, KNOWN_RADIO_ADDR } = require('../civ');
+const { CivDriver, KNOWN_RADIO_ADDR, parseKeyLine } = require('../civ');
 const { IcomLanDriver } = require('../icom-lan/driver');
 
 function integer(env, name, fallback, min, max) {
@@ -22,7 +22,8 @@ function createRadio(env = process.env) {
   }
   if (connection === 'usb') return new CivDriver({ path: env.CIV_SERIAL_PATH || '/dev/ttyUSB0',
     radioAddr: radioAddr ?? KNOWN_RADIO_ADDR[env.CIV_RADIO_MODEL],
-    baudRate: integer(env, 'CIV_BAUD_RATE', 19200, 300, 921600) });
+    baudRate: integer(env, 'CIV_BAUD_RATE', 19200, 300, 921600),
+    keyLine: parseKeyLine(env.CW_KEY_LINE).line });
   return new IcomLanDriver({ host: env.ICOM_LAN_HOST, username: env.ICOM_LAN_USERNAME, password: env.ICOM_LAN_PASSWORD,
     radioAddr, bindAddress: env.ICOM_LAN_BIND_ADDRESS,
     controlPort: integer(env, 'ICOM_LAN_CONTROL_PORT', 50001, 1, 65535),
@@ -70,6 +71,8 @@ function wireRadioConnection(civ, controlServer) {
       controlServer.broadcastJsonEvent('data-mode', { on: radioState.dataMode });
     }
     controlServer.state.ptt = false; // initialize() confirmed PTT off.
+    controlServer._pttOwner = null;
+    controlServer._armOrClearPttWatchdog?.(false);
     controlServer.broadcastJsonEvent('ptt', { value: false });
     controlServer.emit('ptt', false);
   };

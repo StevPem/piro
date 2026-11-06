@@ -62,8 +62,7 @@ already-open browser transition.
 
 The final scope-status patch was covered by the full LAN suite and server
 integration tests; the computationally expensive full baseline suite was
-completed before that last patch. Full upstream validation remains required
-after integration with current upstream.
+completed before that last patch. The subsequent upstream integration and its validation are recorded below.
 
 ## Reproduction
 
@@ -115,10 +114,50 @@ failure behavior. The PCM duration is not a measurement of RF key-down time.
   independently observed radio timeout. Clean restart is a separate check.
 - Run the documented receive soak longer than two hours and controlled
   packet-loss/VPN tests. Short successful sessions do not replace this.
-- Integrate with current upstream before opening the PR. This branch predates
-  37 upstream commits, including Origin checks, PTT-owner/heartbeat safeguards,
-  queue ordering, backpressure, CW keyline/paddle, JS8, STT, and DeepCW worker
-  changes. Preserve those changes when resolving the shared files.
+- Repeat the hardware sweep after deploying the integrated build. The physical
+  observations above belong to the earlier LAN build and candidate discovery
+  driver, not to the later upstream integration.
 
 The LAN test entry in `npm test` now uses `node test/icom-lan.test.js`, which
 preserves the command form required by upstream's `test/run-all.js`.
+
+
+## Upstream integration (build v135)
+
+Integrated `StevPem/piro:main` at `da2d962fd8cf5a900e8511afaa4a6132cd634c79`,
+including all 37 commits previously absent from the LAN branch. The merge
+preserves upstream Origin checking, browser heartbeat and PTT-owner release,
+backpressure, CI-V stale-reply guard and queue ordering/limits, CW keyline and
+paddle support, JS8, STT and DeepCW worker execution.
+
+Integration changes preserve USB CW keyline configuration through the new
+radio factory, cancel pending paddle elements on LAN radio loss, discard
+stale asynchronous JS8 encode results, drain LAN JS8 playback before unkeying,
+and keep PTT unknown when a LAN watchdog release cannot be confirmed.
+The service's USB-disconnect exit path does not terminate a LAN reconnect.
+These paths are tested with isolated fixtures and do not transmit on hardware.
+
+The working Pi installation was not changed by the merge. Hardware evidence
+above must not be presented as a hardware test of the integrated build.
+
+
+### Existing deployment observation during integration
+
+At 20:44 UTC on 2026-11-06, the unchanged deployed `2b3bd33` build crashed
+with an unhandled `EPIPE` from `RadePipeline.write` in the optional
+FreeDV/RADE path. Systemd retried startup and recovered. The integration
+fixtures use isolated localhost peers and did not replace the running
+service or connect those peers to the real radio. This live optional-codec
+failure is not resolved or hardware-certified by the upstream merge;
+FreeDV requires a separate runtime investigation before claiming it works.
+
+
+### Integrated automated result
+
+On the Pi, the final integrated tree passed `TEST_RETRIES=0 npm run test:ci`:
+**65/65 test-file groups passed in 338 seconds**, with **68/68 LAN subtests**.
+Changed JavaScript syntax and both staged/working diff checks passed. No
+separate lint or typecheck command is defined. The first full run identified
+a key-line test that still scanned the old serial-factory location; adding
+`src/server/radio-connection.js` to that scan fixed it, and the fresh complete
+run passed without retries. No integration code was deployed by this check.

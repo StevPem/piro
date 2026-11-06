@@ -3,7 +3,8 @@
 const fs = require('fs');
 const path = require('path');
 const { createRadio, wireRadioConnection } = require('./radio-connection');
-const { ControlServer } = require('./ws-server');
+const { parseKeyLine } = require('../civ');
+const { ControlServer, parseAllowedOrigins } = require('./ws-server');
 const { AudioBridge } = require('./audio-bridge');
 const { ScopeBridge } = require('./scope-bridge');
 const { CwDecoderBridge } = require('./cw-decoder-bridge');
@@ -16,6 +17,8 @@ const { SstvDecoderBridge } = require('./sstv-decoder-bridge');
 const { SstvTxBridge, DEFAULT_SSTV_TX_MODE } = require('./sstv-tx-bridge');
 const { EasypalTxBridge, easypalTxConfig } = require('./easypal-tx-bridge');
 const { VaraBridge, varaConfig } = require('./vara-bridge');
+const { Js8Bridge } = require('./js8-bridge');
+const { SttBridge, sttConfig } = require('./stt-bridge');
 const { WsprBridge, parseBandList, WSPR_DIAL_HZ } = require('./wspr-bridge');
 const { FaxDecoderBridge } = require('./fax-decoder-bridge');
 const { EasypalDecoderBridge } = require('./easypal-decoder-bridge');
@@ -27,18 +30,39 @@ const { clampHellTone } = require('../audio/hell-rx');
 const { Ft8Bridge } = require('../audio/ft8-bridge');
 const { TtyBridge } = require('../audio/tty-bridge');
 const { CwTxBridge } = require('./cw-tx-bridge');
+const { CwPaddleBridge } = require('./cw-paddle-bridge');
 const { RadeBridge } = require('./rade-bridge');
 const { FreeDvReporterBridge } = require('./freedv-reporter');
 
 const SERIAL_PATH = process.env.CIV_SERIAL_PATH || '/dev/ttyUSB0';
+
+// CW paddle keying (see server/cw-paddle-bridge.js). CW_KEY_LINE=dtr or rts
+// keys CW with that line of the CI-V USB serial port; set the radio's
+// Menu > Set > Connectors > USB SEND/Keying > USB Keying (CW) to the same
+// line. Unset (or off): the paddle keys with CI-V PTT, as before.
+// CW_PADDLE_DELAY_MS: how long elements are held so they can be replayed
+// with even timing (more for a jittery link, less at home).
+const CW_KEY_LINE = (() => {
+  const { line, valid } = parseKeyLine(process.env.CW_KEY_LINE);
+  if (!valid) console.warn(`CW_KEY_LINE="${process.env.CW_KEY_LINE}" is not dtr, rts or off; the CW paddle will key with CI-V PTT.`);
+  return line;
+})();
+const CW_PADDLE_DELAY_MS = (() => {
+  const raw = process.env.CW_PADDLE_DELAY_MS;
+  if (raw === undefined || raw.trim() === '') return 250;
+  const v = Number(raw);
+  if (Number.isFinite(v) && v >= 50 && v <= 1000) return Math.round(v);
+  console.warn(`CW_PADDLE_DELAY_MS="${raw}" is not 50 to 1000; using 250.`);
+  return 250;
+})();
 const RADIO_MODEL = process.env.CIV_RADIO_MODEL; // e.g. "IC-7300"
 const WS_PORT = process.env.WS_PORT ? parseInt(process.env.WS_PORT, 10) : 8080;
 // Displayed as both the browser tab title and the on-screen heading —
 // see docs/ui-notes.md for why this is sent to the client at connect
 // time rather than baked into the served HTML.
-const SCREEN_TITLE = process.env.SCREEN_TITLE || 'SPARC PiRO';
+const SCREEN_TITLE = process.env.SCREEN_TITLE || 'PiRO';
 // The app's own version, shown next to SCREEN_TITLE — see docs/ui-notes.md.
-// Read from src/client/sw.js's own CACHE_NAME ("icom-rig-pwa-shell-v62"
+// Read from src/client/sw.js's own CACHE_NAME ("piro-shell-v62"
 // -> "62") rather than package.json's version field: CACHE_NAME is the
 // number that actually has to be bumped on every client-affecting change
 // (see docs/pwa-notes.md's "bump this on every client change" section) —
@@ -73,18 +97,13 @@ const APP_VERSION = readAppVersion();
 const STATION_CALLSIGN = process.env.STATION_CALLSIGN || null;
 const STATION_GRID = process.env.STATION_GRID || null;
 
-// Where this exact running instance's corresponding source is published —
-// a fork, a tarball, whatever actually matches what's running. PiRO is
-// AGPL-3.0-only (see README.md's "Licence" section, and models/deepcw/
-// NOTICE.md for why), so anyone who interacts with it over the network is
-// entitled to that source; since this project has no single canonical
-// public repository URL of its own to hardcode, the operator configures
-// wherever they're actually hosting their copy, and the client shows it
-// as a "Source" link in the footer whenever it's set. Left unset, no link
-// is shown — operators not distributing/running this for others (e.g.
-// purely local personal use) have no §13 obligation to satisfy in the
-// first place.
-const SOURCE_CODE_URL = process.env.SOURCE_CODE_URL || null;
+// Where the source of this running copy is. PiRO is AGPL-3.0-only (see
+// README.md's "Licence" section, and models/deepcw/NOTICE.md for why), so
+// everyone who uses it over the network may have its source. The page's
+// title links here. Unset, it is PiRO's own repository, which is right for
+// an unchanged copy; a copy with changes must point at its own source.
+const PIRO_REPOSITORY_URL = 'https://github.com/StevPem/piro';
+const SOURCE_CODE_URL = (process.env.SOURCE_CODE_URL || '').trim() || PIRO_REPOSITORY_URL;
 
 // FreeDV Reporter (https://qso.freedv.org) — reports this station's
 // presence/frequency/TX state to the live FreeDV activity map whenever the
@@ -268,6 +287,13 @@ const CIV_MAXIMIZE_USB_LEVELS = !/^(0|false)$/i.test(process.env.CIV_MAXIMIZE_US
 const TLS_CERT_PATH = process.env.TLS_CERT_PATH;
 const TLS_KEY_PATH = process.env.TLS_KEY_PATH;
 
+// WebSocket connections are only accepted from this server's own page
+// (the browser's Origin must match the Host it connected to), so another
+// web site open in an operator's browser can't reach the radio. Behind a
+// reverse proxy that changes the Host header, list the public origin(s)
+// here, comma-separated, e.g. "https://radio.example.net".
+const ALLOWED_ORIGINS = parseAllowedOrigins(process.env.ALLOWED_ORIGINS);
+
 let civ;
 let controlServer;
 let audioBridge;
@@ -277,6 +303,7 @@ let rttyDecoderBridge;
 let ft8Bridge;
 let ttyBridge;
 let cwTxBridge;
+let cwPaddleBridge;
 let jttyDecoderBridge;
 let oliviaDecoderBridge;
 let hellDecoderBridge;
@@ -287,6 +314,8 @@ let faxDecoderBridge;
 let easypalDecoderBridge;
 let easypalTxBridge;
 let varaBridge;
+let js8Bridge;
+let sttBridge;
 let bandConditions;
 let radeBridge;
 let freeDvReporterBridge;
@@ -332,6 +361,18 @@ async function main() {
   civ = createRadio();
 
   civ.on('error', (err) => console.error('[civ error]', err.message));
+  // Only after a timeout: the radio answered too late, and the answer was dropped.
+  civ.on('stale-reply', (f) => console.warn(`[civ] Dropped a late ${f.cmd === 0xfb ? 'OK' : 'NG'} from the radio (a request had already timed out).`));
+  // The radio's USB went away (power-cycled, cable pulled, USB reset).
+  // The port isn't reopened here: the radio's USB sound card goes and
+  // comes back with it, so the whole service is restarted instead. Exit
+  // non-zero so systemd (Restart=on-failure) starts it again; while the
+  // radio is still away, each start fails at civ.open() and is retried.
+  civ.on('close', () => {
+    if (shuttingDown || civ.session) return;
+    console.error(`[civ] The serial port ${SERIAL_PATH} closed unexpectedly (radio off or USB unplugged?). Exiting so the service restarts.`);
+    shutdown('serial port closed', 1);
+  });
 
   await civ.open();
   console.log(civ.session ? 'Icom LAN radio connected (48 kHz mono PCM)' : `CI-V port open: ${SERIAL_PATH} at ${civ.baudRate} baud`);
@@ -371,7 +412,9 @@ async function main() {
     stationGrid: STATION_GRID,
     rnnoiseLevelCount: RNNOISE_LEVEL_COUNT,
     sourceCodeUrl: SOURCE_CODE_URL,
+    allowedOrigins: ALLOWED_ORIGINS,
   });
+  if (ALLOWED_ORIGINS.length) console.log(`WebSocket connections also allowed from: ${ALLOWED_ORIGINS.join(', ')}`);
   const boundPort = await controlServer.listen();
   wireRadioConnection(civ, controlServer);
   controlServer.on('radio-disconnected', () => {
@@ -379,6 +422,7 @@ async function main() {
     sstvTxBridge?.abort();
     easypalTxBridge?.abort();
     wsprBridge?.setTx({ enabled: false });
+    js8Bridge?.request({ action: 'stop' }).catch((err) => console.error('Could not stop JS8 after radio loss:', err.message));
     if (controlServer.state.varaActive) controlServer.setVaraActiveFromServer(false);
     // Stop pipelines while the actual radio state remains unknown. This is
     // an internal producer signal; the browser snapshot keeps ptt=null.
@@ -387,6 +431,7 @@ async function main() {
   controlServer.on('client-disconnected', () => {
     if (!civ.session || controlServer.clients.size) return;
     ft8Bridge?.cancelTx('Last browser disconnected');
+    js8Bridge?.request({ action: 'stop' }).catch((err) => console.error('Could not stop JS8 after the last browser left:', err.message));
     ttyBridge?.abort();
     if (civ.session.connected) controlServer.setPttFromServer(false).catch(() => {});
   });
@@ -654,6 +699,32 @@ async function main() {
       console.log(varaBridge.unavailable ? `VARA chat unavailable: ${varaBridge.unavailable}` : `VARA chat ready (${cfg.bw} Hz; runs while VARA is selected).`);
     }
 
+    // JS8 (the TTY button's JS8; JS8Call's Normal speed): decodes each
+    // 15-second slot in a worker while a browser has JS8 selected, and
+    // sends what the operator types, one frame a slot. Transmitting needs
+    // STATION_CALLSIGN; CQ sends STATION_GRID's first 4 characters. Frames
+    // start 0.5 s into the slot, allowing VARA_AUDIO_LATENCY_MS for the
+    // sound card. PSK Spot shares the FT8 bridge's client. See server/js8-bridge.js.
+    {
+      const { latencyMs } = varaConfig(process.env);
+      js8Bridge = new Js8Bridge({ controlServer, audioBridge, callsign: STATION_CALLSIGN || '', grid: STATION_GRID || '', latencyMs, pskReporter: ft8Bridge.pskReporter });
+      js8Bridge.start();
+      console.log(js8Bridge.unavailable ? `JS8 unavailable: ${js8Bridge.unavailable}` : 'JS8 ready (decodes while JS8 is selected).');
+    }
+
+    // Speech-to-text copy aid (the "STT" checkbox): whisper.cpp's
+    // whisper-server, started here from STT_WHISPER_SERVER and STT_MODEL
+    // while STT is ticked, or one already running at STT_URL; or Deepgram
+    // in the cloud (STT_ENGINE=deepgram, DEEPGRAM_API_KEY). See
+    // server/stt-bridge.js.
+    {
+      const cfg = sttConfig(process.env);
+      for (const w of cfg.warnings) console.warn(w);
+      sttBridge = new SttBridge({ controlServer, audioBridge, config: cfg });
+      sttBridge.start();
+      console.log(sttBridge.unavailable ? `Speech-to-text unavailable: ${sttBridge.unavailable}` : `Speech-to-text ready (${sttBridge.engine === 'deepgram' ? `Deepgram ${cfg.deepgram.model}, ${cfg.deepgram.keyterms.length} keyterms` : sttBridge.local ? `whisper-server with ${cfg.model}` : cfg.url}; runs while STT is ticked).`);
+    }
+
     // WSPR receive and transmit (the third choice of the DIGI button).
     // WSPR_GRID is the Maidenhead locator sent and reported (defaults to
     // STATION_GRID); spots go to wsprnet.org unless WSPR_UPLOAD=off;
@@ -712,6 +783,7 @@ async function main() {
       txGain: RADE_TX_GAIN,
     });
     radeBridge.start();
+    if (sttBridge) sttBridge.radeBridge = radeBridge; // STT hears FreeDV's decoded speech
     console.log(
       `RADE bridge ready (RADE ${RADE_VERSION}; activates when a client's FreeDV mode is set to the ` +
         'RADE variant — 700E has no codec wired up, see docs/ui-notes.md).'
@@ -735,6 +807,16 @@ async function main() {
   cwTxBridge = new CwTxBridge({ controlServer });
   cwTxBridge.start();
   console.log('CW text sending ready (the Send button in CW mode).');
+  controlServer.cwTxBusy = () => cwTxBridge.transmitting;
+
+  const paddleKeyLine = civ.session ? null : CW_KEY_LINE;
+  cwPaddleBridge = new CwPaddleBridge({ controlServer, keyLine: paddleKeyLine, delayMs: CW_PADDLE_DELAY_MS });
+  cwPaddleBridge.start();
+  console.log(
+    paddleKeyLine
+      ? `CW paddle ready: keys with the serial port's ${paddleKeyLine.toUpperCase()} line (the radio's USB Keying (CW) must be ${paddleKeyLine.toUpperCase()}), ${CW_PADDLE_DELAY_MS} ms behind.`
+      : `CW paddle ready: keys with CI-V PTT, ${CW_PADDLE_DELAY_MS} ms behind (set CW_KEY_LINE for more exact timing).`
+  );
 
   if (SCOPE_ENABLED) {
     scopeBridge = new ScopeBridge({ civ, controlServer });
@@ -763,15 +845,45 @@ async function main() {
   }
 }
 
-async function shutdown(signal) {
-  console.log(`\nReceived ${signal}, shutting down...`);
+let shuttingDown = false;
+
+/**
+ * Unkeys the radio first thing on shutdown or a crash. Each bridge's stop()
+ * puts back its own transmissions, but voice and paddle PTT from a browser
+ * have no bridge, and controlServer.close() clears the PTT watchdog, so
+ * without this a stop or crash mid-over would leave the radio
+ * transmitting with nothing left to unkey it. Bypasses the CI-V queue
+ * (see CivDriver#forcePttOff); never throws.
+ */
+async function emergencyUnkey(why) {
+  if (!civ || typeof civ.forcePttOff !== 'function') return;
+  if (CW_KEY_LINE && !civ.session) {
+    // The CW key line keys the radio without PTT: drop it too.
+    await civ.setKeyLine(CW_KEY_LINE, false).catch((err) => console.error(`[civ] Could not drop the CW key line (${why}): ${err.message}`));
+  }
   try {
+    const sent = await civ.forcePttOff({ timeoutMs: 1000 });
+    if (!sent) console.error(`[civ] Could not send PTT off (${why}); check the radio is not transmitting.`);
+  } catch (err) {
+    console.error(`[civ] Sending PTT off failed (${why}): ${err.message}`);
+  }
+}
+
+async function shutdown(signal, exitCode = 0) {
+  if (shuttingDown) return;
+  shuttingDown = true;
+  console.log(`\nShutting down (${signal})...`);
+  // If a step below hangs, still exit (inside systemd's TimeoutStopSec=10).
+  setTimeout(() => process.exit(exitCode), 8000).unref();
+  try {
+    await emergencyUnkey(signal);
     if (scopeBridge) await scopeBridge.stop();
     if (cwDecoderBridge) cwDecoderBridge.stop();
     if (rttyDecoderBridge) rttyDecoderBridge.stop();
     if (ft8Bridge) ft8Bridge.stop();
     if (ttyBridge) ttyBridge.stop();
     if (cwTxBridge) cwTxBridge.stop();
+    if (cwPaddleBridge) cwPaddleBridge.stop();
     if (jttyDecoderBridge) jttyDecoderBridge.stop();
     if (oliviaDecoderBridge) oliviaDecoderBridge.stop();
     if (hellDecoderBridge) hellDecoderBridge.stop();
@@ -781,6 +893,8 @@ async function shutdown(signal) {
     if (faxDecoderBridge) faxDecoderBridge.stop();
     if (easypalTxBridge) easypalTxBridge.stop();
     if (varaBridge) await varaBridge.stop();
+    if (js8Bridge) await js8Bridge.stop();
+    if (sttBridge) await sttBridge.stop();
     if (easypalDecoderBridge) easypalDecoderBridge.stop();
     if (bandConditions) bandConditions.stop();
     if (radeBridge) radeBridge.stop();
@@ -788,13 +902,32 @@ async function shutdown(signal) {
     if (audioBridge) audioBridge.stop();
     if (controlServer) await controlServer.close();
     if (civ) await civ.close();
+  } catch (err) {
+    console.error('Error while shutting down:', err);
   } finally {
-    process.exit(0);
+    process.exit(exitCode);
   }
 }
 
 process.on('SIGINT', () => shutdown('SIGINT'));
 process.on('SIGTERM', () => shutdown('SIGTERM'));
+
+// A crash must not leave the transmitter keyed: unkey, then exit non-zero
+// so systemd restarts the service. (Node's default for both is to exit
+// at once, which skipped the unkey.)
+async function onFatal(kind, err) {
+  console.error(`Fatal ${kind}:`, err);
+  if (shuttingDown) {
+    process.exit(1);
+    return;
+  }
+  shuttingDown = true;
+  setTimeout(() => process.exit(1), 2000).unref();
+  await emergencyUnkey(kind);
+  process.exit(1);
+}
+process.on('uncaughtException', (err) => onFatal('uncaughtException', err));
+process.on('unhandledRejection', (err) => onFatal('unhandledRejection', err));
 
 main().catch((err) => {
   console.error('Failed to start:', err);

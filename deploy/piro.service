@@ -27,5 +27,37 @@ RestartSec=5
 # arecord/aplay and any denoiser child processes).
 TimeoutStopSec=10
 
+# --- Hardening: what PiRO, and anything it starts, may not do ---
+# No gaining privileges (setuid programs, file capabilities), and no
+# capabilities at all: PiRO runs as an ordinary user and needs none.
+NoNewPrivileges=yes
+CapabilityBoundingSet=
+RestrictSUIDSGID=yes
+# /usr, /boot and /etc read-only. Not "strict": the save folders
+# (SSTV_SAVE_DIR, FAX_SAVE_DIR, EASYPAL_SAVE_DIR) can be anywhere, and the
+# fax state file is in ~/.config/piro.
+ProtectSystem=full
+# A /tmp of its own.
+PrivateTmp=yes
+ProtectKernelTunables=yes
+ProtectKernelModules=yes
+ProtectControlGroups=yes
+ProtectHostname=yes
+RestrictNamespaces=yes
+LockPersonality=yes
+SystemCallArchitectures=native
+# Network (the web app, wsprnet, PSK Reporter, Deepgram), local sockets,
+# and netlink (finding serial ports).
+RestrictAddressFamilies=AF_UNIX AF_INET AF_INET6 AF_NETLINK
+# Deliberately not set, because they would break PiRO:
+# - PrivateDevices, DevicePolicy, ProtectClock, ProtectKernelLogs: they
+#   restrict /dev, hiding the radio's serial port and sound card.
+# - MemoryDenyWriteExecute: Node's JIT and WebAssembly need it.
+# - ProtectHome, ProtectSystem=strict: PiRO runs from, and saves to, your
+#   home folder (or wherever the save folders are).
+# - SystemCallFilter, RestrictRealtime: not yet tried on a Pi.
+# If something stops working, see "Running PiRO as a systemd service" in
+# the README for how to turn one of these off.
+
 [Install]
 WantedBy=multi-user.target

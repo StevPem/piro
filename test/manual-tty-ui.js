@@ -15,12 +15,17 @@ const { SstvDecoderBridge } = require(PKG + '/src/server/sstv-decoder-bridge');
 const { encodeSstv } = require(PKG + '/src/audio/sstv-tx');
 const { SstvTxBridge } = require(PKG + '/src/server/sstv-tx-bridge');
 const { CwTxBridge } = require(PKG + '/src/server/cw-tx-bridge');
+const { CwPaddleBridge } = require(PKG + '/src/server/cw-paddle-bridge');
 const { WsprBridge } = require(PKG + '/src/server/wspr-bridge');
 const { BandConditions } = require(PKG + '/src/server/band-conditions');
 const { FaxDecoderBridge } = require(PKG + '/src/server/fax-decoder-bridge');
 const { EasypalDecoderBridge } = require(PKG + '/src/server/easypal-decoder-bridge');
 const { EasypalTxBridge } = require(PKG + '/src/server/easypal-tx-bridge');
 const { VaraBridge } = require(PKG + '/src/server/vara-bridge');
+const { Js8Bridge } = require(PKG + '/src/server/js8-bridge');
+const { SttBridge } = require(PKG + '/src/server/stt-bridge');
+const radioAudio = require('./fixtures/radio-audio');
+const js8v = require(PKG + '/src/audio/js8/js8-varicode');
 const easypalFx = require('./fixtures/easypal-audio');
 const { encodeFax, FAX_WIDTH } = require(PKG + '/src/audio/fax-tx');
 const { EVENT } = require(PKG + '/src/server/protocol');
@@ -47,7 +52,7 @@ class Civ extends EventEmitter {
   async setMode(mode) { this.log.push(['setMode', mode]); this.mode = mode; this.emit('mode', { mode, filter: 1 }); return true; }
   async setDataMode(on) { this.log.push(['setDataMode', on]); this.dataMode = on; return true; }
   async getDataMode() { return this.dataMode; }
-  async setPtt(on) { this.log.push(['setPtt', on]); return true; }
+  async setPtt(on) { this.log.push(['setPtt', on]); (this.pttAt ??= []).push([on, Date.now()]); return true; }
   async getSMeter() { return 100; }
   async getSWR() { return this.swr ?? 0; }
   async getAlc() { return this.alc ?? 0; }
@@ -86,6 +91,9 @@ class Civ extends EventEmitter {
   sstvTx.start();
   const cwTx = new CwTxBridge({ controlServer: server });
   cwTx.start();
+  server.cwTxBusy = () => cwTx.transmitting;
+  const cwPaddle = new CwPaddleBridge({ controlServer: server, delayMs: 250 }); // no key line: CI-V PTT, as without CW_KEY_LINE
+  cwPaddle.start();
   // WSPR, with a slot clock the test drives and no decoding (the spots are put in by hand)
   const wsprClock = Object.assign(new EventEmitter(), { currentSlotStart: () => Date.now() - (Date.now() % 120000), start() {}, stop() {} });
   const wspr = new WsprBridge({ controlServer: server, audioBridge, callsign: 'VK2IO', grid: 'QF56', slotClock: wsprClock, decoder: { decode: async () => ({ decodes: [], hashtab: [] }), terminate() {} }, wsprnet: { upload: async () => ({ sent: 1 }) }, random: () => 0 });
@@ -110,6 +118,50 @@ class Civ extends EventEmitter {
     },
   });
   vara.start();
+  // JS8, with a slot clock the test drives, a stand-in decoder (answered by
+  // hand; the real one is tested in js8.test.js) and the real message builder.
+  const js8Clock = Object.assign(new EventEmitter(), { start() {}, stop() {}, nextSlotStart: () => Date.now() - (Date.now() % 15000) + 15000 });
+  const js8Decodes = []; // decode requests waiting for an answer
+  const js8Holds = []; // PTT holds waiting to end
+  const js8 = new Js8Bridge({
+    controlServer: server,
+    audioBridge,
+    callsign: 'VK2IO',
+    grid: 'QF56',
+    dataSettleMs: 0,
+    slotClock: js8Clock,
+    setTimer: (fn) => js8Holds.push(fn),
+    clearTimer: () => {},
+    createWorker: () => {
+      const w = new EventEmitter();
+      w.terminate = () => {};
+      w.postMessage = (m) => {
+        if (m.type === 'decode') js8Decodes.push(m);
+        else if (m.type === 'encode') {
+          const frames = js8v.buildMessageFrames(m.mycall, m.mygrid, '', m.text).map((f) => ({ frame: f.frame, bits: f.type, text: js8v.decodeFrame(f.frame, f.type).message }));
+          setImmediate(() => w.emit('message', { type: 'encoded', id: m.id, frames }));
+        }
+      };
+      js8.worker = w;
+      return w;
+    },
+  });
+  js8.start();
+  // Speech to text, with a stand-in whisper-server (answered by the test)
+  const sttPosts = [];
+  const stt = new SttBridge({
+    controlServer: server,
+    audioBridge,
+    config: { url: 'http://192.0.2.1:8178' },
+    pollMs: 20,
+    request: async (url, opts = {}) => {
+      if (opts.method !== 'POST') return { status: 200, text: '' };
+      sttPosts.push(url);
+      const words = ['CQ', 'CQ', 'this', 'is', 'Victor', 'Kilo', 'Three', 'Tango', 'Romeo'];
+      return { status: 200, text: JSON.stringify({ segments: [{ text: ` ${words.join(' ')}`, no_speech_prob: 0.05, avg_logprob: -0.4, words: words.map((w) => ({ word: ` ${w}`, probability: w === 'Three' ? 0.25 : 0.9 })) }] }) };
+    },
+  });
+  stt.start();
   // "Current conditions", with wspr.live answered by hand
   const conditions = new BandConditions({ controlServer: server, grid: 'QF56', query: async () => [[1409, 'K1ABC', 16500, ['VK2IO']], [704, 'VK3TR', 700, ['VK2IO']]] });
   conditions.start();
@@ -124,6 +176,19 @@ class Civ extends EventEmitter {
   page.on('console', (m) => { if (m.type() === 'error') errors.push(m.text()); });
   await page.goto(`http://localhost:${port}/`);
   await page.waitForFunction(() => !document.getElementById('tty-send-btn').disabled, null, { timeout: 8000 });
+
+  // The title is "PiRO" and links to the source (AGPL); the old "Source" link is gone
+  {
+    const t = await page.evaluate(() => {
+      const a = document.querySelector('.panel__title a');
+      return { text: a?.textContent, href: a?.href, target: a?.target, doc: document.title, oldLink: !!document.getElementById('app-source-link') };
+    });
+    check(t.text === 'PiRO' && t.doc === 'PiRO', `the title is "PiRO" (page "${t.text}", tab "${t.doc}")`);
+    check(t.href === 'https://github.com/StevPem/piro' && t.target === '_blank', `and links to PiRO's repository in a new tab (${t.href})`);
+    check(!t.oldLink, 'the separate Source link is gone');
+    const manifest = await (await fetch(`http://localhost:${port}/manifest.webmanifest`)).json();
+    check(manifest.name === 'PiRO' && manifest.short_name === 'PiRO', 'the web app manifest names it PiRO');
+  }
 
   // A second browser on the same server (another phone, say): it follows
   // every mode the first one picks, without sending any radio commands itself.
@@ -388,14 +453,126 @@ class Civ extends EventEmitter {
     check(civ.log.filter((e) => e[0] === 'setPtt').at(-1)[1] === false && oliviaRx.attached, 'Stop releases PTT and the receiver resumes');
   }
 
-  // click 4 -> VARA
+  // click 4 -> JS8
   {
     const modeCalls = civ.log.filter((e) => e[0] === 'setMode' || e[0] === 'setDataMode').length;
     await page.locator('#modes .chip', { hasText: /^Olivia$/ }).click();
+    await page.waitForFunction(() => [...document.querySelectorAll('#modes .chip')].some((c) => c.textContent === 'JS8'));
+    await page.waitForFunction(() => /^listening · offset 1500 Hz$/.test(document.getElementById('js8-status').textContent), null, { timeout: 4000 }).catch(() => {});
+    check(civ.mode === 'USB' && civ.dataMode === true && civ.log.filter((e) => e[0] === 'setMode' || e[0] === 'setDataMode').length === modeCalls, 'fourth click: JS8, radio left alone (USB, DATA MODE on)');
+    check(server.state.oliviaActive === false && !oliviaRx.attached && server.state.js8Active === true && js8.active, 'Olivia receiver disarmed, JS8 started');
+    check(civ.log.some((e) => e[0] === 'setFrequency' && e[1] === 14078000), 'entering JS8 on 20m tunes to 14.078 MHz');
+    for (const [band, hz] of [['80m', 3578000], ['40m', 7078000], ['30m', 10130000], ['10m', 28078000], ['20m', 14078000]]) {
+      await page.locator('#bands .chip', { hasText: new RegExp(`^${band}$`) }).click();
+      await sleep(150);
+      check(civ.freq === hz && civ.mode === 'USB' && server.state.js8Active, `in JS8, the ${band} band chip goes to ${hz / 1e6} MHz USB`);
+    }
+    check((await vis('#js8-rx')) && !(await vis('#olivia-rx')) && !(await vis('#vara-rx')) && (await vis('#tty-freq')), 'JS8: its panel shown, the frequency box kept');
+    check((await page.locator('#tty-freq-label').textContent()).trim().startsWith('Offset') && (await page.locator('#tty-freq').inputValue()) === '1500', 'the box is the transmit offset, 1500 Hz');
+    check((await page.locator('#js8-status').textContent()) === 'listening · offset 1500 Hz', 'status: ' + (await page.locator('#js8-status').textContent()));
+    check((await page.locator('#ptt-hint').textContent()).includes('JS8Call'), 'hint text describes JS8');
+    check((await page.locator('#tty-input').evaluate((e) => getComputedStyle(e).textTransform)) === 'uppercase', 'JS8: the text box shows capitals (JS8 sends them)');
+    check((await page.locator('#tty-input').getAttribute('placeholder')) === 'VK2ABC SNR?', 'the text box suggests a directed message (CQ is a button)');
+    check(await vis('.psk-spot-toggle'), 'the PSK Spot button is shown in JS8');
+    check(/ Hz$/.test(await page.locator('#scope-range-hi').textContent()) && !(await vis('#scope-spans')), 'JS8: the scope shows the audio spectrum, RF spans hidden');
+    // The offset, typed: shared once typing pauses.
+    await page.locator('#tty-freq').fill('1234');
+    await page.locator('#tty-freq').dispatchEvent('input');
+    await sleep(900);
+    check(server.state.js8TxHz === 1234 && server.state.js8.txHz === 1234, 'a typed offset goes to the server');
+    check(await bFollows(() => [...document.querySelectorAll('#modes .chip')].some((c) => c.textContent === 'JS8') && !document.getElementById('js8-rx').hidden && document.getElementById('tty-freq').value === '1234'), 'the second browser is in JS8 too, with the new offset');
+
+    // Receive: a slot of audio, then the decoder's answer.
+    const slotPcm = Buffer.alloc(15 * 48000 * 2);
+    const feedSlot = (startMs) => {
+      for (let i = 0; i < slotPcm.length; i += 96000) capture.emit('data', slotPcm.subarray(i, i + 96000));
+      js8Clock.emit('boundary', { slotStartMs: startMs + 15000, slotMs: 15000 });
+    };
+    const answer = async (texts, startMs) => {
+      for (let i = 0; i < 50 && !js8Decodes.length; i++) await sleep(20);
+      const req = js8Decodes.shift();
+      check(!!req && req.nfqso === 1234 && req.samples.byteLength >= 12.5 * 12000 * 4, `a whole slot goes to the decoder (${req ? req.samples.byteLength / 4 / 12000 : 0} s), with the offset tried first`);
+      const decodes = texts.map(([call, text, freq, snr]) => {
+        const frames = js8v.buildMessageFrames(call, 'FN42', '', text);
+        return frames.map((f) => ({ freq, dt: 0.1, snr, frame: f.frame, bits: f.type, hardErrors: 2, text: js8v.decodeFrame(f.frame, f.type).message, info: js8v.decodeFrame(f.frame, f.type) }));
+      });
+      return { req, decodes, startMs };
+    };
+    const t0 = Date.now() - (Date.now() % 15000) - 60000;
+    js8Clock.emit('boundary', { slotStartMs: t0, slotMs: 15000 });
+    feedSlot(t0);
+    {
+      const { req, decodes } = await answer([['K1ABC', 'CQ CQ CQ FN42', 1612, -12], ['VK3XYZ', 'VK2IO HELLO FROM MELBOURNE', 987, -15]]);
+      // The CQ is one frame; VK3XYZ's message takes two, here its first.
+      const reply = [...decodes[0], decodes[1][0]];
+      js8.worker.emit('message', { type: 'decoded', id: req.id, decodes: reply, ms: 900 });
+    }
+    await page.waitForFunction(() => document.querySelectorAll('#js8-table-body .ft8-table__row').length === 2, null, { timeout: 4000 }).catch(() => {});
+    const rows = async () => page.locator('#js8-table-body .ft8-table__row').evaluateAll((els) => els.map((e) => ({ cells: [...e.children].map((c) => c.textContent), cls: e.className, from: e.dataset.from })));
+    let r = await rows();
+    check(r.length === 2 && r[0].cells[1] === '1612' && r[0].cells[2] === '-12' && r[0].cells[3] === 'K1ABC: @ALLCALL CQ CQ CQ FN42', 'a CQ is shown as one line: ' + JSON.stringify(r[0]?.cells));
+    check(r[1].cells[3] === 'VK3XYZ: VK2IO' && /row--live/.test(r[1].cls) && /to-me/.test(r[1].cls), 'a message to this station starts, marked as to me and still coming: ' + JSON.stringify(r[1]?.cells));
+    const heard = await page.locator('#js8-heard .vara-rx__heard-call').allTextContents();
+    check(heard.join('|') === 'K1ABC CQ|VK3XYZ' || heard.join('|') === 'VK3XYZ|K1ABC CQ', 'the stations heard are listed: ' + heard.join(', '));
+    // The next slot: the rest of VK3XYZ's message joins its line.
+    feedSlot(t0 + 15000);
+    {
+      const { req, decodes } = await answer([['VK3XYZ', 'VK2IO HELLO FROM MELBOURNE', 988, -14]]);
+      js8.worker.emit('message', { type: 'decoded', id: req.id, decodes: decodes[0].slice(1), ms: 800 });
+    }
+    await page.waitForFunction(() => /MELBOURNE/.test(document.getElementById('js8-table-body').textContent), null, { timeout: 4000 }).catch(() => {});
+    r = await rows();
+    check(r.length === 2 && r[1].cells[3] === 'VK3XYZ: VK2IO  HELLO FROM MELBOURNE' && !/row--live/.test(r[1].cls) && r[1].cells[1] === '988', 'the second frame joins the same line, which is then complete: ' + JSON.stringify(r[1]?.cells));
+    check(await bFollows(() => /HELLO FROM MELBOURNE/.test(document.getElementById('js8-table-body').textContent)), 'the second browser shows the band activity too');
+    // Tap the line: a reply to VK3XYZ starts.
+    await page.locator('#js8-table-body .ft8-table__row').nth(1).click();
+    check((await page.locator('#tty-input').inputValue()) === 'VK3XYZ ', 'tapping a line starts a reply to its station');
+    await page.locator('#js8-heard .vara-rx__heard-call', { hasText: 'K1ABC' }).click();
+    check((await page.locator('#tty-input').inputValue()) === 'K1ABC ', 'tapping a heard call does too');
+
+    // Send a message: queued for the next slot, a frame a slot, Stop part-way.
+    await page.locator('#tty-input').fill('vk3xyz tnx for the call 73');
+    const w0 = writes.length;
+    await page.locator('#tty-send-btn').click();
+    await page.waitForFunction(() => /^sending from \d\d:\d\d:\d\d UTC \(\d frames\)/.test(document.getElementById('js8-status').textContent), null, { timeout: 4000 }).catch(() => {});
+    check(/^sending from \d\d:\d\d:\d\d UTC \(\d frames\) · offset 1234 Hz$/.test(await page.locator('#js8-status').textContent()), 'status: ' + (await page.locator('#js8-status').textContent()));
+    check((await page.locator('#tty-send-btn').textContent()) === 'Stop' && (await page.locator('#tty-input').inputValue()) === '' && (await page.locator('#js8-cq-btn').isDisabled()), 'Send became Stop, the box cleared, CQ waits');
+    check(server.state.js8.sending.frames.join('') === 'VK2IO: VK3XYZ  TNX FOR THE CALL 73', 'the message, as JS8Call will show it: ' + server.state.js8.sending.frames.join(''));
+    js8Clock.emit('boundary', { slotStartMs: Date.now() - (Date.now() % 15000), slotMs: 15000 });
+    for (let i = 0; i < 50 && !js8Holds.length; i++) await sleep(20);
+    check(writes.length === w0 + 1 && civ.log.filter((e) => e[0] === 'setPtt').at(-1)[1] === true && !js8._attached, 'at the boundary: PTT on, the first frame played, receiving paused');
+    await page.waitForFunction(() => /^sending frame 1 of \d/.test(document.getElementById('js8-status').textContent), null, { timeout: 4000 }).catch(() => {});
+    check(/^sending frame 1 of \d/.test(await page.locator('#js8-status').textContent()), 'status while on the air: ' + (await page.locator('#js8-status').textContent()));
+    await page.waitForFunction(() => document.querySelector('#js8-table-body .js8-table__row--own'), null, { timeout: 4000 }).catch(() => {});
+    r = await rows();
+    check(r.at(-1).cells[3] === 'VK2IO: VK3XYZ' && /row--own/.test(r.at(-1).cls) && r.at(-1).cells[1] === '1234', 'the frame sent is shown as an own line at the offset');
+    js8Holds.shift()();
+    await page.waitForFunction(() => /next slot/.test(document.getElementById('js8-status').textContent), null, { timeout: 4000 }).catch(() => {});
+    check(civ.log.filter((e) => e[0] === 'setPtt').at(-1)[1] === false && js8._attached && /^frame 2 of \d next slot/.test(await page.locator('#js8-status').textContent()), 'after the frame: PTT off, receiving again; status: ' + (await page.locator('#js8-status').textContent()));
+    await page.locator('#tty-send-btn').click();
+    await page.waitForFunction(() => /^listening/.test(document.getElementById('js8-status').textContent), null, { timeout: 4000 }).catch(() => {});
+    js8Clock.emit('boundary', { slotStartMs: Date.now() - (Date.now() % 15000) + 15000, slotMs: 15000 });
+    await sleep(200);
+    check(server.state.js8.sending === null && writes.length === w0 + 1 && (await page.locator('#tty-send-btn').textContent()) === 'Send', 'Stop: the rest is dropped, nothing more goes out, Send again');
+    // CQ
+    await page.locator('#js8-cq-btn').click();
+    await page.waitForFunction(() => /^sending from/.test(document.getElementById('js8-status').textContent), null, { timeout: 4000 }).catch(() => {});
+    check(server.state.js8.sending?.frames.join('') === 'VK2IO: @ALLCALL CQ CQ CQ QF56 ', 'CQ queues "CQ CQ CQ QF56"');
+    check(await bFollows(() => /^sending from/.test(document.getElementById('js8-status').textContent) && document.getElementById('tty-send-btn').textContent === 'Stop'), 'the second browser shows it waiting to go, with Stop');
+    await page.locator('#tty-send-btn').click();
+    await page.waitForFunction(() => /^listening/.test(document.getElementById('js8-status').textContent), null, { timeout: 4000 }).catch(() => {});
+    check(server.state.js8.sending === null, 'and Stop cancels it before it goes');
+  }
+
+  // click 5 -> VARA
+  {
+    const modeCalls = civ.log.filter((e) => e[0] === 'setMode' || e[0] === 'setDataMode').length;
+    await page.locator('#modes .chip', { hasText: /^JS8$/ }).click();
     await page.waitForFunction(() => [...document.querySelectorAll('#modes .chip')].some((c) => c.textContent === 'VARA'));
     await page.waitForFunction(() => /^listening/.test(document.getElementById('vara-status').textContent), null, { timeout: 4000 });
-    check(civ.mode === 'USB' && civ.dataMode === true && civ.log.filter((e) => e[0] === 'setMode' || e[0] === 'setDataMode').length === modeCalls, 'fourth click: VARA, radio left alone (USB, DATA MODE on)');
-    check(server.state.oliviaActive === false && !oliviaRx.attached && server.state.varaActive === true && vara.active, 'Olivia receiver disarmed, VARA modem started');
+    check(civ.mode === 'USB' && civ.dataMode === true && civ.log.filter((e) => e[0] === 'setMode' || e[0] === 'setDataMode').length === modeCalls, 'fifth click: VARA, radio left alone (USB, DATA MODE on)');
+    check(server.state.js8Active === false && !js8.active && server.state.varaActive === true && vara.active, 'JS8 stopped, VARA modem started');
+    check((await page.locator('#tty-send-btn').textContent()) === 'Send' && (await page.locator('#tty-send-btn').isDisabled()), 'Send reads Send again, and is off until there is a VARA QSO');
     check(civ.log.some((e) => e[0] === 'setFrequency' && e[1] === 14105000), 'entering VARA on 20m tunes to the 14.105 MHz VarAC calling frequency');
     for (const [band, hz] of [['160m', 1995000], ['30m', 10133000], ['17m', 18107000], ['12m', 24927000], ['10m', 28105000], ['20m', 14105000]]) {
       await page.locator('#bands .chip', { hasText: new RegExp(`^${band}$`) }).click();
@@ -405,7 +582,7 @@ class Civ extends EventEmitter {
     // QSYD / QSYU: one 750 Hz slot down or up; the status line says how far from the calling frequency.
     await page.waitForFunction(() => !document.getElementById('vara-qsyu-btn').disabled, null, { timeout: 4000 });
     {
-      const order = await page.locator('.vara-rx__controls input, .vara-rx__controls button').evaluateAll((els) => els.map((e) => e.id));
+      const order = await page.locator('#vara-rx .vara-rx__controls input, #vara-rx .vara-rx__controls button').evaluateAll((els) => els.map((e) => e.id));
       check(order.join(' ') === 'vara-call vara-connect-btn vara-cq-btn vara-qsyd-btn vara-qsyu-btn', 'QSYD and QSYU sit to the right of CQ');
     }
     await page.locator('#vara-qsyu-btn').click();
@@ -542,13 +719,13 @@ class Civ extends EventEmitter {
     if (process.env.VARA_HEARD_SHOT) await page.locator('#vara-rx').screenshot({ path: process.env.VARA_HEARD_SHOT });
   }
 
-  // click 5 -> Feld-Hell
+  // click 6 -> Feld-Hell
   {
     const modeCalls = civ.log.filter((e) => e[0] === 'setMode' || e[0] === 'setDataMode').length;
     await page.locator('#modes .chip', { hasText: /^VARA$/ }).click();
     await page.waitForFunction(() => [...document.querySelectorAll('#modes .chip')].some((c) => c.textContent === 'Feld-Hell'));
     await sleep(150);
-    check(civ.mode === 'USB' && civ.dataMode === true && civ.log.filter((e) => e[0] === 'setMode' || e[0] === 'setDataMode').length === modeCalls, 'fifth click: Feld-Hell, radio left alone (USB, DATA MODE on)');
+    check(civ.mode === 'USB' && civ.dataMode === true && civ.log.filter((e) => e[0] === 'setMode' || e[0] === 'setDataMode').length === modeCalls, 'sixth click: Feld-Hell, radio left alone (USB, DATA MODE on)');
     check(server.state.varaActive === false && !vara.active && varaWorkers.at(-1).terminated && server.state.hellActive === true && hellRx.attached, 'VARA modem stopped, Feld-Hell receiver armed');
     check(!(await page.locator('#tty-send-btn').isDisabled()), 'Send is on again for Feld-Hell');
     check(!(await vis('.psk-spot-toggle')), 'PSK Spot is hidden again outside FT8 and VARA');
@@ -624,11 +801,11 @@ class Civ extends EventEmitter {
   }
 
   // Enter key sends too; RTTY text via Enter
-  // click 5 -> back to RTTY
+  // click 7 -> back to RTTY
   await page.locator('#modes .chip', { hasText: /^Feld-Hell$/ }).click();
   await page.waitForFunction(() => [...document.querySelectorAll('#modes .chip')].some((c) => c.textContent === 'RTTY'));
   await sleep(150);
-  check(civ.mode === 'RTTY' && civ.dataMode === false, 'fifth click: back to RTTY, DATA MODE off');
+  check(civ.mode === 'RTTY' && civ.dataMode === false, 'seventh click: back to RTTY, DATA MODE off');
   await page.locator('#bands .chip', { hasText: /^40m$/ }).click();
   await sleep(200);
   check(civ.freq === 7050000 && civ.mode === 'RTTY', 'in RTTY, the 40m band chip goes to 7.050 MHz (middle of the WIA digital segment) and stays in RTTY');
@@ -660,7 +837,7 @@ class Civ extends EventEmitter {
   await sleep(200);
   check(true, 'Enter sends; RTTY status "Sent RTTY"');
   check(civ.mode === 'RTTY' && civ.dataMode === false && civ.freq === 7050000 && (await ttyLabel()).includes('RTTY'), 'afterwards: back in RTTY on 7.050 MHz, DATA MODE off');
-  check(writes.length === 4, 'RTTY audio written');
+  check(writes.length === 5, 'RTTY audio written'); // after JTTY, Olivia, JS8 (one frame) and Feld-Hell
 
   // typed text survives mode toggling
   await page.locator('#modes .chip', { hasText: /^RTTY$/ }).click();
@@ -702,6 +879,8 @@ class Civ extends EventEmitter {
   }
   // CW text: a box and Send above DOT/WPM/DASH, sent by the radio's keyer at the WPM set
   {
+    // The STT checkbox leaves the function column in CW; let the layout settle.
+    await page.waitForFunction(() => document.querySelector('.stt-toggle').hidden, null, { timeout: 3000 }).catch(() => {});
     const box = await page.locator('#cw-composer').boundingBox();
     const paddle = await page.locator('#cw-paddle').boundingBox();
     check((await vis('#cw-composer')) && box.y + box.height <= paddle.y + 1, 'CW: a text box and Send above the DOT/WPM/DASH buttons');
@@ -720,6 +899,39 @@ class Civ extends EventEmitter {
     check(civ.log.some((e) => e[0] === 'stopCw') && civ.log.slice(-2).map((e) => e.join(' ')).join(' | ') === 'setBreakIn 0 | setKeySpeed 15' && (await page.locator('#cw-send-btn').textContent()) === 'Send', 'Stop: the keyer stopped, break-in and speed put back, Send again');
   }
 
+  // CW paddle: elements go to the server (cwKey), which keys them a fixed delay later, timed on its own clock
+  {
+    await page.locator('#cw-wpm-input').fill('20'); // 60 ms units
+    civ.pttAt = [];
+    // who asks for each PTT change: a browser's setPtt has an owner, the paddle bridge's doesn't
+    const pttAsks = [];
+    const realSetPtt = server.setPttFromServer.bind(server);
+    server.setPttFromServer = (on, opts = {}) => { pttAsks.push({ on, fromBrowser: !!opts.owner, urgent: !!opts.urgent }); return realSetPtt(on, opts); };
+    const seen = [];
+    const realKey = cwPaddle.key.bind(cwPaddle);
+    cwPaddle.key = (ws, msg) => { seen.push({ ...msg, at: Date.now() }); return realKey(ws, msg); };
+    const dot = await page.locator('#cw-dot-btn').boundingBox();
+    const pressedAt = Date.now();
+    await page.mouse.move(dot.x + dot.width / 2, dot.y + dot.height / 2);
+    await page.mouse.down();
+    await sleep(250); // about two dots at 20 WPM (60 ms on, 60 ms off)
+    await page.mouse.up();
+    await sleep(900);
+    const p = civ.pttAt;
+    const ons = p.filter((e) => e[0]).map((e) => e[1]);
+    const offs = p.filter((e) => !e[0]).map((e) => e[1]);
+    check(seen.length >= 2 && seen.every((m) => m.d === 60 && typeof m.session === 'string') && seen[1].t - seen[0].t === 120, `DOT held: each dot sent as one cwKey of 60 ms, 120 ms apart on the keyer's schedule (${seen.map((m) => `t=${m.t} d=${m.d}`).join(', ')})`);
+    check(ons.length === seen.length && offs.length >= seen.length, `the server keyed each one (${ons.length} on, ${offs.length} off)`);
+    check(ons[0] - pressedAt >= 240, `a fixed delay after the press (${ons[0] - pressedAt} ms)`);
+    const lens = ons.map((t, i) => offs[i] - t);
+    check(lens.every((l) => Math.abs(l - 60) <= 20) && Math.abs(ons[1] - ons[0] - 120) <= 20, `on the radio: dots of ${lens.join(', ')} ms, ${ons[1] - ons[0]} ms apart (keyed 60 and 120)`);
+    check(pttAsks.length >= 2 && pttAsks.every((a) => !a.fromBrowser && a.urgent), `every PTT change came from the paddle bridge, sent urgent; none from the browser (${pttAsks.length})`);
+    cwPaddle.key = realKey;
+    server.setPttFromServer = realSetPtt;
+    await sleep(5200); // the session ends 5 s after the last element
+    check(server.state.cwKeying === false, 'the keying session has ended');
+  }
+
   // Olivia -> LSB: leaves Olivia, DATA MODE off, PTT back
   await page.locator('#modes .chip', { hasText: /^TTY$/ }).click();
   await page.locator('#modes .chip', { hasText: /^RTTY$/ }).click();
@@ -731,6 +943,48 @@ class Civ extends EventEmitter {
   await page.waitForFunction(() => [...document.querySelectorAll('#modes .chip')].some((c) => c.textContent === 'TTY'));
   await sleep(200);
   check(civ.mode === 'LSB' && civ.dataMode === false && server.state.oliviaActive === false && (await vis('#ptt-btn')), 'Olivia -> SSB (LSB on 40 m): Olivia off, DATA MODE off, PTT back');
+
+  // Speech to text (copy aid), in LSB
+  {
+    await page.waitForFunction(() => !document.querySelector('.stt-toggle').hidden, null, { timeout: 3000 }).catch(() => {});
+    check(await vis('.stt-toggle'), 'the STT checkbox is shown in LSB');
+    check((await page.locator('.stt-toggle').evaluate((e) => e.previousElementSibling?.textContent || '')).startsWith('Filter'), 'it sits directly below the Filter button');
+    check(!(await page.locator('#stt-checkbox').isChecked()) && !(await vis('#stt-rx')), 'off by default, with no text panel');
+    await page.locator('#stt-checkbox').check();
+    await page.waitForFunction(() => document.getElementById('stt-status').textContent === 'listening', null, { timeout: 4000 }).catch(() => {});
+    check(server.state.sttEnabled === true && (await vis('#stt-rx')) && (await page.locator('#stt-status').textContent()) === 'listening', 'ticked: the panel appears below the S-meter, listening');
+    check((await page.locator('#stt-rx').evaluate((e) => e.previousElementSibling?.classList.contains('meter'))), 'the panel is right below the S-meter');
+    check(await bFollows(() => document.getElementById('stt-checkbox').checked && !document.getElementById('stt-rx').hidden), 'the second browser shows it ticked, with the panel');
+    // A received over: noise, 3 s of voice, noise.
+    const n = radioAudio.bandNoise(8, 0.05);
+    const v = radioAudio.voice(3, 0.05);
+    for (let i = 0; i < v.length; i++) n[2 * radioAudio.R + i] += v[i];
+    const pcm = radioAudio.toPcm(n);
+    for (let i = 0; i < pcm.length; i += 4800) capture.emit('data', pcm.subarray(i, Math.min(pcm.length, i + 4800)));
+    await page.waitForFunction(() => document.querySelector('#stt-rx-text .stt-rx__line'), null, { timeout: 5000 }).catch(() => {});
+    const line = await page.locator('#stt-rx-text .stt-rx__line').first().textContent().catch(() => '');
+    check(sttPosts.length === 1 && /^\d\d:\d\d:\d\dZ CQ CQ this is Victor Kilo Three Tango Romeo \[VK3TR\]$/.test(line), 'the over is transcribed and shown with its time and callsign: ' + line);
+    check((await page.locator('#stt-rx-text .stt-rx__low').allTextContents()).join() === 'Three', 'a doubtful word is greyed');
+    check(await bFollows(() => /VK3TR/.test(document.getElementById('stt-rx-text').textContent)), 'the second browser shows the text too');
+    // PTT pauses it.
+    server.emit('ptt', true);
+    await page.waitForFunction(() => /^paused: transmitting/.test(document.getElementById('stt-status').textContent), null, { timeout: 3000 }).catch(() => {});
+    check(/^paused: transmitting/.test(await page.locator('#stt-status').textContent()), 'transmitting: paused');
+    server.emit('ptt', false);
+    // Not a voice mode: the checkbox and the panel go, STT waits.
+    await chip('CW').click();
+    await page.waitForFunction(() => document.querySelector('.stt-toggle').hidden, null, { timeout: 3000 }).catch(() => {});
+    check(!(await vis('.stt-toggle')) && !(await vis('#stt-rx')) && server.state.sttEnabled === true && server.state.stt.phase === 'paused', 'CW: no STT checkbox or panel; STT stays ticked, paused');
+    check(await bFollows(() => document.querySelector('.stt-toggle').hidden && document.getElementById('stt-rx').hidden), 'the second browser hides them too');
+    await chip('SSB').click();
+    await page.waitForFunction(() => !document.querySelector('.stt-toggle').hidden && /^listening/.test(document.getElementById('stt-status').textContent), null, { timeout: 3000 }).catch(() => {});
+    const back = { toggle: await vis('.stt-toggle'), ticked: await page.locator('#stt-checkbox').isChecked(), panel: await vis('#stt-rx'), status: await page.locator('#stt-status').textContent(), mode: civ.mode, data: civ.dataMode };
+    check(back.toggle && back.ticked && back.panel && /^listening/.test(back.status), 'back to SSB: the checkbox, ticked, and the panel, listening: ' + JSON.stringify(back));
+    await page.locator('#stt-checkbox').uncheck();
+    await sleep(200);
+    check(server.state.sttEnabled === false && !(await vis('#stt-rx')), 'unticked: off, and the panel goes');
+    check(await bFollows(() => !document.getElementById('stt-checkbox').checked && document.getElementById('stt-rx').hidden), 'in the second browser too');
+  }
 
   // JTTY -> FT8 and back
   await page.locator('#modes .chip', { hasText: /^TTY$/ }).click();
@@ -1208,6 +1462,8 @@ class Civ extends EventEmitter {
   faxRx.stop();
   easypalTx.stop();
   easypalRx.stop();
+  await js8.stop();
+  await stt.stop();
   await server.close();
   console.log(failures ? `\n${failures} FAILED` : '\nAll UI checks passed');
   process.exit(failures ? 1 : 0);

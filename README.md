@@ -12,7 +12,7 @@ Hamlib, no separate audio server and no extra apps.
 Written by VK3TR. Licensed AGPL-3.0-only (see
 [Licence](#licence)).
 
-**Current build: v122.** This is the version the app shows next to its title.
+**Current build: v135.** This is the version the app shows next to its title.
 It is the `CACHE_NAME` number in `src/client/sw.js`, which goes up with every
 change to the web app.
 
@@ -28,6 +28,11 @@ This README has two parts:
 ## Warning!
 Note that it DOES NOT include any form of login or password - so don't present it to the big bad internet or some rando will start controlling your rig! Always put it behind a firewall or VPN.
 
+PiRO does accept the WebSocket only from its own page, so another web site
+open in a browser on your network can't reach the radio through it. If
+you put PiRO behind a reverse proxy that changes the host name, see
+`ALLOWED_ORIGINS` in the [Configuration reference](#configuration-reference).
+
 ---
 
 ## Part 1: For radio operators
@@ -36,7 +41,8 @@ Note that it DOES NOT include any form of login or password - so don't present i
 2. [What you need](#what-you-need)
 3. [Installing PiRO](#installing-piro)
 4. [Running PiRO as a systemd service](#running-piro-as-a-systemd-service)
-5. [Optional components](#optional-components) (RNNoise, HamNoise, DeepCW, FreeDV RADE)
+5. [Optional components](#optional-components) (RNNoise, HamNoise, DeepCW, FreeDV RADE,
+   whisper.cpp, Deepgram)
 6. [Using PiRO](#using-piro): the screen, sharing the radio, voice, CW,
    the text modes, FT8 and FT4, WSPR, FreeDV, the picture modes
 7. [Configuration reference](#configuration-reference)
@@ -64,7 +70,18 @@ Note that it DOES NOT include any form of login or password - so don't present i
   text is decoded as it arrives, or for Feld-Hell painted in the scope and
   read from the picture as text. See
   [RTTY, JTTY, Olivia and Feld-Hell](#rtty-jtty-olivia-and-feld-hell).
-- **VARA chat**: the TTY button's fourth choice is a VARA HF modem for
+- **JS8**: the TTY button's fourth choice is
+  [JS8Call](https://github.com/JS8Call-improved/JS8Call-improved)'s
+  keyboard mode at Normal speed, ported to JavaScript: every signal in the
+  passband is decoded each 15-second slot, and what you type goes out a
+  frame a slot. See [JS8](#js8).
+- **Speech to text** (copy aid): the **STT** checkbox below Filter shows
+  received speech as text under the S-meter, using
+  [whisper.cpp](https://github.com/ggml-org/whisper.cpp) on the Pi (or
+  another computer) or [Deepgram](https://deepgram.com) in the cloud, with
+  the callsigns spelled in it picked out. An aid to copying, not a log. See
+  [Speech to text](#speech-to-text-copy-aid).
+- **VARA chat**: the TTY button's fifth choice is a VARA HF modem for
   keyboard QSOs with VARA Chat and VarAC users. It runs
   [Xara](https://github.com/x0rro/xara), an open-source VARA-compatible
   modem, on the Pi. See [VARA chat](#vara-chat).
@@ -251,6 +268,10 @@ sed -e "s|@USER@|$USER|" -e "s|@DIR@|$PWD|" -e "s|@NODE@|$(command -v node)|" \
 The unit runs PiRO as your user, adds the `dialout` and `audio` groups for it,
 and reads `/etc/piro/piro.env`.
 
+If the radio is switched off or its USB cable is pulled, PiRO exits and
+systemd starts it again every 5 seconds until the radio is back. Run by
+hand (`npm start`), PiRO just exits; start it again when the radio is on.
+
 **3. Enable and start it.**
 
 ```bash
@@ -284,6 +305,28 @@ sudo systemctl disable piro         # stop it starting at boot
   `icom-rig-pwa`), keep using that name in the commands above, or disable it
   and install this one. Do not run two services on the same port.
 
+**Hardening.** The unit limits what PiRO, and the programs it starts, can
+do. They can't gain privileges, and they get a private `/tmp`. They can't
+write to `/usr`, `/boot` or `/etc`, or change kernel settings. Network use
+is limited to what PiRO needs. The serial port, the sound card and your
+home folder are untouched. `systemd-analyze security piro` rates it about
+4 ("OK"), where the unit without these lines rated 9 ("UNSAFE"). These
+lines have not yet been tried on a Pi. If something stops working (a save
+folder can't be written, a helper program won't start), turn the setting
+off with an override, then tell us which:
+
+```bash
+sudo systemctl edit piro            # add, for example:
+                                    #   [Service]
+                                    #   ProtectSystem=no
+sudo systemctl restart piro
+```
+
+An install made before v133 has the old unit. To get these lines, re-run
+step 2 above (it rewrites `/etc/systemd/system/piro.service`; your settings
+in `/etc/piro/piro.env` are kept), then `sudo systemctl daemon-reload` and
+`sudo systemctl restart piro`.
+
 ### Optional components
 
 PiRO works with just the steps above. Each feature in this section needs
@@ -296,6 +339,8 @@ nothing and an error is shown) if its part is missing.
 | "CW 3" decoder (DeepCW) | The bundled model and `onnxruntime-node` (installed by `npm install`) | [DeepCW](#deepcw-cw-3-decoder) |
 | "RNN" button (hidden for now) | A patched `rnnoise_demo` that you build | [RNNoise](#rnnoise-rnn-button) |
 | FreeDV RADE mode | `rade_c` built and installed | [FreeDV RADE](#freedv-rade) |
+| "STT" checkbox (speech to text) | whisper.cpp's `whisper-server` built, and a Whisper model (or one running on another computer) | [whisper.cpp](#whispercpp-stt-checkbox) |
+| "STT" checkbox, in the cloud instead | A Deepgram account and API key, and an internet connection | [Deepgram](#deepgram-stt-in-the-cloud) |
 
 #### RNNoise ("RNN" button)
 
@@ -407,6 +452,86 @@ which is already present on Debian and Raspberry Pi OS. `docs/ui-notes.md`
 if the transmit level seems low or distorted. RADE is installed separately,
 and nothing else in PiRO needs it.
 
+#### whisper.cpp ("STT" checkbox)
+
+Speech to text uses [whisper.cpp](https://github.com/ggml-org/whisper.cpp)
+(MIT), OpenAI's Whisper in plain C++. PiRO talks to its HTTP server,
+`whisper-server`. Build it and fetch a model:
+
+```bash
+sudo apt install -y git cmake build-essential
+sudo git clone https://github.com/ggml-org/whisper.cpp /opt/whisper.cpp
+sudo chown -R "$USER" /opt/whisper.cpp
+cd /opt/whisper.cpp
+cmake -B build -DCMAKE_BUILD_TYPE=Release
+cmake --build build -j4 --target whisper-server
+sh ./models/download-ggml-model.sh base.en-q5_1     # about 60 MB
+```
+
+Then add these to `/etc/piro/piro.env` and restart PiRO (`sudo systemctl restart piro`):
+
+```
+STT_WHISPER_SERVER=/opt/whisper.cpp/build/bin/whisper-server
+STT_MODEL=/opt/whisper.cpp/models/ggml-base.en-q5_1.bin
+STT_THREADS=4
+```
+
+PiRO starts `whisper-server` when STT is ticked and stops it when it is
+unticked (or the last browser leaves), so the model only uses memory (a
+few hundred MB for `base.en`) while STT is on. Loading takes a few seconds.
+
+**Which model.** `base.en-q5_1` is a good start on a Pi 5. On a Pi 4 use
+`tiny.en-q5_1` (faster, less accurate), or run the server on a faster
+computer instead. The `.en` models are English only, and better at it.
+`small.en-q5_1` is more accurate again, but too slow for a Pi.
+
+**On another computer.** Build whisper.cpp there the same way, start it
+with `whisper-server -m models/ggml-base.en-q5_1.bin --host 0.0.0.0 --port
+8178 -l en`, and set `STT_URL=http://that-computer:8178` instead of the two
+settings above. The audio of each over is sent to it over your network.
+
+#### Deepgram (STT, in the cloud)
+
+Instead of whisper.cpp, speech to text can use
+[Deepgram](https://deepgram.com), a paid speech-to-text service. Nothing
+runs on the Pi, so it never falls behind, and its Nova-3 model copies
+better than the Whisper models a Pi can run. But:
+
+- **The received audio leaves your station.** Each over is sent to
+  Deepgram's servers (in the USA) over the internet.
+- **It costs money.** Deepgram charges by the minute of audio sent, so
+  only by the overs heard while STT is ticked, not the silence between.
+  See Deepgram's pricing page.
+- **It needs the internet.** Without it, STT shows an error; untick it, or
+  set up whisper.cpp as well and switch back.
+
+Create an account at [deepgram.com](https://deepgram.com), make an API key
+in its console, and add it to `/etc/piro/piro.env`, then restart PiRO
+(`sudo systemctl restart piro`):
+
+```
+DEEPGRAM_API_KEY=your-key
+```
+
+With only a key set, PiRO uses Deepgram. If whisper.cpp is set up too,
+add `STT_ENGINE=deepgram` to choose Deepgram (or `STT_ENGINE=whisper` to
+go back). The status line ends with "Deepgram (cloud)" while it is used.
+
+Optional settings:
+
+- `DEEPGRAM_MODEL`: `nova-3` by default.
+- `DEEPGRAM_KEYTERMS`: words and phrases Deepgram listens out for,
+  separated by commas. By default: the phonetic alphabet, the numbers
+  (with "niner"), "five nine", and CQ, QSL, QRZ, QTH, QSY, "seventy
+  three", over, roger and copy. Your own list replaces it. Up to 100;
+  spaces in a phrase can be written as spaces or `%20`. Nova-3 calls these
+  keyterms; older models get them as keywords.
+- `DEEPGRAM_LANGUAGE`: `en` by default. See Deepgram's documentation for
+  the languages each model takes.
+
+Keep the key private: anyone with it can spend your credit. PiRO only
+sends it to Deepgram, never to browsers or the log.
+
 ### Using PiRO
 
 Open `http://<pi-hostname-or-ip>:8080` (or `https://` if you set up a
@@ -430,7 +555,7 @@ From the top:
   - **SSB**, **AM**, **FM** and **CW** are the radio's own modes. SSB picks
     the usual sideband (LSB below 10 MHz, USB above). Press it again to
     swap sidebands. It reads **LSB** or **USB** while selected.
-  - **TTY** steps through RTTY, JTTY, Olivia, VARA and Feld-Hell.
+  - **TTY** steps through RTTY, JTTY, Olivia, JS8, VARA and Feld-Hell.
   - **DIGI** steps through FT8, FT4 and WSPR.
   - **FreeDV** is RADE digital voice.
   - **Image** steps through SSTV, EasyPal and Radiofax.
@@ -487,6 +612,12 @@ it doesn't lock while you listen.
 controlled stations. The server does it, so it works even if your browser
 crashes or the network drops. Modes that transmit without PTT (CW text,
 for example) have their own limits.
+
+PiRO doesn't wait that long when it knows something is wrong. If the
+browser holding PTT disconnects, or stops answering the server's pings
+for about 15 to 30 seconds (a phone that lost its signal), PTT is released
+at once. PiRO also sends PTT off to the radio when the service stops or
+crashes.
 
 #### Sharing the radio
 
@@ -571,6 +702,68 @@ station, static crashes and AGC) and on synthetic audio. Not yet tried on
 the air with PiRO; the Pi's CPU use is estimated from a desktop (about 2%
 of a core there).
 
+##### Speech to text (copy aid)
+
+Tick **STT** (below the Filter button) to show received speech as text,
+in a panel under the S-meter. It is a copy aid: something to glance at
+when a word or a callsign is hard to catch. It is not a log, and nothing
+is saved. It needs whisper.cpp set up on the server (see
+[whisper.cpp](#whispercpp-stt-checkbox)), or a Deepgram key (see
+[Deepgram](#deepgram-stt-in-the-cloud)); otherwise the panel says so.
+Below, "Whisper" is whisper.cpp; with Deepgram the overs are found and
+cut the same way, and each one takes well under a second.
+
+- PiRO listens for speech with the voice squelch's detector (the pitch of
+  a voice), and sends each over to Whisper when it ends: about 1.5 s after
+  the speaker stops. The text appears a few seconds later (how long
+  depends on the computer and the model). Whisper is told how long the
+  over is, so a short over is quicker (Whisper otherwise works on 30 s
+  every time).
+- A long over is sent in pieces of up to 10 s (`STT_MAX_SEGMENT_SEC`) as
+  it goes, so its text appears while the station is still talking, on the
+  same line. Each piece is cut at the quietest moment of its last 2 s
+  (usually a gap between words), and Whisper is given the text before it,
+  so it carries on the sentence. A callsign spelled across a cut is still
+  found. Shorter pieces mean text sooner, but a little less context for
+  Whisper, and a word can still be split where nobody pauses.
+- The status line shows the last over's length and how long it took, or
+  "nothing kept" if Whisper heard no words worth showing.
+- Each line starts with the UTC time the over began. Words Whisper wasn't
+  sure of are grey. Callsigns spelled in the over ("Victor Kilo Three
+  Tango Romeo") are added after it in letters, `[VK3TR]`.
+- It works only in voice modes: SSB, AM and FM with DATA mode off and no
+  app mode on, and FreeDV. The STT checkbox and panel show only in those
+  modes. Left ticked in another mode, STT waits, hidden, and carries on
+  when you go back to a voice mode. It pauses while you transmit (your own
+  speech is never sent).
+- In FreeDV, STT hears the decoded speech (what you hear from the
+  speaker), not the modem tones.
+- Every browser sees the same text, and the setting. STT is off by
+  default, and turns off when the last browser leaves.
+
+**What to expect.** Whisper was trained on clean speech. On a strong SSB
+signal it copies well; near the noise it gets words wrong, and that is
+when you need it most, so check by ear. On noise alone Whisper can make
+up text ("Thank you for watching."). PiRO drops what Whisper's own rule
+calls silence (likely not speech *and* unsure of its words) and text it is
+known to invent, but some will get through. It is given a short QSO-like prompt (the phonetic
+alphabet, "five nine", QTH, 73) so it expects radio talk.
+
+With Deepgram, the same holds: strong signals copy well, weak ones less
+so. Deepgram rarely makes up text from noise, but the same filters
+apply. It is given keyterms instead of a prompt (see
+[Deepgram](#deepgram-stt-in-the-cloud)), and it writes numbers as
+figures ("Victor Kilo 3 Tango Romeo"); callsigns are still found.
+
+**How far it has been tested.** PiRO's side was checked with synthetic
+voices in noise and a stand-in for Whisper, and against a real
+`whisper-server` (started, sent overs, stopped) loaded with whisper.cpp's
+small test model, which answers but transcribes nothing. It has not yet
+been tried with a real Whisper model or on air, so how well it copies SSB
+is still to be seen. Deepgram support was checked against a stand-in for
+its API (the request, the keyterms, the key, its answer), not yet against
+the real service or on air.
+
 ##### Compressed audio for remote use
 
 Full audio is raw 16-bit PCM: about 770 kbit/s each way at 48 kHz. That
@@ -596,6 +789,14 @@ Compressed audio plays 0.2 s behind, so short network delays don't break
 it up. On any audio, if more than half a second more than that builds up
 (after the network stalls), the backlog is skipped.
 
+The server does the same at its end. If a browser's connection can't keep
+up, the server stops sending it audio, scope and spectrum until it has
+caught up (about a second of full audio waiting, or a few seconds of
+compressed), so you hear a short gap rather than the band falling further
+and further behind. Decoded text, pictures and the radio's settings are
+never skipped. If this happens often, switch that browser to compressed
+audio.
+
 The decoders (FT8, CW, RTTY and the rest) always work from the radio's
 full-quality audio on the Pi, whatever the browsers receive. Compression
 only affects what you hear and what your microphone sends. Not tested on
@@ -607,9 +808,41 @@ transmission.
 In **CW** the PTT button becomes a CW panel.
 
 **Paddle.** **DOT** and **DASH** work as an iambic paddle, at the speed in
-the **WPM** box (15 to start). Each element is sent as PTT on and off over
-the network, so the timing is looser than a real keyer, more so at higher
-speeds. For accurate sending, use CW text.
+the **WPM** box (15 to start); hold both to alternate. You hear a sidetone
+in the browser straight away. The radio sends your keying a fixed moment
+later (a quarter of a second, `CW_PADDLE_DELAY_MS`, plus the network's own
+delay), with the dots, dashes and gaps exactly as long as you keyed them.
+The server holds each element for that moment and replays it on its own
+clock, so an uneven network doesn't change the timing; only a stall longer
+than the delay stretches one gap. The delay can't be avoided over a
+network, but the other station can't tell: what matters for CW is even
+timing.
+
+For the most exact timing, let PiRO key the radio through the USB cable's
+key line:
+1. On the radio: **Menu > Set > Connectors > USB SEND/Keying > USB Keying
+   (CW)**: choose **DTR** (or RTS). It can't be the same line as USB SEND,
+   which can stay OFF.
+2. In `/etc/piro/piro.env`: `CW_KEY_LINE=dtr` (the same line), and restart
+   PiRO.
+
+PiRO then turns semi break-in on while you key (the radio only transmits
+on the key with break-in on) and puts it back after. Without
+`CW_KEY_LINE`, the paddle keys with CI-V PTT as before, timed the same way
+but a few milliseconds less exactly. Over the home network you can lower
+`CW_PADDLE_DELAY_MS` (to 100, say); on a poor mobile link, raise it.
+
+Only one browser keys at a time. Keying stops when that browser
+disconnects, and after 10 minutes of continuous keying. Not tested on air:
+neither way of keying has been tried on a real transmission yet.
+
+One thing to know with `CW_KEY_LINE`: Linux raises a serial port's DTR and
+RTS lines whenever the port is opened. PiRO drops the key line in the same
+moment, but with break-in left on the radio could send a click of carrier
+when PiRO starts. Leave break-in off when you're not sending CW (PiRO turns
+it on only while you key), and try it first into a dummy load.
+
+For text you type, use CW text below: the radio's own keyer sends it.
 
 **CW text.** Above the Dot/Dash buttons is a text box and **Send**. Type a message (or use the CQ it starts with) and press Send or
 Enter: PiRO hands the text to the radio's own CW keyer (CI-V command `17`),
@@ -645,7 +878,7 @@ but hidden; see [CW decoders](#cw-decoders) in Part 2.
 
 #### RTTY, JTTY, Olivia and Feld-Hell
 
-The **TTY** button steps through five text modes:
+The **TTY** button steps through six text modes:
 
 1. The first click selects the radio's RTTY mode, and the button now reads **RTTY**.
    Selecting RTTY also tunes to the middle of the band's digital-modes segment
@@ -658,20 +891,23 @@ The **TTY** button steps through five text modes:
 3. The next click switches to **Olivia** (Olivia 8/250), and the button reads
    **Olivia**. Entering Olivia tunes to the band's Olivia calling frequency
    (e.g. 14.0715 MHz dial on 20 m), and band buttons then go to each band's.
-4. The next click switches to **VARA** (see [VARA chat](#vara-chat)), and
+4. The next click switches to **JS8** (see [JS8](#js8)), and the button
+   reads **JS8**. Entering JS8 tunes to the band's JS8 frequency (14.078 MHz
+   dial on 20 m).
+5. The next click switches to **VARA** (see [VARA chat](#vara-chat)), and
    the button reads **VARA**. Entering VARA tunes to the band's VarAC
    calling frequency (14.105 MHz dial on 20 m).
-5. The next click switches to **Feld-Hell**, and the button reads
+6. The next click switches to **Feld-Hell**, and the button reads
    **Feld-Hell**. Entering Feld-Hell tunes so a signal on the band's Feld-Hell
    frequency (e.g. 14.063 MHz on 20 m) comes out at the audio tone (dial
    14.062 MHz with the default 1000 Hz tone), and band buttons then go to
    each band's.
-6. The next click goes back to **RTTY**, and so on round.
-7. Picking any other mode (LSB, USB, AM, FM, CW, FT8, FreeDV) puts the button
+7. The next click goes back to **RTTY**, and so on round.
+8. Picking any other mode (LSB, USB, AM, FM, CW, FT8, FreeDV) puts the button
    back to **TTY**.
 
 While a TTY mode is selected, a text box and a **Send** button replace the
-PTT button (in VARA, Send works only during a QSO). Enter in the text box also sends. While a message is going out,
+PTT button (in VARA, Send works only during a QSO; in JS8 it sends from the next slot). Enter in the text box also sends. While a message is going out,
 Send turns into **Stop**, which cuts the transmission short and releases PTT.
 The Space bar does not key the microphone in these modes. The text box starts
 with a CQ built from `STATION_CALLSIGN` (if set), and keeps whatever you
@@ -859,9 +1095,93 @@ not yet been tested over the air.
 Transmit is refused if the radio is already transmitting. The usual PTT
 watchdog (ten minutes) still applies.
 
+#### JS8
+
+**JS8** is the TTY button's fourth choice. It is
+[JS8Call](https://github.com/JS8Call-improved/JS8Call-improved)'s
+keyboard mode at **Normal** speed: 8-tone FSK, 50 Hz wide, in 15-second UTC
+slots like FT8, with messages sent a frame (about 6 to 15 characters) a
+slot. PiRO's receiver and transmitter are a JavaScript port of
+JS8Call-improved 3.0's; nothing else needs to be installed. JS8Call's
+other speeds (Fast, JS8 40, Slow, JS8 60) are not supported yet.
+
+Selecting JS8 puts the radio on USB with DATA MODE on, and tunes to the
+band's JS8 frequency, JS8Call's own list:
+
+| Band | 160 m | 80 m | 40 m | 30 m | 20 m | 17 m | 15 m | 12 m | 10 m | 6 m |
+|---|---|---|---|---|---|---|---|---|---|---|
+| Dial (MHz) | 1.8435 | 3.578 | 7.078 | 10.130 | 14.078 | 18.104 | 21.078 | 24.922 | 28.078 | 50.318 |
+
+Band buttons then go to each band's. Signals sit 300 to 2700 Hz above the
+dial, mostly between 1000 and 2000 Hz.
+
+**Receiving.** At the end of each slot the server decodes every JS8 signal
+in the passband (in a worker; about a second on a PC, a few on a Pi). The
+JS8 panel (under the S-meter) shows:
+- the status line: listening, decoding, or how a message is going out,
+  and your transmit offset;
+- **CQ**, which sends `CQ CQ CQ` and the first four characters of
+  `STATION_GRID` in the next slot;
+- **Heard**: the stations heard (from their CQs, heartbeats and directed
+  messages), newest first. Tap one to start a message to it;
+- the band activity: one line per message, its frames joined in order
+  (time, offset in Hz, S/N, text), as JS8Call's band activity shows them.
+  A line still waiting for its next frame has an amber edge; a message
+  to you a green one; your own messages are in amber. Tap a line to start
+  a reply.
+
+A browser that connects is sent the recent activity. S/N is as JS8Call
+reports it, which reads about 7 dB lower than FT8's figures for the same
+signal; JS8 Normal decodes down to about −26 dB on that scale.
+
+**Sending.** Type a message and press **Send** (or Enter). The text goes
+out in capitals, as JS8Call sends it:
+- start it with a callsign to send it to that station: `VK2ABC SNR?`,
+  `VK2ABC HELLO`, `VK2ABC 73`. JS8Call's directed commands (`SNR?`,
+  `GRID?`, `INFO?`, `HEARING?`, `ACK`, `MSG`, `AGN?` and the rest) are sent
+  as their compact codes;
+- `@ALLCALL` (or a group such as `@JS8`) sends to everyone;
+- anything else goes out as `VK2IO: your text`, so others know who sent it.
+
+The message is cut into frames and sent one a slot from the next slot
+boundary, at the **Offset** (the lowest tone, 300 to 2700 Hz; type it, or
+click the audio spectrum). Each frame keys the radio for about 13 seconds.
+**Send** becomes **Stop** while a message is waiting or going out; Stop
+drops the rest and releases PTT at once.
+
+Limits:
+* 300 characters, and at most 40 frames (10 minutes on the air, the class
+  licence's limit for a remotely controlled transmission). A longer message
+  is refused; shorten it.
+* No automatic replies and no heartbeats, ever. JS8Call answers some
+  queries (`SNR?`, `GRID?`, `INFO?` and others) by itself; PiRO only shows
+  them, and you reply if you choose to.
+* Transmitting needs `STATION_CALLSIGN`; without it JS8 receives only.
+* Leaving JS8, or the last browser leaving, stops a message being sent.
+
+**PSK Spot.** The FT8 **PSK Spot** button is shown in JS8 too (the same
+setting). While it is on, the stations a decode names as its sender (CQs,
+heartbeats, directed messages) are reported to
+[PSK Reporter](https://pskreporter.info) as mode "JS8", at the dial
+frequency plus their offset, with their grid if they sent one.
+
+**Timing.** Frames start 0.5 s into the slot, as JS8Call's do. PiRO allows
+`VARA_AUDIO_LATENCY_MS` (500 ms by default) for the sound card's delay, so
+it writes the audio at the slot boundary.
+
+**How far it has been tested.** The port was checked against JS8Call's
+code tables, and round trip: text to frames to audio, through simulated
+noise, overlapping signals and timing errors, and back to text. On air
+(30 October 2026), PiRO called CQ and worked VK2PKH, running
+JS8Call 3.0.3, through a full QSO: S/N reports, INFO, free text both ways
+and 73s. In the same half hour it decoded other stations' CQs,
+heartbeats and directed messages from +2 to −25 dB (WW8O, in the USA, at
+−25), between 500 and 2550 Hz. Only the Normal speed has been used. See
+[`third_party/js8call/README.md`](third_party/js8call/README.md).
+
 #### VARA chat
 
-**VARA** is the TTY button's fourth choice. It is the VARA HF modem that
+**VARA** is the TTY button's fifth choice. It is the VARA HF modem that
 [VARA Chat](https://rosmodem.wordpress.com/) and
 [VarAC](https://www.varac-hamradio.com/) use for keyboard QSOs. PiRO runs
 [Xara](https://github.com/x0rro/xara), an open-source modem compatible with
@@ -1081,7 +1401,9 @@ drift). Every browser sees the same list, and a page that opens later gets
 the recent spots.
 
 Spots go to wsprnet.org after each slot, the way WSJT-X sends them (a
-"wsprstat" report when nothing was heard). This needs `STATION_CALLSIGN`
+"wsprstat" report when nothing was heard). PiRO sends them over HTTPS; if
+wsprnet.org doesn't accept HTTPS, it uses plain HTTP, as WSJT-X does, and
+says so once in the log. This needs `STATION_CALLSIGN`
 and `WSPR_GRID` (or `STATION_GRID`); `WSPR_UPLOAD=off` turns it off. The
 panel shows whether the last upload worked.
 
@@ -1482,14 +1804,25 @@ All settings are environment variables. For the systemd service they go in
 | `AUDIO_SAMPLE_RATE` | `48000` | Audio sample rate. |
 | `AUDIO_CHANNELS` | `1` | Number of audio channels. |
 | `AUDIO_OPUS_BITRATE` | `24000` | Opus bit rate for compressed audio, in bits per second (6000 to 128000). See [Compressed audio for remote use](#compressed-audio-for-remote-use). `AUDIO_CODEC` is no longer used: each browser chooses. |
-| `SCREEN_TITLE` | `SPARC PiRO` | Title shown in the browser tab and on the page. |
+| `SCREEN_TITLE` | `PiRO` | Title shown in the browser tab and on the page (a link to the source, see `SOURCE_CODE_URL`). |
 | `JTTY_TX_FREQ_HZ` | `1450` | Audio frequency of JTTY's lowest tone, in Hz. The signal fills about 94 Hz above it. |
 | `JTTY_RX_LOW_HZ`, `JTTY_RX_HIGH_HZ` | `200`, `2900` | Audio range, in Hz, searched for JTTY signals. The default is the whole range the decoder supports. Two extra fixed channels at 1350 and 1650 Hz (±150 Hz) are always searched as well. A narrower range saves a little CPU. |
 | `JTTY_RX_QUALITY` | `economy` | JTTY decoder effort. `economy` uses about 40% of `full`'s CPU and decoded nearly as many weak signals in testing. `light` is in between, `full` matches WSJT-X's search exactly, and `auto` runs `full` but drops to `economy` when the Pi falls behind. |
 | `OLIVIA_FREQ_HZ` | `1500` | Olivia's default audio centre frequency, in Hz, for sending and receiving, until it is changed in the UI. The signal is 250 Hz wide; the receiver searches 125 Hz either side. |
 | `VARA_BW` | `500` | VARA bandwidth in Hz: `500`, `2300` or `2750`. See [VARA chat](#vara-chat). |
 | `VARA_NAME`, `VARA_QTH` | none | Your name and QTH, sent to the other station after the opening report, as VarAC's profile (`<NAME:…>`, `<QTH:…>`). `STATION_GRID` goes with them as the locator. |
-| `VARA_AUDIO_LATENCY_MS` | `500` | How far VARA's transmit audio lags what is written to the sound card, in ms (0 to 2000). The modem holds PTT that much longer and times its replies to suit. |
+| `STT_WHISPER_SERVER`, `STT_MODEL` | none | whisper.cpp's `whisper-server` program and the Whisper model it loads, for the STT checkbox. PiRO starts it while STT is ticked. See [whisper.cpp](#whispercpp-stt-checkbox). |
+| `STT_THREADS` | `4` | Threads `whisper-server` uses (1 to 16). |
+| `STT_PORT` | `8178` | The local port `whisper-server` is started on (127.0.0.1 only). |
+| `STT_MAX_SEGMENT_SEC` | `10` | A long over is sent in pieces this long (5 to 28 s), so its text appears as it goes. Longer: a little more accurate, but later. |
+| `STT_ENGINE` | see text | `whisper` or `deepgram`. Without it: Deepgram if `DEEPGRAM_API_KEY` is set and whisper.cpp is not, otherwise whisper.cpp. |
+| `DEEPGRAM_API_KEY` | none | A Deepgram API key: speech to text in the cloud instead of whisper.cpp. See [Deepgram](#deepgram-stt-in-the-cloud). |
+| `DEEPGRAM_MODEL` | `nova-3` | The Deepgram model. |
+| `DEEPGRAM_KEYTERMS` | phonetics, numbers, Q-codes | Words Deepgram listens out for, separated by commas (up to 100). Replaces the built-in list. |
+| `DEEPGRAM_LANGUAGE` | `en` | The language Deepgram expects. |
+| `DEEPGRAM_URL` | `https://api.deepgram.com` | Only for testing against another Deepgram-compatible server. Must start with `https://`, since the API key goes with every request; anything else is refused with a warning and the default used. |
+| `STT_URL` | none | A `whisper-server` already running (on another computer, say), e.g. `http://192.168.1.20:8178`. Used instead of the two above. |
+| `VARA_AUDIO_LATENCY_MS` | `500` | How far VARA's transmit audio lags what is written to the sound card, in ms (0 to 2000). The modem holds PTT that much longer and times its replies to suit. JS8 uses it too, to start its frames 0.5 s into the slot. |
 | `OLIVIA_SQUELCH` | on | `off` turns off PiRO's filtering of junk characters and decodes exactly as fldigi does with its squelch off. See [Olivia](#rtty-jtty-olivia-and-feld-hell). |
 | `SSTV_SAVE_DIR` | none | If set, every received SSTV picture is also saved in this folder as a PNG (`YYYYMMDD-HHMMSSz-<mode>.png`, UTC). |
 | `FAX_STATE_FILE` | `~/.config/piro/fax.json` | Where Radiofax keeps the sound card's measured clock error between restarts. |
@@ -1518,7 +1851,10 @@ All settings are environment variables. For the systemd service they go in
 | `WSPR_BAND_MINUTES` | `6` | Minutes on each band in the unattended band cycle. WSPR slots are 2 minutes, so it is rounded to an even number; 2 changes band every slot. |
 | `WSPR_SKIP_BANDS` | none | Bands left out of the unattended band cycle, separated by commas: for example `160m,6m` (or `160,6`). The bands are 160m 80m 40m 30m 20m 17m 15m 12m 10m 6m. If the radio is on a skipped band, the cycle starts on the next one. |
 | `TLS_CERT_PATH`, `TLS_KEY_PATH` | none | Set both to serve HTTPS and WSS. Needed for the microphone from other devices. |
-| `SOURCE_CODE_URL` | none | Link shown in the page footer. The AGPL asks you to offer the source to people who use your instance (see [Licence](#licence)). |
+| `ALLOWED_ORIGINS` | none | Extra web origins allowed to open the WebSocket, separated by commas, such as `https://radio.example.net`. Normally not needed: PiRO's own page is always allowed. Set it only behind a reverse proxy that changes the `Host` header. `*` allows any origin (not recommended). |
+| `CW_KEY_LINE` | none | `dtr` or `rts`: the CW paddle keys the radio with that line of the USB serial port. Set the radio's USB Keying (CW) to the same line. Unset or `off`: the paddle keys with CI-V PTT. See [CW](#cw). |
+| `CW_PADDLE_DELAY_MS` | `250` | How long the server holds paddle elements before sending them, so they go out with even timing (50 to 1000). Lower at home, higher on a poor link. |
+| `SOURCE_CODE_URL` | PiRO's repository | Where the page's title links: the source of the PiRO you run. Leave it unset for an unchanged copy; if you have changed PiRO, point it at your own source (see [Licence](#licence)). |
 | `STATIC_DIR` | `src/client` | Folder the web app is served from. |
 | `RNNOISE_BIN` | `rnnoise_demo` | Path to the patched `rnnoise_demo`. |
 | `RNNOISE_WET` | `0.25,0.5,0.75,1.0` | Blend ratio for each level of the "RNN" button. |
@@ -1558,7 +1894,39 @@ one hard refresh (Ctrl+Shift+R, or Cmd+Shift+R on a Mac).
   `build-essential` and `python3`, and check that Node is version 18 or newer.
 - **Every CI-V command times out.** The baud rate must match the radio's menu
   setting exactly, CI-V Transceive must be on, and nothing else (another CAT
-  program, or a second PiRO) may hold the port.
+  program, or a second PiRO) may hold the port. "CI-V queue full" errors
+  mean the same thing: the radio isn't answering, so PiRO stops taking
+  new requests rather than letting them pile up.
+- **"Dropped a late OK (or NG) from the radio" in the log.** A request timed
+  out and the radio answered afterwards. PiRO ignores that answer so it
+  can't be taken for the answer to the next request. Now and then is
+  harmless; often means the CI-V link is slow or overloaded (check the
+  baud rate, and try with the scope off).
+- **The CW paddle plays a sidetone but the radio doesn't transmit.** With
+  `CW_KEY_LINE`, the radio's USB Keying (CW) must be set to the same line
+  (DTR or RTS), and the radio must be in CW. PiRO turns semi break-in on
+  while keying; check the log for "could not check or set break-in".
+  Without `CW_KEY_LINE`, try setting it: keying with CI-V PTT in CW mode
+  has not been checked on a real radio.
+- **Audio drops out briefly every few seconds in CW mode only.** Before
+  v134 the CW3 decoder held up the whole server for half a second or more
+  every 8 seconds (longer on a Pi), so no audio went out meanwhile. Update
+  to v134 or later. If you can't, choose CW 1 or CW 2 with the CW button.
+- **Audio on a phone has gaps, and the log says "a browser is falling
+  behind".** That browser's connection couldn't keep up, so the server
+  skipped some of its audio and scope frames instead of letting them pile
+  up (see [Compressed audio for remote use](#compressed-audio-for-remote-use)).
+  "caught up after ... s" says how long it lasted. Switch that browser to
+  Opus or ADPCM with the Audio button, or turn the scope off on it.
+- **The page loads but never connects, and the log says "refused a
+  connection from origin".** PiRO only accepts its WebSocket from its own
+  page. Behind a reverse proxy that changes the `Host` header, add the
+  address in the browser's address bar to `ALLOWED_ORIGINS`, such as
+  `ALLOWED_ORIGINS=https://radio.example.net`.
+- **The service restarts over and over.** Look at `journalctl -u piro`. "The
+  serial port ... closed unexpectedly" or an error opening the port means
+  the radio is off or its USB is unplugged: PiRO keeps trying until it is
+  back.
 - **No audio devices.** Install `alsa-utils` and check `arecord -l` shows the
   radio's codec. Some radios use a second USB cable for audio.
 - **A noise-reduction button does nothing.** Look at `journalctl -u piro`. For
@@ -1566,7 +1934,7 @@ one hard refresh (Ctrl+Shift+R, or Cmd+Shift+R on a Mac).
   build. Re-do the check in [RNNoise](#rnnoise-rnn-button).
 - **The server runs at 100% CPU after turning HamNoise on.** Make sure
   `HAMNOISE_QUALITY` is not set to `v2` on a Raspberry Pi.
-- **A digital transmission (FT8, RTTY, JTTY, Olivia, VARA, Feld-Hell, SSTV) keys
+- **A digital transmission (FT8, RTTY, JTTY, Olivia, JS8, VARA, Feld-Hell, SSTV) keys
   the radio but shows no power.** The radio's display should read USB-D or
   LSB-D while it transmits; PiRO turns DATA mode on with CI-V `1A 06`
   (before v78 it sent the wrong command, so DATA mode never came on). Then
@@ -1594,7 +1962,8 @@ one hard refresh (Ctrl+Shift+R, or Cmd+Shift+R on a Mac).
 - **WSPR spots don't reach wsprnet.org.** The WSPR panel says whether the
   last upload worked. Uploading needs `STATION_CALLSIGN`, `WSPR_GRID` (or
   `STATION_GRID`) and internet access from the Pi (to `wsprnet.org`, port
-  80), and must not be turned off with `WSPR_UPLOAD=off`.
+  443, or 80 if it falls back to HTTP: the log says which), and must not be
+  turned off with `WSPR_UPLOAD=off`.
 - **The WSPR Transmit box can't be ticked.** Its tooltip says why: usually
   `STATION_CALLSIGN` or the grid is not set, or the callsign has a `/`.
 - **The microphone is blocked in the browser.** Use HTTPS (see
@@ -1614,6 +1983,38 @@ one hard refresh (Ctrl+Shift+R, or Cmd+Shift+R on a Mac).
 - **The Audio button can't be tapped.** The server can't compress audio:
   `AUDIO_CHANNELS` must be 1.
 
+- **The STT panel says it "didn't start".** The line after it is
+  whisper.cpp's own message. Check `STT_WHISPER_SERVER` and `STT_MODEL`
+  are full paths that exist, and try the command by hand:
+  `whisper-server -m <model> --port 8178`. With `STT_URL`, check the other
+  computer's server answers at that address.
+- **The STT checkbox is missing.** It shows only in voice modes: SSB, AM
+  and FM with DATA mode off and no app mode (FT8, JS8 and so on), and
+  FreeDV.
+- **STT says "paused".** It pauses while you transmit.
+- **STT shows no text.** The status line shows the last over: how long it
+  was, and how long it took to transcribe ("6.2 s to transcribe"), or
+  "nothing kept". The journal has a line for every over with what was
+  heard and what was dropped and why: `journalctl -u piro -f | grep STT`.
+  If transcribing takes longer than the overs, whisper.cpp falls behind
+  and only the latest two waiting overs are kept: use a smaller model, a
+  faster computer (`STT_URL`), or Deepgram. With Deepgram, a time of more
+  than a second or two means a slow internet connection.
+- **STT shows text that wasn't said.** Whisper makes things up on noise.
+  Use it on signals you can mostly hear, and check by ear.
+- **STT with Deepgram says "Transcription failed: Deepgram: HTTP 401".**
+  The key is wrong or was deleted: check `DEEPGRAM_API_KEY` in
+  `/etc/piro/piro.env` (no spaces or quotes around it). HTTP 402 means the
+  account has no credit left. "connecting to Deepgram…" that ends in an
+  error means the Pi can't reach `api.deepgram.com`: check its internet
+  connection.
+- **JS8 decodes nothing.** Check that signals show on the audio spectrum,
+  and that the Pi's clock is right: JS8 needs it within a
+  second or so of UTC (`timedatectl` should say "System clock synchronized:
+  yes"). If others decode you late or not at all, try
+  `VARA_AUDIO_LATENCY_MS` at 300 or 800.
+- **The JS8 panel says "not running on the server".** Audio isn't set up
+  (`AUDIO_RX_DEVICE`), or PiRO was updated without a restart.
 - **VARA calls never connect, or links drop.** Both stations must use the
   same bandwidth (`VARA_BW`). Watch the status line: if the other station
   is heard (its CQ is listed, or "someone is calling…" shows) but the link
@@ -1644,6 +2045,14 @@ one hard refresh (Ctrl+Shift+R, or Cmd+Shift+R on a Mac).
 
 The `test/manual-*.js` scripts talk to a real radio. Stop the service first,
 because they need the serial port. None of them transmits.
+
+If you key CW with the USB cable (`CW_KEY_LINE`), the scripts drop that
+line too, as PiRO does: opening the port raises it, which would key the
+radio in CW with break-in on. They take `CW_KEY_LINE` from the shell, or
+else from `/etc/piro/piro.env`, and print which (for example "CW key line:
+DTR (from /etc/piro/piro.env)"). Other programs that open the radio's
+serial port (a terminal program, Hamlib, a logger on a PC) don't know to:
+leave break-in off when you're not sending CW.
 
 ```bash
 node test/manual-civ-test.js /dev/ttyUSB0            # basic CI-V check (optionally add the address: 0x94)
@@ -1709,9 +2118,14 @@ browser. There is no build step: the browser loads plain ES modules.
   feature. Each listens to ControlServer's events, reads received audio
   or writes transmit audio, drives the radio through CivDriver, and
   broadcasts results.
-- **Workers.** Heavy decoding and encoding (FT8, JTTY, Olivia, SSTV, WSPR,
+- **Workers.** Heavy decoding and encoding (FT8, JTTY, Olivia, JS8, SSTV, WSPR,
   EasyPal) and the VARA modem run in worker threads, so the main thread stays free for CI-V,
   audio and the WebSocket.
+- **Separate programs and services.** FreeDV RADE (`rade_c`), RNNoise
+  (`rnnoise_demo`) and speech to text (whisper.cpp's `whisper-server`) run
+  as their own processes, started by their bridges. Speech to text can use
+  Deepgram's cloud service over HTTPS instead. If one fails, PiRO reports
+  it and carries on.
 - **The client** (`src/client/`): `app.js` is the whole UI. `rpc.js`
   (RigLink) wraps the WebSocket and re-dispatches every server event as a
   DOM event. `audio.js` plays and records with Web Audio. `scope.js` draws
@@ -1719,7 +2133,8 @@ browser. There is no build step: the browser loads plain ES modules.
 
 [`docs/architecture.drawio`](docs/architecture.drawio) is a UML diagram of
 the main classes and how they connect: browser client, server, feature
-bridges, CI-V and audio. Its second page lists which events each server
+bridges, CI-V and audio, and the programs and services outside PiRO. Its
+second page lists which events each server
 part listens to and sends. Open it in [draw.io](https://app.diagrams.net/)
 or the draw.io desktop app. [`docs/architecture.png`](docs/architecture.png)
 is a preview of the first page.
@@ -1731,7 +2146,7 @@ is a preview of the first page.
 - **The radio is the source of truth** for its settings: frequency, mode,
   filter, DATA mode, power, preamp, NR and the rest, including changes made
   on its front panel. **The server is the source of truth** for its own
-  settings: the app-level modes (FT8/FT4, FreeDV, JTTY, Olivia, VARA,
+  settings: the app-level modes (FT8/FT4, FreeDV, JTTY, Olivia, JS8, VARA,
   Feld-Hell, SSTV, EasyPal, Radiofax, WSPR) and their frequencies, the decoder
   options, the notes. Every browser shows what the radio or the server
   reports, by event or by polling. A browser never treats its own copy as
@@ -1773,7 +2188,9 @@ src/
               scope-bridge.js, one *-bridge.js per feature,
               radio-setup.js (NR, notch and filter for fax and EasyPal),
               band-conditions.js, wsprnet.js, freedv-reporter.js, png.js,
-              varac.js (VarAC's messages and CQ slots)
+              varac.js (VarAC's messages and CQ slots),
+              stt-text.js (what is kept of Whisper's or Deepgram's text,
+              callsigns)
   audio/      ALSA (alsa.js, mixer.js), Opus (opus-codec.js), PCM framing,
               resampling (resample.js, decimator.js), FFT (fft.js),
               noise reduction (rnnoise-filter.js, hamnoise-filter.js),
@@ -1786,6 +2203,9 @@ src/
                          jtty-tbcc-decode.js, jtty-decode-worker.js
                 Olivia   olivia-dsp.js, olivia-tx.js, olivia-rx.js,
                          olivia-decode-worker.js
+                JS8      js8/ (js8-fft.js, js8-codec.js, js8-decoder.js,
+                         js8-modulator.js, js8-jsc.js and its word list
+                         jsc-words.txt.br, js8-varicode.js), js8-worker.js
                 Hell     hell-font.js, hell-tx.js, hell-rx.js, hell-ocr.js
                 SSTV     sstv-modes.js, sstv-rx.js, sstv-tx.js,
                          sstv-decode-worker.js, sstv-encode-worker.js
@@ -2125,7 +2545,20 @@ codec code that both ends share is `src/client/audio-codec.js`.
 
 Plain JSON text frames carry the control protocol; binary frames carry
 audio and scope data (tagged, see `docs/ui-notes.md`), multiplexed on the
-same connection. See `src/server/protocol.js` for the full JSON message
+same connection. The server pings each browser every 15 seconds and drops
+one that didn't answer the last ping (browsers answer pings by
+themselves). Only the page PiRO serves may connect (the `Origin` header
+must match the `Host`), plus any `ALLOWED_ORIGINS`. A message from a
+browser may be at most 8 MiB (the largest real one, an EasyPal picture,
+is under 6 MB); a bigger one closes that browser's connection (code 1009).
+`setFrequency` takes a frequency in Hz from 1 to 9,999,999,999 (CI-V's 10
+digits), rounded to whole Hz; whether the radio covers it is up to the
+radio. `cwKey` (`{session, t, d}`) is one CW paddle element: the server
+holds it `CW_PADDLE_DELAY_MS` and keys it on its own clock; `cw-keying`
+(`{active}`) is broadcast when the paddle starts and stops keying. Live binary frames (audio, scope lines, spectra) are skipped for a
+browser with more than `LIVE_BACKLOG_BYTES` waiting (128 kB on raw audio,
+32 kB on compressed) until it is under a quarter of that; picture frames
+(SSTV, fax, Feld-Hell) and JSON are always sent. See `src/server/protocol.js` for the full JSON message
 shapes.
 
 Native LAN connections also publish `radio-connection` status events and
@@ -2172,6 +2605,28 @@ state, model/address when known and a useful error message, without credentials.
   and sets the centre frequency (sending it again retunes); decoded text
   arrives as `olivia-text` broadcasts (`{text, snr, freqOffsetHz, centreHz,
   time}`, a block of up to three characters at a time).
+  `setSttEnabled` (`{enabled}`) is the STT checkbox. The state is the
+  connect snapshot's `stt` and the `stt-status` broadcast (`{available,
+  reason, enabled, engine: 'local'|'remote'|'deepgram'|null, phase:
+  'off'|'starting'|'listening'|'paused'|'error', note, busy, waiting,
+  voice, last}`; `voice` is true in a voice mode, where the page shows the
+  checkbox);
+  each transcribed over (or piece of a long one) arrives as `stt-text`
+  (`{id, overId, part, time, durationSec, text, words: [{w, p, low?}],
+  callsigns, seconds}`; pieces of one over share `overId`), and a page that
+  connects is sent `{replace: true, overs}`.
+  `setJs8Active` (`{active, txHz?}`) starts and stops JS8 and sets the
+  transmit offset every browser shows. `js8` (`{action:
+  'send'|'cq'|'stop', text?}`) queues a message (or a CQ) for the next
+  slot, or stops one; it answers `{frames, startsAt}`, or fails with a
+  reason (JS8 off, no `STATION_CALLSIGN`, a message still going, too
+  long). JS8's state is the connect snapshot's `js8` and the `js8-status`
+  broadcast (`{available, reason, callsign, grid, canTransmit, txHz,
+  sending: {text, frames, sent, total, startsAt}|null, keyed, decoding}`).
+  Each slot's decodes, and each own frame as it goes, arrive as
+  `js8-decodes` (`{slotStartMs, dialHz, decodes: [{freq, dt, snr, text,
+  first, last, from?, to?, cmd?, num?, grid?, cq?, heartbeat?, own?}]}`);
+  a page that connects is sent `{replace: true, decodes}`, the recent ones.
   `setVaraActive` (`{active}`) starts and stops the VARA chat modem. While
   it runs it listens for calls and keys PTT itself. `vara` (`{action:
   'cq'|'connect'|'disconnect'|'send', call?, text?}`) drives it: a CQ
@@ -2300,6 +2755,13 @@ state, model/address when known and a useful error message, without credentials.
 
 - `npm test` runs every test that needs no hardware. It must pass before
   a commit.
+- GitHub Actions runs the same tests on every pull request and every push
+  to `main`, on Node 20 and 22 (`.github/workflows/test.yml`). It uses
+  `npm run test:ci` (`test/run-all.js`), which runs the files listed in
+  `npm test` but carries on after a failure and runs a failed file once
+  more. A file that passes the second time is shown as a "flaky" warning;
+  one that fails both times fails the check. `TEST_RETRIES=0` turns the
+  retry off.
 - `test/manual-tty-ui.js` drives the real web app in headless Chromium
   against a real ControlServer with a stub radio, with several browsers at
   once. It is not part of `npm test`; run it for any UI change. It needs
@@ -2326,17 +2788,29 @@ The test files:
   icom-lan-server.test.js      normal PiRO startup and real browser protocol,
                                no ALSA or physical radio needed
   icom-lan-demo.js             npm run demo:lan: synthetic radio and normal PWA
-  frame.test.js           unit tests for CI-V framing/BCD, no hardware needed
+  frame.test.js           unit tests for CI-V framing/BCD, no hardware needed;
+                           numbers that would encode as garbage are refused
   scope.test.js           unit tests for scope waveform decoding/reassembly,
                            synthetic frames, no hardware needed
   civ-driver.test.js      CivDriver integration tests against a fake serial
                            transport: request/reply matching (incl. the
                            subCmd disambiguation fix), scope-line wiring,
-                           and scope span/mode/band-range commands
+                           scope span/mode/band-range commands, and the
+                           emergency PTT off sent ahead of the queue;
+                           the queue: PTT off goes before polling but never
+                           before an earlier PTT on, late OK/NG replies are
+                           dropped, and the queue limit
   data-mode-guard.test.js DATA mode confirmed before PTT (read back, retried,
                            settle time) and watched during a transmission
   ws-server.test.js       integration test for the control layer, stubbed
-                           CivDriver, no hardware needed
+                           CivDriver, no hardware needed; also PTT released
+                           when its browser disconnects or misses pings,
+                           the WebSocket Origin check, the message size
+                           limit, setFrequency refusing bad numbers, and
+                           backpressure (live frames skipped for a browser
+                           that is behind, pictures and JSON never; a real
+                           stalled client keeps the server's backlog at the
+                           limit while another gets every frame)
   pcm-framer.test.js      unit tests for PCM frame accumulation
   opus-codec.test.js      real Opus encode/decode round-trip tests (WASM,
                            no hardware needed)
@@ -2355,16 +2829,20 @@ The test files:
   audio-bridge.test.js    integration test for the audio bridge: raw PCM,
                            per-browser Opus and ADPCM (sizes, the tone
                            decoded back, mic audio decoded and resampled,
-                           encoders only while wanted, RADE's muted path),
+                           encoders only while wanted, RADE's muted path,
+                           all three formats sent through backpressure),
                            and the startup volume-maximizing behavior: real
                            WebSocket, fake ALSA I/O, tagged binary frame format
   scope-bridge.test.js    integration test for the scope bridge: real
                            WebSocket, tagged binary frame encode/decode
                            round-trip, coexistence with audio frames
   static-server.test.js   static file server tests: content types, 404s,
-                           path-traversal protection
+                           path-traversal protection, malformed URLs (400,
+                           server keeps running)
   tls-server.test.js      confirms the server actually works over
                            HTTPS/WSS when TLS_CERT_PATH/TLS_KEY_PATH are set
+  run-all.js              not a test: runs the files in `npm test` for CI,
+                           retrying a failed file once (npm run test:ci)
   readme-version.test.js  checks the README's "Current build" number matches
                            CACHE_NAME in src/client/sw.js
   scope-display.test.mjs  unit tests for the client's waterfall color
@@ -2409,8 +2887,11 @@ The test files:
                            decoding of a synthetic "PARIS" signal through
                            the real ONNX model, silence producing no
                            output, reset() clearing buffered state
-                           without reloading the model, and API parity
-                           (setPitch()/estimatedWpm) with CW1/CW2
+                           without reloading the model, API parity
+                           (setPitch()/estimatedWpm) with CW1/CW2, the
+                           faster DFT bit-for-bit the same, and the worker
+                           thread: the same text, the main thread free
+                           while it decodes, a missing model reported
   cw-decoder-bridge.test.js
                            unit tests for the server-side bridge's
                            mode/PTT-driven attach-to-PCM-stream logic,
@@ -2453,6 +2934,17 @@ The test files:
   cw-tx-bridge.test.js    CW text through the radio's keyer: speed and
                            break-in set and put back, 30-character pieces,
                            buffer-full retries, Stop, refusals, timing
+  cw-paddle-bridge.test.js  the CW paddle timed at the server: with up to
+                           180 ms of network jitter every element and gap
+                           keyed exactly as sent (fake clock) and within
+                           2 ms on real timers; a stall moves the rest later;
+                           break-in set and put back; refusals (not CW,
+                           transmitting, another browser, a stuck paddle);
+                           key up when the browser leaves or on stop; the
+                           10-minute limit; CI-V PTT without a key line
+  key-line.test.js        CW_KEY_LINE: parsing, scripts run by hand finding
+                           it in /etc/piro/piro.env, and every program that
+                           opens the radio's serial port passing it on
   jtty-rx.test.js         JTTY receiver: list decoder, multi-frame messages,
                            two signals, noise, gaps, chunking, and WSJT-X's
                            own 10-frame sample recording
@@ -2467,6 +2959,23 @@ The test files:
                            VARA bridges (each with its real worker) joined by a
                            simulated channel: CQ, call, text both ways,
                            disconnect; PTT, DATA mode, the 30 s and idle limits
+  stt.test.js             Speech to text: what is kept of Whisper's answer
+                           (invented text, not-speech, repetition, doubtful
+                           words), callsigns from phonetics, the WAV and form,
+                           and the bridge with a stand-in whisper-server: an
+                           over cut and sent, noise not sent, PTT and
+                           non-voice modes pause it, the local server started
+                           and stopped, its failure shown; Deepgram: the
+                           settings, the request (keyterms, key, WAV), its
+                           answer, a rejected key, the key kept out of logs,
+                           DEEPGRAM_URL https:// only
+  js8.test.js             JS8: the FFT, CRC-12 and LDPC code, the word list,
+                           the message layer as JS8Call shows it, the
+                           receiver on simulated slots (four signals, one
+                           overlapping, noise), a message over several slots,
+                           and the bridge with its worker: a slot decoded and
+                           spotted, a message sent a frame a slot (the audio
+                           played decodes), Stop, the 40-frame limit
   hell.test.js            Feld-Hell port checked against fldigi's own transmit
                            code (40 half-pixel sequences, a waveform), the
                            font, and the received picture clean, in noise,
@@ -2625,7 +3134,7 @@ The test files:
 - Update this README where it applies: the operator text in Part 1, the
   protocol, the test list, the environment variables, troubleshooting.
 - Write docs and UI text in plain, short sentences.
-- If you publish a fork, set `SOURCE_CODE_URL` to it, so the footer link
+- If you publish a fork, set `SOURCE_CODE_URL` to it, so the title's link
   points to the source of the version that is actually running.
 
 ### Ported code
@@ -2643,6 +3152,7 @@ checked against the original, and the original's licence notice:
 | WSPR | wsprd and wsprsim (WSJT-X) | [`third_party/wsjtx-wsprd/`](third_party/wsjtx-wsprd/README.md) |
 | EasyPal | QSSTV (and Dream) | [`third_party/qsstv-drm/`](third_party/qsstv-drm/README.md) |
 | VarAC messages and CQ slots | hfmodem (W9SSJ) | [`third_party/hfmodem/`](third_party/hfmodem/README.md) |
+| JS8 | JS8Call-improved (Jordan Sherer and the JS8Call-improved team) | [`third_party/js8call/`](third_party/js8call/README.md) |
 | VARA HF modem | Xara (x0rro), compiled to WebAssembly, not ported | [`third_party/xara/`](third_party/xara/README.md) |
 | RNNoise (patched demo) | xiph/rnnoise | [`third_party/rnnoise/`](third_party/rnnoise/README.md) |
 
@@ -2665,7 +3175,9 @@ Several of the cooler features in this app are built on the work of others:
 - SSTV receiver = Ported to JS from slowrx by Oona Räisänen (OH2EIQ), https://github.com/windytan/slowrx
 - EasyPal (HamDRM) receiver and transmitter = Ported to JS from QSSTV by Johan Maes (ON4QZ) and M. Bos (PA0MBO), https://github.com/ON4QZ/QSSTV, whose transmitter builds on Dream by Volker Fischer (TU Darmstadt)
 - WSPR support = Ported to JS from wsprd and wsprsim (K1JT, K9AN) in WSJT-X, https://wsjtx.github.io/wsjtx/index.html
+- Speech to text = whisper.cpp by Georgi Gerganov and contributors (MIT), https://github.com/ggml-org/whisper.cpp, running OpenAI's Whisper models (MIT); used as a separate program, not bundled. Or Deepgram (https://deepgram.com), a paid cloud service, used through its HTTP API with your own key
 - VarAC messages and slots = Ported to JS from hfmodem by Saul St John (W9SSJ), https://github.com/sstjohn/hfmodem
+- JS8 = Ported to JS from JS8Call-improved by Jordan Sherer (KN4CRD) and the JS8Call-improved team, https://github.com/JS8Call-improved/JS8Call-improved
 - VARA chat = Xara, an open-source VARA-compatible modem by x0rro (MIT), compiled to WebAssembly, https://github.com/x0rro/xara. VARA is by Jose Alberto Nieto Ros (EA5HVK).
 
 ## Licence
@@ -2677,5 +3189,8 @@ Apache and MIT), which allow this. Their notices are in `third_party/` and
 `models/`.
 
 The AGPL asks that people who use your PiRO over a network can get its
-source code. Set `SOURCE_CODE_URL` to where your version's source is, and
-the page footer links to it.
+source code. The title at the top of the page ("PiRO", or your
+`SCREEN_TITLE`) is a link to it: to PiRO's repository,
+<https://github.com/StevPem/piro>, unless you set `SOURCE_CODE_URL`. If you
+run a copy you have changed, set `SOURCE_CODE_URL` to where your changed
+source is.

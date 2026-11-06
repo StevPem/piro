@@ -93,6 +93,15 @@ async function run() {
     'path traversal attempts do not reach files outside the static root'
   );
 
+  // A malformed escape used to throw out of the request handler and stop
+  // the whole process. It must be a 400, and the server must keep serving.
+  const malformed = await get(port, '/%E0%A4%A');
+  check(malformed.status === 400, `a malformed %-escape gets 400, got ${malformed.status}`);
+  const nul = await get(port, '/index.html%00.png');
+  check(nul.status === 400, `a NUL in the path gets 400, got ${nul.status}`);
+  const after = await get(port, '/');
+  check(after.status === 200, 'the server still serves after malformed requests');
+
   server.close();
   fs.rmSync(tmpRoot, { recursive: true, force: true });
   fs.rmSync(path.join(path.dirname(tmpRoot), 'secret-outside-root.txt'), { force: true });
