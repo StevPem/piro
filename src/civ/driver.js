@@ -682,7 +682,9 @@ class CivDriver extends EventEmitter {
    * keyed over CI-V.
    */
   async getTransmitting() {
-    return (await this._readSingleByteSetting(CMD.PTT, SUBCMD.PTT, 'transmit state')) === 1;
+    const value = await this._readSingleByteSetting(CMD.PTT, SUBCMD.PTT, 'transmit state');
+    if (value !== 0 && value !== 1) throw new Error(`Unexpected transmit state reply: ${value}`);
+    return value === 1;
   }
 
   // ---- CW keyer (sending text) ----

@@ -1,0 +1,21 @@
+{
+  "target": "localhost synthetic radio",
+  "rfTransmission": false,
+  "initialDeadline": 1794004171232,
+  "finished": true,
+  "passed": true,
+  "elapsedSeconds": 30.584,
+  "radio": {
+    "state": "disconnected",
+    "transport": "lan",
+    "managed": true,
+    "manual": true,
+    "radioAddr": 182,
+    "model": "IC-7300MK2",
+    "idleTimeoutMinutes": 1,
+    "idleDisconnectAt": null,
+    "disconnectReason": "idle",
+    "message": "Disconnected after inactivity."
+  },
+  "browserStillConnected": true
+}

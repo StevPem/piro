@@ -3,6 +3,7 @@
 const fs = require('fs');
 const path = require('path');
 const { createRadio, wireRadioConnection } = require('./radio-connection');
+const { radioIdleSettingsPath, loadRadioIdleTimeout, saveRadioIdleTimeout } = require('./radio-idle-settings');
 const { parseKeyLine } = require('../civ');
 const { ControlServer, parseAllowedOrigins } = require('./ws-server');
 const { AudioBridge } = require('./audio-bridge');
@@ -416,7 +417,16 @@ async function main() {
   });
   if (ALLOWED_ORIGINS.length) console.log(`WebSocket connections also allowed from: ${ALLOWED_ORIGINS.join(', ')}`);
   const boundPort = await controlServer.listen();
-  wireRadioConnection(civ, controlServer);
+  const idleSettings = civ.session ? radioIdleSettingsPath() : null;
+  controlServer.radioTxBusy = () => Boolean(cwTxBridge?.transmitting || cwPaddleBridge?.active
+    || ttyBridge?.transmitting || sstvTxBridge?.transmitting || easypalTxBridge?.transmitting
+    || wsprBridge?.transmitting || js8Bridge?.state?.sending
+    || ft8Bridge?._pendingTxMessage || ft8Bridge?._pttReleaseTimer
+    || varaBridge?.state?.pending || varaBridge?.state?.buffer > 0);
+  wireRadioConnection(civ, controlServer, {
+    idleTimeoutMinutes: loadRadioIdleTimeout(idleSettings),
+    saveIdleTimeout: (minutes) => saveRadioIdleTimeout(idleSettings, minutes),
+  });
   controlServer.on('radio-disconnected', () => {
     ttyBridge?.abort();
     sstvTxBridge?.abort();

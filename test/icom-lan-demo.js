@@ -15,6 +15,7 @@ function serverEnvironment(peer) {
     AUDIO_SAMPLE_RATE: '48000', AUDIO_CHANNELS: '1', WS_PORT: '0',
     CIV_SCOPE_ENABLED: '1', STATION_CALLSIGN: '', STATION_GRID: '',
     FREEDV_REPORTER_ENABLED: '0', WSPR_UNATTENDED: '0', WSPR_UPLOAD: '0',
+    RADIO_IDLE_SETTINGS_PATH: '', // Fixtures never read/write the operator's saved preference.
     SCREEN_TITLE: 'PiRO offline LAN demo' };
 }
 

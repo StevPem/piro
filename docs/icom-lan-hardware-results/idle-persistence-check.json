@@ -1,0 +1,13 @@
+{
+  "time": "2026-11-06T22:34:52.735Z",
+  "target": "isolated localhost radio peer",
+  "rfTransmission": false,
+  "exitCodes": [
+    0,
+    0
+  ],
+  "loadedDisabled": true,
+  "reloadedMinutes": 37,
+  "settingsMode": 384,
+  "passed": true
+}

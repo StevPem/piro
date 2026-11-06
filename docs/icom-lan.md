@@ -106,7 +106,26 @@ audio and scope; queued transmissions are never resumed.
 
 A deliberate disconnect pauses automatic reconnect until Connect is selected.
 This choice lasts for the running server process; normal automatic connection
-at server startup is unchanged. The manager is available for native LAN;
+at server startup is unchanged.
+
+In the same menu, **Disconnect when idle** enables automatic release after
+an editable number of minutes (1–1440, default 60). Uncheck it to turn the
+timeout off, then choose **Save timeout**. This preference is shared and saved
+for the server user in `~/.config/piro/radio-connection.json` (or under
+`XDG_CONFIG_HOME`); it survives browser and server restarts. The advanced
+`RADIO_IDLE_SETTINGS_PATH` variable can select a different settings file.
+
+Idle means no operator action from any browser. Meter polling, audio/scope
+traffic, pings and automatic mode restoration do not reset the clock. User
+interaction, real radio-control requests and transmission activity do.
+Active/queued transmissions or unknown PTT defer expiry. Before automatic
+release, PiRO reads actual transmit state and proceeds only on confirmed
+receive; failed reads defer rather than assume the radio is idle. New
+operator activity during that read cancels the pending idle release.
+
+An idle release uses the same safe shutdown path as **Disconnect** and stays
+disconnected until **Connect** is chosen. The browser connection remains up.
+ The manager is available for native LAN;
 USB behavior is unchanged. Radio address, credentials and ports remain in
 the private server configuration rather than the browser.
 
@@ -243,3 +262,10 @@ Record radio firmware, PiRO commit, settings and observed results.
 - [ ] Exercise packet delay/loss on a test path, stream release by the radio,
   radio restart, bad ports and a VPN path. Confirm bounded reconnect and
   understandable status without stale or falsely confirmed PTT state.
+
+
+Idle API: `setRadioIdleTimeout {minutes}` saves `0` for Off or `1–1440` minutes.
+`radioActivity {}` records operator interaction without accepting a client
+clock. Automatic client synchronization marks its requests `background:true`.
+Test fixtures set `RADIO_IDLE_SETTINGS_PATH` to an empty string to keep their
+preferences in memory and avoid touching the real operator configuration.

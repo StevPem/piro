@@ -43,6 +43,20 @@
             <p class="radio-manager__heading">Radio connection</p>
             <p id="radio-connection-message">This connection is shared by all browsers.</p>
             <button class="chip radio-manager__action" id="radio-connection-action" type="button" disabled>Disconnect</button>
+            <form class="radio-idle" id="radio-idle-form">
+              <label class="radio-idle__toggle" for="radio-idle-enabled">
+                <input id="radio-idle-enabled" type="checkbox" checked disabled />
+                <span>Disconnect when idle</span>
+              </label>
+              <div class="radio-idle__minutes">
+                <label for="radio-idle-minutes">Minutes</label>
+                <input id="radio-idle-minutes" type="number" min="1" max="1440" step="1" value="60" inputmode="numeric" required disabled />
+              </div>
+              <p class="radio-idle__hint">No operator activity in any browser. Active transmissions keep the radio connected.</p>
+              <button class="chip radio-manager__action" id="radio-idle-save" type="submit" disabled>Save timeout</button>
+              <p class="radio-idle__status" id="radio-idle-status" role="status" hidden></p>
+              <p class="radio-manager__error" id="radio-idle-error" role="alert" hidden></p>
+            </form>
             <p class="radio-manager__error" id="radio-connection-error" role="alert" hidden></p>
           </div>
         </details>

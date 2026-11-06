@@ -5426,3 +5426,20 @@ Items 8 and 15 from the code review, and two requests. Not tested on air
   80ms reorder window so a20ms tick cannot skip its retransmit opportunity.
 - Verified96 LAN subtests, existing CI-V driver tests, syntax/diff and version
   checks. Cache/build v137; physical acceptance is recorded separately.
+
+
+### Shared idle radio disconnect (v138)
+
+- The radio menu includes an enabled/default 60-minute idle option, custom
+  minutes and Off. Saved settings are shared by browsers and persist on the
+  server; failures leave the prior timeout in effect.
+- Operator gestures send leading/trailing throttled activity, not recurring
+  keepalive. Polling, audio, pings and background synchronization do not count.
+- Server command intent counts before asynchronous I/O. Active or unknown PTT,
+  CW and queued modem work defer expiry; actual receive is confirmed before
+  closing, and a concurrent new action cancels the pending expiry.
+- Expiry reuses safe deliberate disconnect and requires explicit reconnect.
+- Full validation also exposed an older DeepCW shutdown N-API race. Native
+  model loading/inference now settles before worker termination, with transmit
+  producers cancelled before waiting for decoder shutdown.
+- Build/cache v138. Test records are in the hardware validation report.

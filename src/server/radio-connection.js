@@ -41,7 +41,8 @@ function createRadio(env = process.env) {
 // Keeps deliberate disconnection separate from an interrupted LAN session.
 // The latest requested state wins; a pending open can always be cancelled.
 class RadioConnectionManager {
-  constructor(civ, controlServer) {
+  constructor(civ, controlServer, { idleTimeoutMinutes = 60, now = Date.now,
+    setTimer = setTimeout, clearTimer = clearTimeout, saveIdleTimeout } = {}) {
     this.civ = civ;
     this.controlServer = controlServer;
     this.manual = false;
@@ -50,6 +51,24 @@ class RadioConnectionManager {
     this._closing = false;
     this._intent = 0;
     this._cancelOpen = null;
+    this._validateIdleTimeout(idleTimeoutMinutes);
+    this.idleTimeoutMinutes = idleTimeoutMinutes;
+    this._now = now;
+    this._setIdleTimer = setTimer;
+    this._clearIdleTimer = clearTimer;
+    this._saveIdleTimeout = saveIdleTimeout;
+    this._settingsTask = Promise.resolve();
+    this._lastActivityAt = now();
+    this._idleTimer = null;
+    this._idleProbe = null;
+    this._idleStopped = false;
+    this._wasBusy = false;
+    this._transmitting = { ptt: false, cw: false };
+    this._disconnectReason = null;
+    this._onPttActivity = (active) => this._transmitActivity('ptt', active);
+    this._onCwActivity = (active) => this._transmitActivity('cw', active);
+    controlServer.on('ptt', this._onPttActivity);
+    controlServer.on('cw-keying', this._onCwActivity);
   }
 
   get ready() {
@@ -57,15 +76,159 @@ class RadioConnectionManager {
       && this.civ.session.connected && this.civ.prepared;
   }
 
-  publish(data, deliberate = false) {
-    if (!deliberate && (this._closing || this.manual)) return;
-    const status = { transport: 'lan', managed: true, manual: this.manual,
-      radioAddr: this.civ.radioAddr, ...(this.civ.profile ? { model: this.civ.profile.name } : {}), ...data };
-    this.controlServer.state.radioConnection = status;
-    this.controlServer.broadcastJsonEvent('radio-connection', status);
+  _validateIdleTimeout(minutes) {
+    if (!Number.isInteger(minutes) || minutes < 0 || minutes > 1440) {
+      throw new Error('"minutes" must be an integer from 0 to 1440 (0 disables idle disconnect)');
+    }
   }
 
-  setConnected(connected) {
+  get idleDisconnectAt() {
+    return this.ready && !this._idleStopped && this.idleTimeoutMinutes > 0
+      ? this._lastActivityAt + this.idleTimeoutMinutes * 60000 : null;
+  }
+
+  async setIdleTimeout(minutes) {
+    this._validateIdleTimeout(minutes);
+    // Saving settings is operator intent too. Protect the link while the
+    // persistence callback is pending, not only once that write completes.
+    this.recordActivity();
+    const task = this._settingsTask.then(async () => {
+      // Do not publish a setting that could not be saved. Serialize writes so
+      // two browsers cannot let an older slow save replace the latest choice.
+      if (this._saveIdleTimeout) await this._saveIdleTimeout(minutes);
+      this.idleTimeoutMinutes = minutes;
+      if (this.ready) this._lastActivityAt = this._now();
+      this.publish({ ...this.controlServer.state.radioConnection }, true);
+      return this.controlServer.state.radioConnection;
+    });
+    this._settingsTask = task.catch(() => {});
+    return task;
+  }
+
+  recordActivity() {
+    if (!this.ready || this._idleStopped || this.idleTimeoutMinutes === 0) return this.controlServer.state.radioConnection;
+    this._lastActivityAt = this._now();
+    this.publish({ ...this.controlServer.state.radioConnection }, true);
+    return this.controlServer.state.radioConnection;
+  }
+
+  _transmitActivity(kind, active) {
+    if (typeof active !== 'boolean' || active === this._transmitting[kind]) return;
+    this._transmitting[kind] = active;
+    // A repeated synthetic PTT-off notification on reconnect is not usage.
+    // Real start/end transitions give operators a fresh idle interval.
+    this.recordActivity();
+  }
+
+  _busy() {
+    const cs = this.controlServer;
+    return cs.state.ptt === true || cs.state.ptt === null || cs.state.cwKeying === true
+      || Boolean(cs.cwTxBusy?.()) || Boolean(cs.radioTxBusy?.());
+  }
+
+  _stopIdleCheck() {
+    if (this._idleTimer !== null) this._clearIdleTimer(this._idleTimer);
+    this._idleTimer = null;
+  }
+
+  _armIdleCheck() {
+    this._stopIdleCheck();
+    const deadline = this.idleDisconnectAt;
+    if (this.controlServer.state.radioConnection) {
+      this.controlServer.state.radioConnection.idleDisconnectAt = deadline;
+    }
+    if (deadline === null || this._idleProbe) return;
+    this._idleTimer = this._setIdleTimer(() => {
+      this._idleTimer = null;
+      this.checkIdle();
+    }, Math.max(1, Math.min(1000, deadline - this._now())));
+    this._idleTimer?.unref?.();
+  }
+
+  checkIdle() {
+    this._stopIdleCheck();
+    if (this.idleDisconnectAt === null) return false;
+    const now = this._now();
+    if (this._busy()) {
+      this._lastActivityAt = now;
+      this._wasBusy = true;
+      // Keep fresh-client snapshots accurate without sending status each tick.
+      if (this.controlServer.state.radioConnection) {
+        this.controlServer.state.radioConnection.idleDisconnectAt = this.idleDisconnectAt;
+      }
+    } else if (this._wasBusy) {
+      this._wasBusy = false;
+      this._lastActivityAt = now;
+      this.publish({ ...this.controlServer.state.radioConnection }, true);
+      return false;
+    } else if (now >= this.idleDisconnectAt) {
+      // Front-panel/keyer transmission may not have produced a browser PTT
+      // event. Confirm receive through the bounded CI-V read before closing.
+      if (typeof this.civ.getTransmitting === 'function') {
+        this._confirmIdleReceive();
+        return false;
+      }
+      this.setConnected(false, { reason: 'idle' });
+      return true;
+    }
+    this._armIdleCheck();
+    return false;
+  }
+
+  _confirmIdleReceive() {
+    if (this._idleProbe) return;
+    const intent = this._intent;
+    const generation = this.civ.session.generation;
+    const activityAt = this._lastActivityAt;
+    const minutes = this.idleTimeoutMinutes;
+    const current = () => this.idleDisconnectAt !== null && this._intent === intent
+      && this.civ.session.generation === generation && this._lastActivityAt === activityAt
+      && this.idleTimeoutMinutes === minutes && this._now() >= this.idleDisconnectAt;
+    const defer = () => {
+      // No confirmed receive means no idle release. Grant another interval
+      // without noisy broadcasts or repeatedly probing an already expired time.
+      this._lastActivityAt = this._now();
+    };
+    this._idleProbe = Promise.resolve().then(() => {
+      if (current()) return this.civ.getTransmitting();
+      return null;
+    }).then((transmitting) => {
+      if (!current()) return;
+      if (transmitting !== false || this._busy()) {
+        defer();
+        return;
+      }
+      this.setConnected(false, { reason: 'idle' });
+    }).catch(() => {
+      if (current()) defer();
+    }).finally(() => {
+      this._idleProbe = null;
+      this._armIdleCheck();
+    });
+  }
+
+  stopIdleTimer() {
+    this._idleStopped = true;
+    this._stopIdleCheck();
+    this.controlServer.off('ptt', this._onPttActivity);
+    this.controlServer.off('cw-keying', this._onCwActivity);
+  }
+
+  publish(data, deliberate = false) {
+    if (!deliberate && (this._closing || this.manual)) return;
+    const status = { ...data, transport: 'lan', managed: true, manual: this.manual,
+      radioAddr: this.civ.radioAddr, ...(this.civ.profile ? { model: this.civ.profile.name } : {}),
+      idleTimeoutMinutes: this.idleTimeoutMinutes, idleDisconnectAt: this.idleDisconnectAt,
+      disconnectReason: this._disconnectReason };
+    if (this._disconnectReason === 'idle' && ['disconnecting', 'disconnected'].includes(status.state)) {
+      status.message = 'Disconnected after inactivity.';
+    }
+    this.controlServer.state.radioConnection = status;
+    this.controlServer.broadcastJsonEvent('radio-connection', status);
+    this._armIdleCheck();
+  }
+
+  setConnected(connected, { reason = 'manual' } = {}) {
     if (typeof connected !== 'boolean') throw new Error('"connected" must be a boolean');
     if (!connected && this.manual && !this._task && this.controlServer.state.radioConnection?.state === 'disconnected') {
       return this.controlServer.state.radioConnection;
@@ -73,12 +236,16 @@ class RadioConnectionManager {
     // An already desired automatic connection may be retrying by itself.
     // Do not start a second association beside its pending retry timer.
     if (connected && !this.manual && !this.civ.session.stopped && this.civ.session.state !== 'failed') {
+      this.recordActivity();
       return this.controlServer.state.radioConnection;
     }
     this.manual = !connected;
+    this._disconnectReason = connected ? null : reason;
+    if (connected) this._lastActivityAt = this._now();
     ++this._intent;
     this.civ.manuallyDisconnected = !connected;
     if (!connected) {
+      this._stopIdleCheck();
       // Stop retrying immediately, while retaining the association long enough
       // for close() to stop CW/PTT and restore the radio's input settings.
       this.civ.session.stopped = true;
@@ -106,6 +273,7 @@ class RadioConnectionManager {
       this.publish({ state: 'failed', message: err.message }, true);
     }).finally(() => {
       this._task = null;
+      this._armIdleCheck();
       const state = this.controlServer.state.radioConnection?.state;
       if ((this.manual && !['disconnected', 'failed'].includes(state)) || (!this.manual && state === 'disconnected')) this._start();
     });
@@ -129,6 +297,7 @@ class RadioConnectionManager {
           this.civ.session.stopped = false;
           this.civ.capture.start();
           this.civ.playback.start();
+          this._lastActivityAt = this._now();
           this.publish({ state: 'connected' }, true);
           return;
         }
@@ -140,8 +309,10 @@ class RadioConnectionManager {
           await this.civ.open();
           if (intent !== this._intent) continue;
           if (this.manual) continue;
+          this._connecting = false;
           this.civ.capture.start();
           this.civ.playback.start();
+          this._lastActivityAt = this._now();
           this.publish({ state: 'connected' }, true);
         } catch (err) {
           if (intent !== this._intent) continue;
@@ -155,8 +326,8 @@ class RadioConnectionManager {
 
 // Uses the existing rig-error UI plus a structured status event/snapshot.
 // No credential or token is ever put in browser state.
-function wireRadioConnection(civ, controlServer) {
-  const manager = civ.session ? new RadioConnectionManager(civ, controlServer) : null;
+function wireRadioConnection(civ, controlServer, options = {}) {
+  const manager = civ.session ? new RadioConnectionManager(civ, controlServer, options) : null;
   controlServer.radioConnectionManager = manager;
   const publish = (data) => {
     if (manager) { manager.publish(data); return; }

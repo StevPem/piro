@@ -9,6 +9,7 @@ const { EventEmitter } = require('events');
 const { WebSocketServer } = require('ws');
 const { REQUEST, EVENT, BINARY_TYPE, makeResult, makeError, makeEvent } = require('./protocol');
 const { createStaticHandler } = require('./static-server');
+const REQUEST_TYPES = new Set(Object.values(REQUEST));
 
 // Operator notes (REQUEST.POST_NOTE)
 const NOTES_KEEP = 3;
@@ -706,12 +707,31 @@ class ControlServer extends EventEmitter {
       const stopping = [REQUEST.ABORT_CW, REQUEST.ABORT_TTY, REQUEST.ABORT_SSTV, REQUEST.ABORT_EASYPAL].includes(type)
         || (type === REQUEST.SET_PTT && msg.value === false);
       if (this.radioConnectionManager && !this.radioConnectionManager.ready
-        && ![REQUEST.SET_RADIO_CONNECTED, REQUEST.SET_AUDIO_CODEC, REQUEST.POST_NOTE,
+        && ![REQUEST.SET_RADIO_CONNECTED, REQUEST.SET_RADIO_IDLE_TIMEOUT, REQUEST.RADIO_ACTIVITY,
+          REQUEST.SET_AUDIO_CODEC, REQUEST.POST_NOTE,
           REQUEST.GET_SSTV_PICTURES, REQUEST.GET_BAND_CONDITIONS].includes(type)
         && !deactivating && !stopping) {
         throw new Error('Radio is disconnected or changing connection; connect the radio first');
       }
+      const operatorActivity = REQUEST_TYPES.has(type) && msg.background !== true
+        && !type.startsWith('get') && ![REQUEST.SET_AUDIO_CODEC, REQUEST.RADIO_ACTIVITY,
+          REQUEST.SET_RADIO_IDLE_TIMEOUT, REQUEST.SET_RADIO_CONNECTED].includes(type);
+      // Count intent before awaiting radio I/O: an idle receive probe may
+      // already be pending, and must not close the link under a new command.
+      if (operatorActivity) this.radioConnectionManager?.recordActivity();
       switch (type) {
+        case REQUEST.SET_RADIO_IDLE_TIMEOUT: {
+          if (!this.radioConnectionManager) throw new Error('Radio idle disconnect is available for native LAN connections only');
+          const radioConnection = await this.radioConnectionManager.setIdleTimeout(msg.minutes);
+          ws.send(makeResult(id, { radioConnection }));
+          break;
+        }
+        case REQUEST.RADIO_ACTIVITY: {
+          if (!this.radioConnectionManager) throw new Error('Radio activity is available for native LAN connections only');
+          this.radioConnectionManager.recordActivity();
+          ws.send(makeResult(id, {}));
+          break;
+        }
         case REQUEST.SET_RADIO_CONNECTED: {
           if (typeof msg.connected !== 'boolean') throw new Error('"connected" must be a boolean');
           if (!this.radioConnectionManager) throw new Error('Radio connection management is available for native LAN connections only');
@@ -1405,6 +1425,9 @@ class ControlServer extends EventEmitter {
         default:
           throw new Error(`Unknown request type "${type}"`);
       }
+      // A completed operation grants a fresh interval as well. Polls, codec
+      // negotiation and explicit background synchronization remain excluded.
+      if (operatorActivity) this.radioConnectionManager?.recordActivity();
     } catch (err) {
       // Also logged server-side, not just sent back to the requesting
       // client — the client-side error banner (see app.js's showError())
@@ -1445,6 +1468,7 @@ class ControlServer extends EventEmitter {
   /** Broadcast a JSON event (see protocol.js `EVENT` types) to all clients. */
   broadcastJsonEvent(type, data) {
     this._broadcast(makeEvent(type, data));
+    if (type === EVENT.CW_KEYING) this.emit('cw-keying', data.active);
   }
 
   /**
@@ -1629,6 +1653,7 @@ class ControlServer extends EventEmitter {
   }
 
   close() {
+    this.radioConnectionManager?.stopIdleTimer();
     clearTimeout(this._notesIdleTimer);
     clearTimeout(this._notesEmptyTimer);
     if (this._pttWatchdogTimer) {

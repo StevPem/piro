@@ -283,3 +283,38 @@ and scope recovered (98 audio and60 scope frames in the short observation),
 with the same PID3098861 and zero restarts. Disconnect took24ms and Connect
 106ms in this single LAN observation. No RF was transmitted. The radio was
 left connected. See `icom-lan-hardware-results/usb-reconnect-fix.json`.
+
+
+## Shared idle disconnect (build v138)
+
+Default60 minutes, custom1–1440 minutes and Off are configured in the radio
+menu. Settings persist for the server user using an atomic private JSON file;
+the successful save is published to all browsers. Operator gestures and
+operator command intent count; polling, raw audio, pings and marked background
+synchronization do not. The trailing gesture send prevents early expiry from
+throttling. Active/unknown transmit state or queued modem work defers expiry.
+The actual radio must confirm receive before automatic release, and new
+activity during that asynchronous read cancels the pending expiry.
+
+Fake-clock regressions cover exact expiry, activity, Off, transmission/end,
+unknown physical state, failed read, concurrent activity/commands, serialized
+saves, write failures and atomic persistence. Chrome verified custom values,
+Off and shared two-browser state, unsaved-edit preservation,44px targets and
+no overflow at375/414/768/1024/1440px. A one-minute wall-clock check on the
+synthetic radio reached deliberate idle-disconnected status while browsers,
+audio and polling remained active. The observation attached partway through
+that minute; its elapsedSeconds field is observer duration, not total timeout.
+A normal-process restart check loaded Off, saved37 minutes, restarted and
+loaded37 again; both shutdowns exited cleanly and the settings file was0600.
+No RF was attached to these checks.
+
+The full final tree passed `TEST_RETRIES=0 npm run test:ci`: **65/65 groups,
+118/118 LAN subtests,364 seconds**, with changed JavaScript syntax and diff
+checks. Initial tests exposed a stale reconnect-status readiness marker and
+an older native DeepCW shutdown race. The readiness test now waits for scope
+recovery; graceful native cleanup is recorded in commitbc22aef. Three fresh
+child-process regressions close during model loading/inference/failure and
+verify termination occurs only after native work settles. Transmit producers
+are cancelled before shutdown waits for decoder cleanup.
+
+Fixture/browser observations are in `icom-lan-hardware-results/idle-*.json`.

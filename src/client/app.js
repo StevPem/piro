@@ -1030,8 +1030,35 @@ const radioManager = document.getElementById('radio-connection-manager');
 const radioConnectionAction = document.getElementById('radio-connection-action');
 const radioConnectionMessage = document.getElementById('radio-connection-message');
 const radioConnectionError = document.getElementById('radio-connection-error');
+const radioIdleForm = document.getElementById('radio-idle-form');
+const radioIdleEnabled = document.getElementById('radio-idle-enabled');
+const radioIdleMinutes = document.getElementById('radio-idle-minutes');
+const radioIdleSave = document.getElementById('radio-idle-save');
+const radioIdleStatus = document.getElementById('radio-idle-status');
+const radioIdleError = document.getElementById('radio-idle-error');
 let radioConnectionInfo = null;
 let radioConnectionRequestPending = false;
+let radioIdleRequestPending = false;
+let radioIdleRenderedMinutes = null;
+let lastRadioActivitySent = -Infinity;
+let pendingRadioActivityTimer = null;
+const RADIO_ACTIVITY_INTERVAL_MS = 10000;
+
+function syncRadioIdleSettings() {
+  if (!canRecordRadioActivity()) clearPendingRadioActivity();
+  if (!radioIdleForm) return;
+  const minutes = radioConnectionInfo?.idleTimeoutMinutes;
+  if (Number.isInteger(minutes) && minutes !== radioIdleRenderedMinutes) {
+    radioIdleEnabled.checked = minutes > 0;
+    if (minutes > 0) radioIdleMinutes.value = String(minutes);
+    radioIdleRenderedMinutes = minutes;
+  }
+  const available = link.connected && radioConnectionInfo?.managed
+    && Number.isInteger(minutes) && !radioIdleRequestPending;
+  radioIdleEnabled.disabled = !available;
+  radioIdleMinutes.disabled = !available || !radioIdleEnabled.checked;
+  radioIdleSave.disabled = !available;
+}
 
 function radioReadyForPolling() {
   return radioConnectionInfo?.transport !== 'lan' || radioConnectionInfo.state === 'connected';
@@ -1062,6 +1089,7 @@ function showRadioConnection(info) {
   const previous = radioConnectionInfo;
   radioConnectionInfo = info;
   syncRadioControls();
+  syncRadioIdleSettings();
   if (!radioLinkStatus || !radioManager) return;
   radioManager.hidden = info?.transport !== 'lan';
   if (radioManager.hidden) {
@@ -1106,6 +1134,77 @@ radioConnectionAction?.addEventListener('click', async () => {
     showRadioConnection(radioConnectionInfo);
   }
 });
+radioIdleEnabled?.addEventListener('change', () => {
+  radioIdleStatus.hidden = true;
+  radioIdleError.hidden = true;
+  syncRadioIdleSettings();
+});
+radioIdleMinutes?.addEventListener('input', () => {
+  radioIdleStatus.hidden = true;
+  radioIdleError.hidden = true;
+});
+radioIdleForm?.addEventListener('submit', async (event) => {
+  event.preventDefault();
+  if (radioIdleSave.disabled) return;
+  const minutes = radioIdleEnabled.checked ? Number(radioIdleMinutes.value) : 0;
+  if (!Number.isSafeInteger(minutes) || minutes < 0 || minutes > 1440
+    || (radioIdleEnabled.checked && minutes < 1)) {
+    radioIdleError.textContent = 'Choose a whole number of minutes from 1 to 1440, or turn idle disconnect off.';
+    radioIdleError.hidden = false;
+    return;
+  }
+  radioIdleRequestPending = true;
+  radioIdleStatus.hidden = true;
+  radioIdleError.hidden = true;
+  syncRadioIdleSettings();
+  try {
+    const data = await link.request('setRadioIdleTimeout', { minutes });
+    if (data.radioConnection) showRadioConnection(data.radioConnection);
+    radioIdleStatus.textContent = minutes === 0
+      ? 'Automatic disconnect is off.'
+      : `Saved: disconnect after ${minutes} minute${minutes === 1 ? '' : 's'} without activity.`;
+    radioIdleStatus.hidden = false;
+  } catch (err) {
+    radioIdleError.textContent = `Could not save idle timeout: ${err.message}`;
+    radioIdleError.hidden = false;
+  } finally {
+    radioIdleRequestPending = false;
+    syncRadioIdleSettings();
+  }
+});
+
+function canRecordRadioActivity() {
+  const info = radioConnectionInfo;
+  return link.connected && info?.managed && info.state === 'connected' && info.idleTimeoutMinutes > 0;
+}
+
+function clearPendingRadioActivity() {
+  if (pendingRadioActivityTimer !== null) clearTimeout(pendingRadioActivityTimer);
+  pendingRadioActivityTimer = null;
+}
+
+function sendRadioActivity() {
+  lastRadioActivitySent = performance.now();
+  link.request('radioActivity').catch(() => {});
+}
+
+function recordRadioActivity(event) {
+  if (!event.isTrusted || !(event.target instanceof Element) || !event.target.closest('main') || !canRecordRadioActivity()) return;
+  const remaining = RADIO_ACTIVITY_INTERVAL_MS - (performance.now() - lastRadioActivitySent);
+  if (remaining <= 0) {
+    clearPendingRadioActivity();
+    sendRadioActivity();
+  } else if (pendingRadioActivityTimer === null) {
+    // This one trailing send belongs to an actual suppressed gesture, not a
+    // periodic heartbeat. Never expire earlier than the last user action.
+    pendingRadioActivityTimer = setTimeout(() => {
+      pendingRadioActivityTimer = null;
+      if (canRecordRadioActivity()) sendRadioActivity();
+    }, Math.ceil(remaining));
+  }
+}
+document.addEventListener('pointerdown', recordRadioActivity, { capture: true, passive: true });
+document.addEventListener('keydown', recordRadioActivity, { capture: true });
 radioManager?.addEventListener('keydown', (event) => {
   if (event.code === 'Space' || event.key === 'Enter') event.stopPropagation();
   if (event.key === 'Escape') {
@@ -1260,7 +1359,7 @@ link.addEventListener('connected', (event) => {
     if (!hasRequestedDefaultSpan) {
       hasRequestedDefaultSpan = true;
       const defaultOption = SPAN_OPTIONS.find((o) => o.isDefault) || SPAN_OPTIONS[0];
-      requestScopeSpan(defaultOption);
+      requestScopeSpan(defaultOption, { background: true });
     }
   } else {
     scopePlaceholder.hidden = false;
@@ -1276,6 +1375,7 @@ link.addEventListener('close', () => {
   setLed('disconnected', 'Disconnected \u2014 retrying\u2026');
   if (radioConnectionAction) radioConnectionAction.disabled = true;
   syncRadioControls();
+  syncRadioIdleSettings();
   stopMeterPolling();
   stopFunctionPolling();
 });
@@ -1823,17 +1923,17 @@ function syncAppModesOnConnect(data) {
   const radio = data.mode?.mode;
   const fits = sstvActive || freeDvActive ? radio === 'LSB' || radio === 'USB' : radio === 'USB';
   if (!serverAny && appModeActive() && fits) {
-    if (ft8Active) link.request('setFt8Active', { active: true }).catch(() => {});
-    if (wsprActive) link.request('setWsprActive', { active: true }).catch(() => {});
-    if (freeDvActive) link.request('setFreeDvActive', { active: true }).catch(() => {});
-    if (jttyActive) link.request('setJttyActive', { active: true, txHz: ttyFreqByMode.JTTY }).catch(() => {});
-    if (oliviaActive) link.request('setOliviaActive', { active: true, centreHz: ttyFreqByMode.OLIVIA }).catch(() => {});
-    if (js8Active) link.request('setJs8Active', { active: true, txHz: ttyFreqByMode.JS8 }).catch(() => {});
-    if (varaActive) link.request('setVaraActive', { active: true }).catch(() => {});
-    if (hellActive) link.request('setHellActive', { active: true, toneHz: ttyFreqByMode.HELL }).catch(() => {});
-    if (sstvActive) link.request('setSstvActive', { active: true }).catch(() => {});
-    if (faxActive) link.request('setFaxActive', { active: true }).catch(() => {});
-    if (easypalActive) link.request('setEasypalActive', { active: true }).catch(() => {});
+    if (ft8Active) link.request('setFt8Active', { active: true, background: true }).catch(() => {});
+    if (wsprActive) link.request('setWsprActive', { active: true, background: true }).catch(() => {});
+    if (freeDvActive) link.request('setFreeDvActive', { active: true, background: true }).catch(() => {});
+    if (jttyActive) link.request('setJttyActive', { active: true, txHz: ttyFreqByMode.JTTY, background: true }).catch(() => {});
+    if (oliviaActive) link.request('setOliviaActive', { active: true, centreHz: ttyFreqByMode.OLIVIA, background: true }).catch(() => {});
+    if (js8Active) link.request('setJs8Active', { active: true, txHz: ttyFreqByMode.JS8, background: true }).catch(() => {});
+    if (varaActive) link.request('setVaraActive', { active: true, background: true }).catch(() => {});
+    if (hellActive) link.request('setHellActive', { active: true, toneHz: ttyFreqByMode.HELL, background: true }).catch(() => {});
+    if (sstvActive) link.request('setSstvActive', { active: true, background: true }).catch(() => {});
+    if (faxActive) link.request('setFaxActive', { active: true, background: true }).catch(() => {});
+    if (easypalActive) link.request('setEasypalActive', { active: true, background: true }).catch(() => {});
     return;
   }
   applyAppModes(data);
@@ -5351,9 +5451,9 @@ function updateSpanSliderFromRange(lo, hi) {
   scopeSpanValueEl.textContent = SPAN_OPTIONS[index].label;
 }
 
-function requestScopeSpan(option) {
+function requestScopeSpan(option, { background = false } = {}) {
   link
-    .request('setScopeSpan', { spanHz: option.spanHz })
+    .request('setScopeSpan', { spanHz: option.spanHz, background })
     .catch((err) => showError(`Couldn't set scope span: ${err.message}`));
   // No optimistic slider/label update beyond what the 'input' handler
   // already applied — updateSpanSliderFromRange() will reflect the

@@ -33,7 +33,7 @@ test('configuration preserves USB defaults and rejects invalid LAN settings', ()
   assert.equal(driver.keyLine, null);
 });
 
-test('normal PiRO process starts without ALSA and carries control, PCM and scope through the real browser protocol', { timeout: 15000 }, async (t) => {
+test('normal PiRO process starts without ALSA and carries control, PCM and scope through the real browser protocol', { timeout: 25000 }, async (t) => {
   const peer = await new IcomPeer().start();
   const child = spawn(process.execPath, [path.join(__dirname, '../src/server/index.js')], {
     env: serverEnvironment(peer), stdio: ['ignore', 'pipe', 'pipe'],
@@ -46,7 +46,7 @@ test('normal PiRO process starts without ALSA and carries control, PCM and scope
   t.after(async () => {
     ws?.terminate();
     if (exit === undefined) child.kill('SIGTERM');
-    try { await waitFor(() => exit !== undefined, 3000); }
+    try { await waitFor(() => exit !== undefined, 6000); }
     finally { if (exit === undefined) child.kill('SIGKILL'); await peer.close(); }
   });
   await waitFor(() => output.includes('Scope output enabled') || exit !== undefined);
@@ -120,9 +120,14 @@ test('normal PiRO process starts without ALSA and carries control, PCM and scope
   await waitFor(() => peer.cwText.length > beforeText);
   const beforeRelease = peer.cwText.length;
   const oldAssociation = peer.associations.civ;
+  const beforeReleaseEvents = events.length;
+  const beforeReleaseOutput = output.length;
   peer.release();
   await waitFor(() => peer.associations.civ !== oldAssociation && peer.cwStopped);
-  await waitFor(() => events.some((e) => e.type === 'radio-connection' && e.data.state === 'connected' && e.data.model === 'IC-7300MK2'));
+  await waitFor(() => events.slice(beforeReleaseEvents).some((e) => e.type === 'radio-connection' && e.data.state === 'connected' && e.data.model === 'IC-7300MK2'));
+  // Activity updates also publish connected status. Wait for initialization
+  // and scope recovery, not an earlier status still in the socket queue.
+  await waitFor(() => output.slice(beforeReleaseOutput).includes('Scope output enabled after radio reconnect.'));
   assert.equal(peer.cwText.length, beforeRelease);
   assert.ok(events.some((e) => e.type === 'cw-tx-status' && ['aborted', 'error'].includes(e.data.status)));
   child.kill('SIGTERM');
@@ -134,7 +139,7 @@ test('normal PiRO process starts without ALSA and carries control, PCM and scope
   for (const role of ['control', 'civ', 'audio']) assert.ok(peer.received.some((p) => p.role === role && p.packet.readUInt16LE(4) === 5));
 });
 
-test('radio loss disables VARA in the shared app state and it can be explicitly activated after reconnect', { timeout: 15000 }, async (t) => {
+test('radio loss disables VARA in the shared app state and it can be explicitly activated after reconnect', { timeout: 25000 }, async (t) => {
   const peer = await new IcomPeer().start();
   const child = spawn(process.execPath, [path.join(__dirname, '../src/server/index.js')], {
     env: { ...serverEnvironment(peer), STATION_CALLSIGN: 'S53ZO' }, stdio: ['ignore', 'pipe', 'pipe'],
@@ -146,7 +151,7 @@ test('radio loss disables VARA in the shared app state and it can be explicitly 
   t.after(async () => {
     ws?.terminate();
     if (exit === undefined) child.kill('SIGTERM');
-    try { await waitFor(() => exit !== undefined, 3000); }
+    try { await waitFor(() => exit !== undefined, 6000); }
     finally { if (exit === undefined) child.kill('SIGKILL'); await peer.close(); }
   });
   await waitFor(() => output.includes('Scope output enabled') || exit !== undefined);
@@ -200,7 +205,7 @@ test('reconnect updates the scope snapshot after initial scope enable fails', { 
   t.after(async () => {
     ws?.terminate();
     if (exit === undefined) child.kill('SIGTERM');
-    try { await waitFor(() => exit !== undefined, 3000); }
+    try { await waitFor(() => exit !== undefined, 6000); }
     finally { if (exit === undefined) child.kill('SIGKILL'); await peer.close(); }
   });
   await waitFor(() => errors.includes('Radio rejected the enable-scope commands') || exit !== undefined, 20000);

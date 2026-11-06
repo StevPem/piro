@@ -62,6 +62,8 @@ const BINARY_TYPE = {
 
 const REQUEST = {
   SET_RADIO_CONNECTED: 'setRadioConnected', // {connected: boolean}: manage the server's LAN radio session
+  SET_RADIO_IDLE_TIMEOUT: 'setRadioIdleTimeout', // {minutes: integer 0..1440}, 0 disables
+  RADIO_ACTIVITY: 'radioActivity', // operator interaction; passive polls/audio do not count
   GET_FREQUENCY: 'getFrequency',
   SET_FREQUENCY: 'setFrequency', // {value: Hz} -> sets the radio's frequency. 1 to 9999999999 (CI-V's 10 digits), rounded to whole Hz; anything else is refused before the radio. Replies {value} (the rounded Hz); the radio answers NG for a frequency it doesn't cover.
   GET_MODE: 'getMode',
