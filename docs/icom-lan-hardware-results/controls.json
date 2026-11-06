@@ -1,0 +1,293 @@
+{
+  "startedAt": "2026-11-06T20:28:45.689Z",
+  "tests": [
+    {
+      "name": "read Frequency",
+      "passed": true,
+      "detail": {
+        "value": 7035000
+      }
+    },
+    {
+      "name": "read Mode",
+      "passed": true,
+      "detail": {
+        "value": {
+          "mode": "CW",
+          "filter": 2
+        }
+      }
+    },
+    {
+      "name": "read DataMode",
+      "passed": true,
+      "detail": {
+        "on": false
+      }
+    },
+    {
+      "name": "read Filter",
+      "passed": true,
+      "detail": {
+        "value": 2
+      }
+    },
+    {
+      "name": "read SMeter",
+      "passed": true,
+      "detail": {
+        "value": 105
+      }
+    },
+    {
+      "name": "read SWR",
+      "passed": true,
+      "detail": {
+        "value": 0
+      }
+    },
+    {
+      "name": "read Alc",
+      "passed": true,
+      "detail": {
+        "value": 0
+      }
+    },
+    {
+      "name": "read TxPower",
+      "passed": true,
+      "detail": {
+        "watts": 100
+      }
+    },
+    {
+      "name": "read RxGain",
+      "passed": true,
+      "detail": {
+        "value": 255
+      }
+    },
+    {
+      "name": "read Preamp",
+      "passed": true,
+      "detail": {
+        "value": 0
+      }
+    },
+    {
+      "name": "read NoiseReduction",
+      "passed": true,
+      "detail": {
+        "on": false
+      }
+    },
+    {
+      "name": "read NoiseBlanker",
+      "passed": true,
+      "detail": {
+        "on": false
+      }
+    },
+    {
+      "name": "read Notch",
+      "passed": true,
+      "detail": {
+        "on": false
+      }
+    },
+    {
+      "name": "read Tuner",
+      "passed": true,
+      "detail": {
+        "value": 1
+      }
+    },
+    {
+      "name": "receive PCM and 475-point scope",
+      "passed": true,
+      "detail": {
+        "audioFrames": 140,
+        "samples": 134400,
+        "squares": 6208485715944,
+        "peak": 16863,
+        "clipped": 0,
+        "scopeFrames": 93,
+        "pointCounts": {
+          "475": 147
+        },
+        "rms": 6796.6234372953795,
+        "scope": {
+          "mode": 0,
+          "frequency": 7035000,
+          "span": 25000
+        }
+      }
+    },
+    {
+      "name": "frequency set/read and second-client broadcast",
+      "passed": true,
+      "detail": {
+        "changed": 7036000
+      }
+    },
+    {
+      "name": "mode LSB",
+      "passed": true,
+      "detail": {
+        "mode": "LSB",
+        "filter": 1
+      }
+    },
+    {
+      "name": "mode USB",
+      "passed": true,
+      "detail": {
+        "mode": "USB",
+        "filter": 1
+      }
+    },
+    {
+      "name": "mode AM",
+      "passed": true,
+      "detail": {
+        "mode": "AM",
+        "filter": 1
+      }
+    },
+    {
+      "name": "mode FM",
+      "passed": true,
+      "detail": {
+        "mode": "FM",
+        "filter": 1
+      }
+    },
+    {
+      "name": "mode RTTY",
+      "passed": true,
+      "detail": {
+        "mode": "RTTY",
+        "filter": 1
+      }
+    },
+    {
+      "name": "mode CW",
+      "passed": true,
+      "detail": {
+        "mode": "CW",
+        "filter": 1
+      }
+    },
+    {
+      "name": "filter 1",
+      "passed": true
+    },
+    {
+      "name": "filter 2",
+      "passed": true
+    },
+    {
+      "name": "filter 3",
+      "passed": true
+    },
+    {
+      "name": "DATA mode on/off",
+      "passed": true
+    },
+    {
+      "name": "toggle NoiseReduction",
+      "passed": true
+    },
+    {
+      "name": "toggle NoiseBlanker",
+      "passed": true
+    },
+    {
+      "name": "toggle Notch",
+      "passed": true
+    },
+    {
+      "name": "preamp 0/1/2",
+      "passed": true
+    },
+    {
+      "name": "RX gain set/read",
+      "passed": true
+    },
+    {
+      "name": "scope spans",
+      "passed": true
+    }
+  ],
+  "restoration": [
+    {
+      "name": "mode/filter",
+      "passed": true
+    },
+    {
+      "name": "frequency",
+      "passed": true
+    }
+  ],
+  "radio": {
+    "transport": "lan",
+    "state": "connected",
+    "radioAddr": 182,
+    "model": "IC-7300MK2"
+  },
+  "appVersion": "122",
+  "original": {
+    "Frequency": {
+      "value": 7035000
+    },
+    "Mode": {
+      "value": {
+        "mode": "CW",
+        "filter": 2
+      }
+    },
+    "DataMode": {
+      "on": false
+    },
+    "Filter": {
+      "value": 2
+    },
+    "SMeter": {
+      "value": 105
+    },
+    "SWR": {
+      "value": 0
+    },
+    "Alc": {
+      "value": 0
+    },
+    "TxPower": {
+      "watts": 100
+    },
+    "RxGain": {
+      "value": 255
+    },
+    "Preamp": {
+      "value": 0
+    },
+    "NoiseReduction": {
+      "on": false
+    },
+    "NoiseBlanker": {
+      "on": false
+    },
+    "Notch": {
+      "on": false
+    },
+    "Tuner": {
+      "value": 1
+    }
+  },
+  "originalScope": {
+    "mode": 0,
+    "frequency": 7035000,
+    "span": 25000
+  },
+  "finishedAt": "2026-11-06T20:28:50.970Z",
+  "passed": true
+}

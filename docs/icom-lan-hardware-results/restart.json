@@ -1,0 +1,19 @@
+{
+  "time": "2026-11-06T20:36:45.758Z",
+  "serviceRestartedAt": "2026-11-06T20:36:11Z",
+  "radio": {
+    "transport": "lan",
+    "state": "connected",
+    "radioAddr": 182,
+    "model": "IC-7300MK2"
+  },
+  "ptt": false,
+  "frequency": 7030900,
+  "mode": {
+    "mode": "CW",
+    "filter": 2
+  },
+  "scopeEnabled": true,
+  "audioFrames": 132,
+  "scopeFrames": 79
+}

@@ -108,8 +108,10 @@ behaviour varies by radio and firmware (see `docs/civ-notes.md`).
 
 **IC-7300MK2 Ethernet:** native Icom LAN control, CW text, scope and RX/TX
 audio are available with `CIV_CONNECTION=lan`. No USB audio device or other
-radio software is needed. This path is implemented and tested offline;
-it is not tested on a physical radio or on air. See
+radio software is needed. Offline tests and physical IC-7300MK2 receive,
+control and brief dummy-load transmit checks have passed; independent RF,
+failure and long-session validation remains pending. See the
+[hardware test record](docs/icom-lan-hardware-validation.md),
 [LAN setup and hardware validation](docs/icom-lan.md) and
 [protocol/source evidence](docs/icom-lan-sources.md). USB remains the default.
 The [LAN audit fixes](docs/icom-lan-audit-fixes.md) cover connection timing,

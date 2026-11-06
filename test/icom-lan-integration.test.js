@@ -54,6 +54,43 @@ test('real localhost handshake, identity, controls, correct MK2 routing and rest
   assert.equal(driver.playback.queue.bytes, 0);
 });
 
+test('identity uses the advertised custom CI-V address when broadcast reads are ignored', async (t) => {
+  const peer = await new IcomPeer({ address: 0xb4 }).start();
+  const respond = peer.civ.bind(peer);
+  peer.civ = (frame, association) => {
+    if (frame[4] === 0x19 && frame[2] === 0) return;
+    respond(frame, association);
+  };
+  const driver = new IcomLanDriver(peer.config({ requestTimeoutMs: 100 }));
+  driver.on('error', () => {});
+  t.after(async () => { await driver.close(); await peer.close(); });
+  await driver.open();
+  assert.equal(driver.radioAddr, 0xb4);
+  assert.equal(driver.profile.name, 'IC-7300MK2');
+  assert.equal(peer.commands.find((frame) => frame[4] === 0x19)[2], 0xb4);
+});
+
+test('explicit identity address overrides advertisement and invalid advertisements fall back', async (t) => {
+  for (const [label, advertised, explicit, expected] of [
+    ['explicit custom address', 0xb6, 0xb4, 0xb4],
+    ['zero advertisement', 0, undefined, 0],
+    ['controller advertisement', 0xe0, undefined, 0],
+  ]) await t.test(label, async (t) => {
+    const peer = await new IcomPeer({ address: 0xb4 }).start();
+    const tracked = peer.tracked.bind(peer);
+    peer.tracked = (role, packet, association) => {
+      if (role === 'control' && packet.length === 168) packet[148] = advertised;
+      return tracked(role, packet, association);
+    };
+    const driver = new IcomLanDriver(peer.config({ radioAddr: explicit }));
+    driver.on('error', () => {});
+    t.after(async () => { await driver.close(); await peer.close(); });
+    await driver.open();
+    assert.equal(peer.commands.find((frame) => frame[4] === 0x19)[2], expected);
+    assert.equal(driver.radioAddr, 0xb4);
+  });
+});
+
 test('reject bad credentials and unknown models without applying MK2 settings', async (t) => {
   for (const options of [{ rejectLogin: true }, { modelId: 0xa4 }]) {
     const peer = await new IcomPeer(options).start();

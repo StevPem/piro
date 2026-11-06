@@ -2,8 +2,10 @@
 
 PiRO can use the MK2's built-in LAN interface for CI-V control, typed CW,
 scope, receive audio and transmit audio. This implementation is verified
-against an independent localhost peer and reference wire contracts. It is
-**not tested on a physical radio or on air**.
+against an independent localhost peer and reference wire contracts. Physical
+IC-7300MK2 LAN receive, controls and brief operator-authorized dummy-load
+transmit checks were also performed. See the [hardware validation record](icom-lan-hardware-validation.md)
+for exact observations, restoration checks and remaining RF/failure/soak tests.
 
 The connection is browser ↔ PiRO server ↔ radio Ethernet. PiRO still runs
 on a computer. LAN mode needs no USB cable, ALSA device, virtual serial
@@ -28,8 +30,9 @@ Use the IC-7300MK2 Basic Manual, Network pages 59-60:
    It defaults to OFF. Icom documents its coverage for CI-V-initiated TX
    and the TRANSMIT button; do not assume it covers every CW/break-in case.
 
-PiRO identifies the model/address using CI-V rather than trusting the
-network nickname. Only the MK2 is enabled for native LAN operation in this
+PiRO uses the LAN session's advertised CI-V address for the identity request,
+then verifies the model using CI-V rather than trusting the network nickname.
+An explicit `CIV_RADIO_ADDR` overrides the advertised address. Only the MK2 is enabled for native LAN operation in this
 version. Other Icoms are rejected before model-specific settings are written.
 
 ## Run PiRO

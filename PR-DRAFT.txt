@@ -1,0 +1,38 @@
+Title: Support native IC-7300MK2 LAN control and audio
+
+PiRO can connect directly to an IC-7300MK2 over Ethernet for rig control,
+receive/transmit PCM, scope and typed CW, without USB/ALSA or another radio
+application. USB remains the default connection.
+
+The LAN implementation authenticates on the server, independently verifies
+radio identity, restores changed routing settings, bounds audio queues, and
+cancels pending transmit work after radio loss. Hardware validation found
+that identity discovery must use the LAN-advertised CI-V address. It also
+found a stale disabled scope snapshot after initial scope failure/reconnect;
+the candidate fixes both and adds regressions.
+
+Validation:
+- Physical IC-7300MK2 receive/control sweep: frequency, six modes, filters,
+  DATA, receive controls, meters, 475-point scope and three spans.
+- Operator-authorized 5 W dummy-load voice/DATA PCM, typed CW completion,
+  active CW abort, PTT release and readback of restored active settings.
+- Candidate discovery verified on the actual radio without an explicit
+  CI-V address; clean service restart recovered receive audio and scope.
+- Full baseline npm test passed with the advertised-address fix. Final LAN
+  suite passed 59/59; the upstream-compatible test entry point was checked separately.
+- docs/icom-lan-hardware-validation.md contains exact evidence and limits.
+
+Before opening against StevPem/piro:main:
+The feature branch is 37 commits behind the verified upstream head da2d962.
+Integrate current upstream and preserve its Origin checks, heartbeat/PTT-owner
+release, queue ordering/stale-ACK protection, backpressure, CW keyline/paddle,
+JS8, STT and DeepCW-worker changes. Run the full upstream plus LAN suite on
+that integrated result. The test entry point is now compatible with the
+upstream CI runner, but integration itself has not been performed here.
+
+Limits:
+No independent RF power/spectrum or digital decoder measurement, firmware
+record, two-hour soak, packet-loss/VPN test, or physical network/radio failure
+while transmitting. Other modes' stored filter preferences are not restored
+by the manual mode sweep; the originally active mode/filter is restored.
+This is a preparation draft, not a published PR.

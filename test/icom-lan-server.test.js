@@ -174,3 +174,56 @@ test('radio loss disables VARA in the shared app state and it can be explicitly 
   await request('vara', { action: 'cq' });
   assert.equal(exit, undefined, errors);
 });
+
+test('reconnect updates the scope snapshot after initial scope enable fails', { timeout: 25000 }, async (t) => {
+  const peer = await new IcomPeer().start();
+  const respond = peer.civ.bind(peer);
+  let rejected = false;
+  peer.civ = (frame, association) => {
+    if (!rejected && frame[4] === 0x27 && frame[5] === 0x10 && frame[6] === 1) {
+      rejected = true;
+      peer.replyCiv([0xfa], association);
+      return;
+    }
+    respond(frame, association);
+  };
+  const child = spawn(process.execPath, [path.join(__dirname, '../src/server/index.js')], {
+    env: serverEnvironment(peer), stdio: ['ignore', 'pipe', 'pipe'],
+  });
+  let output = '', errors = '', exit, ws;
+  child.stdout.on('data', (p) => { output += p; });
+  child.stderr.on('data', (p) => { errors += p; });
+  child.on('exit', (code) => { exit = code; });
+  t.after(async () => {
+    ws?.terminate();
+    if (exit === undefined) child.kill('SIGTERM');
+    try { await waitFor(() => exit !== undefined, 3000); }
+    finally { if (exit === undefined) child.kill('SIGKILL'); await peer.close(); }
+  });
+  await waitFor(() => errors.includes('Radio rejected the enable-scope commands') || exit !== undefined, 20000);
+  assert.equal(exit, undefined, errors);
+  assert.equal(rejected, true);
+  const port = output.match(/listening on http:\/\/0\.0\.0\.0:(\d+)/)?.[1];
+  assert.ok(port, output);
+  const snapshot = async () => {
+    ws = new WebSocket(`ws://127.0.0.1:${port}`);
+    let connected;
+    ws.on('message', (p, binary) => {
+      if (binary) return;
+      const event = JSON.parse(p);
+      if (event.type === 'connected') connected = event.data;
+    });
+    await waitFor(() => connected);
+    return connected;
+  };
+  assert.equal((await snapshot()).scope.enabled, false);
+  ws.terminate();
+  const before = peer.commands.length;
+  const association = peer.associations.civ;
+  peer.release();
+  await waitFor(() => peer.associations.civ !== association
+    && peer.commands.slice(before).some((frame) => frame[4] === 0x27 && frame[5] === 0x14));
+  await waitFor(() => output.includes('Scope output enabled after radio reconnect.'));
+  assert.equal((await snapshot()).scope.enabled, true);
+  assert.equal(exit, undefined, errors);
+});

@@ -82,7 +82,13 @@ class IcomLanDriver extends CivDriver {
       let identified = false;
       try {
         this.emit('connection-status', { transport: 'lan', state: 'identifying' });
-        this.radioAddr = this.options.radioAddr ?? 0;
+        // Direct-radio LAN sessions advertise the configured CI-V address.
+        // Some physical radios ignore broadcast identity reads; use that
+        // address for discovery, then verify the actual model independently.
+        // Explicit configuration still wins, including after reconnect.
+        const advertised = this.session.advertisedAddress;
+        this.radioAddr = this.options.radioAddr
+          ?? (Number.isInteger(advertised) && advertised > 0 && advertised < 0xe0 ? advertised : 0);
         const frame = await this._send(0x19, 0);
         if (frame.cmd !== 0x19 || frame.data[0] !== MK2.id) throw new Error('LAN radio did not identify as an IC-7300MK2; model-specific audio settings were not applied');
         identified = true;

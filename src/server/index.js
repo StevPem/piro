@@ -738,7 +738,11 @@ async function main() {
 
   if (SCOPE_ENABLED) {
     scopeBridge = new ScopeBridge({ civ, controlServer });
-    civ.on('radio-ready', () => scopeBridge.start().catch((err) => {
+    civ.on('radio-ready', () => scopeBridge.start().then(() => {
+      controlServer.setScopeInfo({ enabled: true });
+      console.log('Scope output enabled after radio reconnect.');
+    }).catch((err) => {
+      controlServer.setScopeInfo({ enabled: false });
       controlServer.broadcastJsonEvent('scope-error', { message: err.message });
     }));
     try {
@@ -750,7 +754,7 @@ async function main() {
       console.error(
         '[scope] Radio rejected the enable-scope commands:',
         err.message,
-        '\n         Scope will stay disabled for this session. See docs/civ-notes.md.'
+        '\n         Scope is disabled; radio reconnect will retry. See docs/civ-notes.md.'
       );
     }
   } else {
