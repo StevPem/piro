@@ -1,0 +1,14 @@
+{
+  "build": "139",
+  "sourceCommit": "6f590d4",
+  "target": "PiRO normal startup against localhost IcomPeer; no physical radio",
+  "browser": "Chrome through Playwright CLI",
+  "checks": {
+    "js8WithoutStationCallsignSendDisabled": true,
+    "js8SendRemainsDisabledAfterFrequencyActivity": true,
+    "varaUnavailableSendDisabled": true,
+    "varaSendRemainsDisabledAfterFrequencyActivity": true
+  },
+  "consoleErrors": 0,
+  "limits": "Available VARA listening/connected and JS8 sending/capability combinations are covered by the eight VM regression cases, not this browser run."
+}

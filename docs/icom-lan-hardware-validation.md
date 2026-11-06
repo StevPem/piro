@@ -1,5 +1,10 @@
 # IC-7300MK2 hardware validation
 
+The latest independent review and build v139 live sweep are recorded in
+[independent audit](icom-lan-independent-audit.md): 42 physical checks,
+11 restoration checks and the full 65-group target-platform suite passed.
+Older observations below remain timestamped evidence for earlier builds.
+
 Tested on 2026-11-06 using a physical IC-7300MK2 and a Raspberry Pi running
 64-bit Debian/Raspberry Pi OS with Node 22.23.4. The Pi boots from NFS.
 The operator confirmed a dummy load and authorized brief low-power transmit
