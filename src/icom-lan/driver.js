@@ -98,11 +98,23 @@ class IcomLanDriver extends CivDriver {
         identified = true;
         this.radioAddr = frame.from;
         this.profile = MK2;
-        // Reconnection never resumes a transmission. Confirm the old keyer/PTT
-        // state is stopped before accepting a new operator command.
-        await super.stopCw();
+        // PTT release applies to every mode. The MK2 rejects CW commands in
+        // USB/other non-CW modes, so only stop its keyer when CW is selected.
+        // Do not retune or change mode just to make a CW command acceptable.
+        // Finish safety cleanup even if opening is cancelled mid-transaction;
+        // the manual flag is checked after the keyer and PTT are stopped.
         await super.setPtt(false);
-        checkCancelled();
+        this.assertSession(generation);
+        const { mode } = await this.getMode();
+        this.assertSession(generation);
+        if (typeof mode !== 'string') throw new Error(`Unknown radio mode during LAN initialization: ${mode}`);
+        if (mode === 'CW' || mode === 'CW_R' || mode === 'CW-R') await super.stopCw();
+        this.assertSession(generation);
+        // A successful PTT-off ACK alone is insufficient (e.g. break-in CW).
+        if (await this._readSingleByteSetting(0x1c, 0, 'transmit state') !== 0) {
+          throw new Error('Radio did not confirm receive state during LAN initialization');
+        }
+        this.assertSession(generation);
         await this.restore(this.txSaved).catch((err) => this.emit('restore-error', err));
         checkCancelled();
         // AF, not the 12 kHz IF stream; open squelch preserves decoder input.

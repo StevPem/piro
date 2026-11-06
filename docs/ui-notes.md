@@ -5408,3 +5408,21 @@ Items 8 and 15 from the code review, and two requests. Not tested on air
   late ACK. Rapid changes from different browsers settle at the latest request.
 - The manual state is process-scoped; normal startup still auto-connects.
   Service-worker cache v136. See `docs/icom-lan.md` for operation.
+
+
+### Reconnect outside CW mode (v137)
+
+- A physical MK2 in USB/FIL2 returned CI-V FA for the unconditional CW-stop
+  command during Connect. Model ID B6 and receive state were confirmed.
+- Initialization now releases PTT first, reads the current mode, and requires
+  keyer stop only for CW/CW_R (including the CW-R spelling). It confirms an
+  actual receive-state value0 before restoring routes or accepting controls.
+  It does not change the operator's selected mode.
+- Manual cancellation waits for the safety phase to finish before releasing
+  the association; model, CW-stop-in-CW, PTT and receive-readback failures
+  remain fatal. Unknown modes and mode-read failures do not bypass checks.
+- Added startup regressions and retained the reconnect snapshot race test
+  after the new safety mode read. The packet-loss test now uses the normal
+  80ms reorder window so a20ms tick cannot skip its retransmit opportunity.
+- Verified96 LAN subtests, existing CI-V driver tests, syntax/diff and version
+  checks. Cache/build v137; physical acceptance is recorded separately.

@@ -227,7 +227,9 @@ test('media release reconnects with fresh IDs and drops queued keying/audio from
 });
 
 test('packet loss is retransmitted once a later unsolicited update exposes the gap', async (t) => {
-  const { peer, driver } = await radio(t, {}, { reorderMs: 10 });
+  // Leave a retransmit window longer than the stream's 20 ms tick. A 10 ms
+  // window could be skipped entirely depending on startup/timer phase.
+  const { peer, driver } = await radio(t, {}, { reorderMs: 80 });
   let updates = 0;
   driver.on('frequency', () => updates++);
   peer.options.dropNextReply = true;

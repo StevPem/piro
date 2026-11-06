@@ -395,11 +395,14 @@ test('reconnect snapshot preserves a confirmed driver tune completed between sta
   const frequencies = [];
   cs.on('frequency', (hz) => frequencies.push(hz));
   let request;
+  let modeReads = 0;
   peer.civ = (frame, association) => {
-    if (!request && frame[4] === 4) {
+    if (frame[4] === 4) ++modeReads;
+    if (!request && frame[4] === 4 && modeReads === 2) {
       // Browser mutations are now gated until the managed link is ready.
       // Keep testing the lower-level race: a confirmed tune arriving between
-      // initialization reads must still win over its earlier frequency read.
+      // state reads (after the startup mode check) must still win over its
+      // earlier frequency read.
       request = driver.setFrequency(14200000);
     }
     original(frame, association);
