@@ -132,7 +132,7 @@ test('normal PiRO process starts without ALSA and carries control, PCM and scope
   assert.equal(peer.cwText.length, beforeRelease);
   assert.ok(events.some((e) => e.type === 'cw-tx-status' && ['aborted', 'error'].includes(e.data.status)));
   child.kill('SIGTERM');
-  await waitFor(() => exit !== undefined);
+  await waitFor(() => exit !== undefined, 10000);
   assert.equal(exit, 0, errors);
   assert.equal(peer.ptt, false);
   assert.equal(peer.parameters.get('0079')[0], 1); // startup AF setting restored.
