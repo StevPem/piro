@@ -46,7 +46,8 @@ test('normal PiRO process starts without ALSA and carries control, PCM and scope
   t.after(async () => {
     ws?.terminate();
     if (exit === undefined) child.kill('SIGTERM');
-    try { await waitFor(() => exit !== undefined, 6000); }
+    // shutdown() allows eight seconds; leave time for process exit under load.
+    try { await waitFor(() => exit !== undefined, 10000); }
     finally { if (exit === undefined) child.kill('SIGKILL'); await peer.close(); }
   });
   await waitFor(() => output.includes('Scope output enabled') || exit !== undefined);
@@ -151,7 +152,7 @@ test('radio loss disables VARA in the shared app state and it can be explicitly 
   t.after(async () => {
     ws?.terminate();
     if (exit === undefined) child.kill('SIGTERM');
-    try { await waitFor(() => exit !== undefined, 6000); }
+    try { await waitFor(() => exit !== undefined, 10000); }
     finally { if (exit === undefined) child.kill('SIGKILL'); await peer.close(); }
   });
   await waitFor(() => output.includes('Scope output enabled') || exit !== undefined);
@@ -205,7 +206,7 @@ test('reconnect updates the scope snapshot after initial scope enable fails', { 
   t.after(async () => {
     ws?.terminate();
     if (exit === undefined) child.kill('SIGTERM');
-    try { await waitFor(() => exit !== undefined, 6000); }
+    try { await waitFor(() => exit !== undefined, 10000); }
     finally { if (exit === undefined) child.kill('SIGKILL'); await peer.close(); }
   });
   await waitFor(() => errors.includes('Radio rejected the enable-scope commands') || exit !== undefined, 20000);
