@@ -31,6 +31,16 @@ completion cannot release a new radio association.
 - Integration fixture teardown now allows ten seconds to observe the server's
   existing eight-second shutdown deadline; the old six-second fixture budget
   caused teardown failures even when the functional assertions passed.
+- Target-platform verification: the full run passed 64/65 groups, with the LAN
+  group failing on process shutdown observation. After correcting both shutdown
+  wait budgets, the complete LAN group passed **163/163** checks in a serial
+  rerun. Three instrumented server runs also passed: JavaScript shutdown and
+  worker termination completed within 23–37 ms, while process exit could take
+  additional time in uninterruptible kernel I/O. The exact kernel cause was
+  not established; the Pi uses an NFS root filesystem.
+- Deployed v140 receive check: PTT off, authenticated IC-7300MK2 connected,
+  **174 PCM frames and 105 scope frames** in 3.5 seconds. Station identity,
+  locator and the 60-minute idle preference were retained.
 
 Physical post-fix CQ transmission has not been tested. The initial physical
 report and later receive-stream checks do not by themselves prove that every
