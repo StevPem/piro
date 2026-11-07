@@ -165,13 +165,19 @@ class LanPlayback extends EventEmitter {
   }
   async drain() {
     const epoch = this.epoch;
-    while (epoch === this.epoch && this.keyed && this.session.connected && this.queue.bytes) {
-      const tail = this.queue.bytes % FRAME_BYTES;
-      if (tail) {
-        const padding = FRAME_BYTES - tail;
-        this.queue.push(Buffer.alloc(padding));
-        this.stats.paddedBytes += padding;
-      }
+    const tail = this.queue.bytes % FRAME_BYTES;
+    if (tail) {
+      const padding = FRAME_BYTES - tail;
+      this.queue.push(Buffer.alloc(padding));
+      this.stats.paddedBytes += padding;
+    }
+    // Drain the audio already queued, not future output. VARA's worker keeps
+    // returning silence while receiving, so waiting for an empty queue can
+    // keep PTT on indefinitely. Discarded latency-bound bytes also count as
+    // consumed; a flush still cancels this drain through the epoch check.
+    const consumed = () => this.stats.sentBytes + this.stats.droppedBytes;
+    const target = consumed() + this.queue.bytes;
+    while (epoch === this.epoch && this.keyed && this.session.connected && consumed() < target) {
       await this.wait(20);
     }
     if (epoch === this.epoch && this.keyed && this.session.connected && this.lastSentAt !== undefined) {

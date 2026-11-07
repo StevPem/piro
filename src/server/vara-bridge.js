@@ -146,6 +146,8 @@ class VaraBridge {
     this._active = false;
     this._session = 0; // bumped on every start/stop, so late replies from an old modem are ignored
     this._keyed = false;
+    this._keyTask = null;
+    this._keyRadio = null;
     this._keyTimer = null;
     this._idleTimer = null;
     this._dataReady = false;
@@ -602,6 +604,9 @@ class VaraBridge {
     }
     if (this.controlServer.state.ptt) return; // someone else is transmitting
     ++this._keyEpoch;
+    const session = this.controlServer.civ?.session;
+    const key = { session, generation: session?.generation };
+    this._keyRadio = key;
     this._keyed = true;
     this._update({ ptt: true });
     this._keyTimer = setTimeout(() => {
@@ -610,12 +615,23 @@ class VaraBridge {
       this._unkey().catch(() => {});
     }, this.maxKeyMs);
     this._keyTimer.unref?.();
+    const pending = this.controlServer.setPttFromServer(true);
+    this._keyTask = pending;
     try {
-      await this.controlServer.setPttFromServer(true);
+      await pending;
     } catch (err) {
-      this._error(`Couldn't key the radio: ${err.message}`);
-      await this._unkey();
+      if (this._keyRadio === key && this._sameKeySession(key)) {
+        this._error(`Couldn't key the radio: ${err.message}`);
+        await this._unkey();
+      }
+    } finally {
+      if (this._keyTask === pending) this._keyTask = null;
     }
+  }
+
+  _sameKeySession(key) {
+    const session = this.controlServer.civ?.session;
+    return !key?.session || (session === key.session && session.generation === key.generation);
   }
 
   _clearKey() {
@@ -626,6 +642,13 @@ class VaraBridge {
   }
 
   async _unkey({ drain = false } = {}) {
+    const key = this._keyRadio;
+    // Native LAN playback is armed while CI-V routing/keying is still pending.
+    // A drain in that state returns false, not proof that a late ON is cancelled.
+    // Keep the latch/watchdog until ON settles, then drain and release it.
+    // Immediate aborts still send OFF at once so the driver can cancel ON.
+    if (drain && this._keyTask) await this._keyTask.catch(() => {});
+    if (key !== this._keyRadio || !this._sameKeySession(key)) return false;
     if (!this._keyed) return this.controlServer.state.ptt === false;
     const epoch = ++this._keyEpoch;
     if (drain && typeof this.audioBridge.playback.drain === 'function') {
@@ -634,7 +657,7 @@ class VaraBridge {
         return false;
       }
     }
-    if (!this._keyed || epoch !== this._keyEpoch) return false;
+    if (!this._keyed || epoch !== this._keyEpoch || !this._sameKeySession(key)) return false;
     try {
       await this.controlServer.setPttFromServer(false);
       if (epoch !== this._keyEpoch) return false;

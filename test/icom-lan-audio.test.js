@@ -5,6 +5,30 @@ const assert = require('node:assert/strict');
 const { EventEmitter } = require('node:events');
 const { PcmQueue, LanCapture, LanPlayback } = require('../src/icom-lan/audio');
 
+test('draining a modem tail finishes while its worker continues producing receive-time silence', async () => {
+  const session = new EventEmitter();
+  const output = [];
+  Object.assign(session, { connected: true, options: { txBufferMs: 0 }, sendAudio: (p) => output.push(p) });
+  const playback = new LanPlayback(session);
+  playback.active = true;
+  playback.setKeyed(true);
+  const tail = Buffer.alloc(3840, 17);
+  playback.write(tail);
+  let ticks = 0;
+  // VARA returns an output block for every RX input, even after PTT OFF.
+  // Keep the queue nonempty deterministically instead of relying on timer races.
+  playback.wait = async () => {
+    assert.ok(++ticks <= 8, 'drain waited indefinitely for future modem silence');
+    playback.pump();
+    playback.write(Buffer.alloc(1920));
+  };
+  try {
+    assert.equal(await playback.drain(), true);
+    assert.deepEqual(Buffer.concat(output).subarray(0, tail.length), tail);
+    assert.ok(playback.queue.bytes > 0, 'future silence does not have to finish before unkeying');
+  } finally { playback.stop(); }
+});
+
 test('PCM queue crosses arbitrary chunk boundaries, pads once, and releases consumed buffers', () => {
   const q = new PcmQueue();
   q.push(Buffer.from([1, 2, 3]));
