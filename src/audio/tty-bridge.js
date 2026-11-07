@@ -150,6 +150,13 @@ class TtyBridge {
     } });
   }
 
+  async _releasePtt(tx) {
+    const release = this.controlServer.setPttFromServer(false);
+    // Capture our OFF intent before its acknowledgement can start another TX.
+    tx.restoreRevision = this.controlServer.civ?.txRevision;
+    await release;
+  }
+
   get transmitting() {
     return this._tx !== null;
   }
@@ -183,9 +190,19 @@ class TtyBridge {
   /** Back to the radio's RTTY mode on the mark frequency. */
   async _leaveRttyAfsk(plan, tx) {
     const civ = this._radio(tx);
-    await civ.setDataMode(false);
-    await civ.setMode(plan.restoreMode, plan.restoreFilter);
-    await civ.setFrequency(plan.markRfHz);
+    const restore = async () => {
+      await civ.setDataMode(false);
+      await civ.setMode(plan.restoreMode, plan.restoreFilter);
+      await civ.setFrequency(plan.markRfHz);
+    };
+    if (civ.session && typeof civ.queueSettings === 'function') {
+      return civ.queueSettings(async () => {
+        if (!this._sameSession(tx) || civ.txRevision !== tx.restoreRevision
+          || this.controlServer.state.ptt !== false) return;
+        await restore();
+      });
+    }
+    await restore();
   }
 
   /** Builds the PCM (S16LE mono at the audio bridge's rate) for a request, or returns {error}. */
@@ -275,7 +292,8 @@ class TtyBridge {
     if (this.controlServer.state?.ptt) return fail('The radio is already transmitting.');
 
     const session = this.controlServer.civ?.session;
-    const tx = { aborted: false, timer: null, wake: null, session, generation: session?.generation };
+    const tx = { aborted: false, timer: null, wake: null, session, generation: session?.generation,
+      restoreRevision: this.controlServer.civ?.txRevision };
     this._tx = tx; // claimed now: reading the radio below is async
     let rttyPlan = null;
     if (mode === 'RTTY') {
@@ -321,6 +339,7 @@ class TtyBridge {
     if (built.freqHz !== undefined) info.freqHz = built.freqHz;
     if (built.note) info.note = built.note;
     let switched = false;
+    let keyed = false;
     let stopWatch = null;
     try {
       if (this._sameSession(tx)) this._status({ status: 'sending', ...info });
@@ -332,7 +351,10 @@ class TtyBridge {
       // mode on; make sure it still is (the radio's own RTTY mode needs it off).
       const civ = this._radio(tx);
       if (civ && mode !== 'RTTY' && !tx.aborted && this._sameSession(tx)) await ensureDataMode(civ, true, { settleMs: this.dataSettleMs });
-      if (!tx.aborted && this._sameSession(tx)) await this.controlServer.setPttFromServer(true);
+      if (!tx.aborted && this._sameSession(tx)) {
+        keyed = true;
+        await this.controlServer.setPttFromServer(true);
+      }
       if (!tx.aborted && this._sameSession(tx)) {
         this.audioBridge.playback.write(built.pcm);
         if (civ && (mode !== 'RTTY' || switched)) {
@@ -350,8 +372,14 @@ class TtyBridge {
       tx.timer = null;
       if (stopWatch) await stopWatch();
       stopWatch = null;
-      if (!tx.aborted && this._sameSession(tx)) await this.audioBridge.playback.drain?.();
-      if (this._sameSession(tx)) await this.controlServer.setPttFromServer(false);
+      if (!tx.aborted && this._sameSession(tx)) {
+        const drained = await this.audioBridge.playback.drain?.();
+        if (tx.session && drained === false) tx.aborted = true;
+      }
+      if ((keyed || !this.controlServer.civ?.session) && this._sameSession(tx)) {
+        await this._releasePtt(tx);
+        keyed = false;
+      }
       if (switched) {
         switched = false;
         await this._leaveRttyAfsk(rttyPlan, tx);
@@ -363,11 +391,15 @@ class TtyBridge {
     } catch (err) {
       if (stopWatch) await stopWatch().catch(() => {});
       try {
-        if (this._sameSession(tx)) await this.controlServer.setPttFromServer(false);
+        if ((keyed || !this.controlServer.civ?.session) && this._sameSession(tx)) {
+          await this._releasePtt(tx);
+          keyed = false;
+        }
       } catch {
         // best effort — the PTT watchdog is still armed from setPttFromServer(true)
       }
-      if (switched) {
+      // Leave routing, mode and frequency alone if release could not be confirmed.
+      if (switched && (!tx.session || !keyed)) {
         try {
           await this._leaveRttyAfsk(rttyPlan, tx);
         } catch {

@@ -94,10 +94,9 @@ function parseAllowedOrigins(value) {
  * the audio bridge to consume, rather than handled here directly, to keep
  * control and audio concerns decoupled.
  *
- * Note: this layer does not arbitrate simultaneous control from multiple
- * clients (e.g. two people both keying PTT, or both sending TX audio at
- * once) — every connected client has equal, unrestricted control. Access
- * control/locking, if wanted, would be a later addition on top of this.
+ * Connected clients share rig controls. Native LAN microphone audio follows
+ * the current or pending browser PTT owner, so another browser's late packets
+ * cannot interfere with a server modem. USB retains its existing audio routing.
  *
  * Events emitted: 'client-connected' (ws), 'client-disconnected' (ws),
  * 'binary-message' (ws, Buffer), 'frequency' (hz — internal-only, for
@@ -160,6 +159,7 @@ class ControlServer extends EventEmitter {
     // If that browser goes (closed, network lost, heartbeat missed), PTT
     // is released at once rather than when the watchdog fires.
     this._pttOwner = null;
+    this._pendingPtt = null;
     // Ping every heartbeatMs (0 turns it off); see HEARTBEAT_MS.
     this.heartbeatMs = heartbeatMs;
     this._heartbeatTimer = null;
@@ -455,6 +455,14 @@ class ControlServer extends EventEmitter {
       ws.on('message', (raw, isBinary) => {
         if (isBinary) {
           if (this.radioConnectionManager && !this.radioConnectionManager.ready) return;
+          if (this.civ.session) {
+            // Native modem audio is server-produced. Late microphone packets
+            // must not contaminate it or trigger another producer's unkey path.
+            // Preserve the current owner's audio during asynchronous key prep.
+            const owner = this._pendingPtt ? this._pendingPtt.owner
+              : this.state.ptt === true ? this._pttOwner : null;
+            if (owner !== ws) return;
+          }
           this.emit('binary-message', ws, raw);
           return;
         }
@@ -1610,15 +1618,21 @@ class ControlServer extends EventEmitter {
     if (on && this.radioConnectionManager && !this.radioConnectionManager.ready) {
       throw new Error('Radio is not connected and ready');
     }
-    await this.civ.setPtt(on, { urgent });
-    this.state.ptt = on;
-    // `owner`: the browser that keyed it (REQUEST.SET_PTT); none when a bridge keyed it.
-    this._pttOwner = on ? owner ?? null : null;
-    this._armOrClearPttWatchdog(on);
-    this._broadcast(makeEvent(EVENT.PTT, { value: on }), except);
-    this.emit('ptt', on);
-    // The browser went while the radio was being keyed: unkey now.
-    if (on && owner && !this.clients.has(owner)) this._releasePttIfOwnerGone(owner);
+    const pending = { owner: on ? owner ?? null : null };
+    this._pendingPtt = pending;
+    try {
+      await this.civ.setPtt(on, { urgent });
+      this.state.ptt = on;
+      // `owner`: the browser that keyed it (REQUEST.SET_PTT); none for a modem.
+      this._pttOwner = on ? owner ?? null : null;
+      this._armOrClearPttWatchdog(on);
+      this._broadcast(makeEvent(EVENT.PTT, { value: on }), except);
+      this.emit('ptt', on);
+      // The browser went while the radio was being keyed: unkey now.
+      if (on && owner && !this.clients.has(owner)) this._releasePttIfOwnerGone(owner);
+    } finally {
+      if (this._pendingPtt === pending) this._pendingPtt = null;
+    }
   }
 
   _armOrClearPttWatchdog(pttOn) {

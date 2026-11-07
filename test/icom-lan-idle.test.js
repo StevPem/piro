@@ -216,9 +216,20 @@ test('passive polls, binary audio and automatic background requests do not reset
   await server._handleMessage(ws, Buffer.from(JSON.stringify({ id: 'restore', type: 'setFrequency', value: 14074000, background: true })));
   const socket = new WebSocket(`ws://127.0.0.1:${server.port}`);
   await once(socket, 'open');
-  const binary = once(server, 'binary-message');
+  let binaryMessages = 0;
+  server.on('binary-message', () => ++binaryMessages);
   socket.send(Buffer.from([1, 0, 0]));
-  await binary;
+  // Unowned microphone audio is discarded. A same-socket RPC confirms that
+  // the preceding packet was handled without depending on a forwarded event.
+  const barrier = new Promise((resolve, reject) => {
+    const timer = setTimeout(() => reject(new Error('binary activity barrier timed out')), 1500);
+    socket.on('message', (raw, binary) => {
+      if (!binary && JSON.parse(raw).id === 'binary-barrier') { clearTimeout(timer); resolve(); }
+    });
+  });
+  socket.send(JSON.stringify({ id: 'binary-barrier', type: 'getFrequency' }));
+  await barrier;
+  assert.equal(binaryMessages, 0);
   socket.terminate();
   assert.equal(manager.idleDisconnectAt, 61000);
   await server._handleMessage(ws, Buffer.from(JSON.stringify({ id: 'gesture', type: 'radioActivity' })));

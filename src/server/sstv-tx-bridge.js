@@ -166,6 +166,13 @@ class SstvTxBridge {
     } });
   }
 
+  async _releasePtt(tx) {
+    const release = this.controlServer.setPttFromServer(false);
+    // Capture our OFF intent before its acknowledgement can start another TX.
+    tx.restoreRevision = this.controlServer.civ?.txRevision;
+    await release;
+  }
+
   get transmitting() {
     return this._tx !== null;
   }
@@ -196,7 +203,8 @@ class SstvTxBridge {
     }
     if (!rgb || rgb.length !== width * height * 3) return fail('The picture data is the wrong size.');
     const session = this.controlServer.civ?.session;
-    const tx = { aborted: false, timer: null, wake: null, session, generation: session?.generation };
+    const tx = { aborted: false, timer: null, wake: null, session, generation: session?.generation,
+      restoreRevision: this.controlServer.civ?.txRevision };
     const civ = this._radio(tx);
     this._tx = tx;
     let dataOn = false;
@@ -268,10 +276,13 @@ class SstvTxBridge {
       tx.timer = null;
       if (stopWatch) await stopWatch();
       stopWatch = null;
-      if (!tx.aborted && this._sameSession(tx)) await this.audioBridge.playback.drain?.();
-      if (keyed && this._sameSession(tx)) await this.controlServer.setPttFromServer(false);
+      if (!tx.aborted && this._sameSession(tx)) {
+        const drained = await this.audioBridge.playback.drain?.();
+        if (tx.session && drained === false) tx.aborted = true;
+      }
+      if (keyed && this._sameSession(tx)) await this._releasePtt(tx);
       keyed = false;
-      await this._restore(civ, dataOn, prevPower);
+      await this._restore(civ, dataOn, prevPower, tx);
       dataOn = false;
       prevPower = null;
       if (this._tx === tx) {
@@ -283,13 +294,15 @@ class SstvTxBridge {
       if (stopWatch) await stopWatch().catch(() => {});
       if (keyed && this._sameSession(tx)) {
         try {
-          await this.controlServer.setPttFromServer(false);
+          await this._releasePtt(tx);
+          keyed = false;
         } catch {
           // best effort; the PTT watchdog is still armed
         }
       }
       try {
-        await this._restore(civ, dataOn, prevPower);
+        // A failed release must not restore high power or microphone routing while keyed.
+        if (!civ?.session || !keyed) await this._restore(civ, dataOn, prevPower, tx);
       } catch {
         // best effort
       }
@@ -306,10 +319,20 @@ class SstvTxBridge {
     this.controlServer.broadcastJsonEvent(EVENT.AUDIO_ERROR, { message: `SSTV transmit: ${message}` });
   }
 
-  async _restore(civ, dataOn, prevPower) {
+  async _restore(civ, dataOn, prevPower, tx) {
     if (!civ) return;
-    if (prevPower != null) await civ.setTxPower(prevPower);
-    if (dataOn) await civ.setDataMode(false);
+    const restore = async () => {
+      if (prevPower != null) await civ.setTxPower(prevPower);
+      if (dataOn) await civ.setDataMode(false);
+    };
+    if (civ.session && typeof civ.queueSettings === 'function') {
+      return civ.queueSettings(async () => {
+        if (!this._sameSession(tx) || civ.txRevision !== tx.restoreRevision
+          || this.controlServer.state.ptt !== false) return;
+        await restore();
+      });
+    }
+    await restore();
   }
 
   abort() {
