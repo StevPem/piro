@@ -89,30 +89,39 @@ class RadePipeline extends EventEmitter {
     if (this._running) return;
     this._running = true;
 
-    this.procs = this.stages.map(({ bin, args = [] }) =>
-      this._unbuffered ? this._spawn('stdbuf', ['-o0', '-e0', bin, ...args]) : this._spawn(bin, args)
-    );
+    for (const { bin, args = [] } of this.stages) {
+      let proc;
+      try {
+        proc = this._unbuffered ? this._spawn('stdbuf', ['-o0', '-e0', bin, ...args]) : this._spawn(bin, args);
+      } catch (err) {
+        this._fail(null, bin, `failed to start (${err.message})`);
+        return;
+      }
+      this.procs.push(proc);
+      proc.on('error', (err) => this._fail(proc, bin, `failed to start (${err.message})`));
+      proc.on('exit', (code, signal) => this._fail(proc, bin, `exited unexpectedly (code=${code}, signal=${signal})`));
+      // Broken pipes are asynchronous errors on stdin, including pipe()
+      // destinations. A try/catch around write() cannot contain them.
+      for (const name of ['stdin', 'stdout', 'stderr']) {
+        proc[name].on('error', (err) => this._fail(proc, bin, `${name} failed (${err.message})`));
+      }
+      proc.stderr.on('data', (chunk) => this.emit('stderr', `[${bin}] ${chunk.toString().trim()}`));
+    }
 
     for (let i = 0; i < this.procs.length - 1; i++) {
       this.procs[i].stdout.pipe(this.procs[i + 1].stdin);
     }
 
     const last = this.procs[this.procs.length - 1];
-    last.stdout.on('data', (chunk) => this.emit('data', chunk));
-
-    this.procs.forEach((proc, i) => {
-      const { bin } = this.stages[i];
-      proc.stderr.on('data', (chunk) => this.emit('stderr', `[${bin}] ${chunk.toString().trim()}`));
-      proc.on('error', (err) => {
-        this.emit('error', new Error(`${this.label}: stage "${bin}" failed to start (${err.message})`));
-        this.stop();
-      });
-      proc.on('exit', (code, signal) => {
-        if (!this._running) return; // expected — we're the ones who killed it, via stop()
-        this.emit('error', new Error(`${this.label}: stage "${bin}" exited unexpectedly (code=${code}, signal=${signal})`));
-        this.stop();
-      });
+    last.stdout.on('data', (chunk) => {
+      if (this._running && this.procs.includes(last)) this.emit('data', chunk);
     });
+  }
+
+  _fail(proc, bin, detail) {
+    if (!this._running || (proc && !this.procs.includes(proc))) return;
+    this.stop();
+    this.emit('error', new Error(`${this.label}: stage "${bin}" ${detail}`));
   }
 
   /** Feeds a chunk of audio into the first stage's stdin. No-ops if not running or the pipe has already closed. */
@@ -122,10 +131,8 @@ class RadePipeline extends EventEmitter {
     if (first.stdin && first.stdin.writable) {
       try {
         first.stdin.write(buffer);
-      } catch {
-        // The pipe can close out from under us if the first stage has
-        // just exited (its 'exit' handler above already reports that) —
-        // nothing further to do here.
+      } catch (err) {
+        this._fail(first, this.stages[0].bin, `stdin failed (${err.message})`);
       }
     }
   }
@@ -134,7 +141,10 @@ class RadePipeline extends EventEmitter {
   stop() {
     if (!this._running) return;
     this._running = false;
-    for (const proc of this.procs) {
+    const procs = this.procs;
+    this.procs = [];
+    for (const proc of procs) {
+      proc.stdout.unpipe?.();
       try {
         proc.stdin.end();
       } catch {
@@ -146,7 +156,6 @@ class RadePipeline extends EventEmitter {
         // already exited — nothing to do.
       }
     }
-    this.procs = [];
   }
 }
 

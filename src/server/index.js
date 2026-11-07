@@ -2,7 +2,9 @@
 
 const fs = require('fs');
 const path = require('path');
-const { CivDriver, KNOWN_RADIO_ADDR, parseKeyLine } = require('../civ');
+const { createRadio, wireRadioConnection } = require('./radio-connection');
+const { radioIdleSettingsPath, loadRadioIdleTimeout, saveRadioIdleTimeout } = require('./radio-idle-settings');
+const { parseKeyLine } = require('../civ');
 const { ControlServer, parseAllowedOrigins } = require('./ws-server');
 const { AudioBridge } = require('./audio-bridge');
 const { ScopeBridge } = require('./scope-bridge');
@@ -55,11 +57,6 @@ const CW_PADDLE_DELAY_MS = (() => {
   return 250;
 })();
 const RADIO_MODEL = process.env.CIV_RADIO_MODEL; // e.g. "IC-7300"
-// Must match the radio's own "CI-V USB Baud Rate" menu setting exactly —
-// defaults to 19200 (CivDriver's own default) if unset. Spectrum scope
-// data is high-volume enough that some setups need this raised (115200 is
-// common) — see docs/civ-notes.md.
-const CIV_BAUD_RATE = process.env.CIV_BAUD_RATE ? parseInt(process.env.CIV_BAUD_RATE, 10) : undefined;
 const WS_PORT = process.env.WS_PORT ? parseInt(process.env.WS_PORT, 10) : 8080;
 // Displayed as both the browser tab title and the on-screen heading —
 // see docs/ui-notes.md for why this is sent to the client at connect
@@ -362,8 +359,7 @@ async function maximizeUsbAudioLevelsOnRadio(civ) {
 }
 
 async function main() {
-  const radioAddr = RADIO_MODEL ? KNOWN_RADIO_ADDR[RADIO_MODEL] : undefined;
-  civ = new CivDriver({ path: SERIAL_PATH, radioAddr, baudRate: CIV_BAUD_RATE, keyLine: CW_KEY_LINE || undefined });
+  civ = createRadio();
 
   civ.on('error', (err) => console.error('[civ error]', err.message));
   // Only after a timeout: the radio answered too late, and the answer was dropped.
@@ -374,13 +370,13 @@ async function main() {
   // non-zero so systemd (Restart=on-failure) starts it again; while the
   // radio is still away, each start fails at civ.open() and is retried.
   civ.on('close', () => {
-    if (shuttingDown) return;
+    if (shuttingDown || civ.session) return;
     console.error(`[civ] The serial port ${SERIAL_PATH} closed unexpectedly (radio off or USB unplugged?). Exiting so the service restarts.`);
     shutdown('serial port closed', 1);
   });
 
   await civ.open();
-  console.log(`CI-V port open: ${SERIAL_PATH} at ${civ.baudRate} baud`);
+  console.log(civ.session ? 'Icom LAN radio connected (48 kHz mono PCM)' : `CI-V port open: ${SERIAL_PATH} at ${civ.baudRate} baud`);
 
   if (!civ.radioAddr) {
     console.log('No radio address configured; attempting auto-detect...');
@@ -390,10 +386,10 @@ async function main() {
     console.log(`Using configured radio address 0x${civ.radioAddr.toString(16)}`);
   }
 
-  if (CIV_MAXIMIZE_USB_LEVELS) {
+  if (CIV_MAXIMIZE_USB_LEVELS && !civ.session && RADIO_MODEL !== 'IC-7300MK2') {
     await maximizeUsbAudioLevelsOnRadio(civ);
   } else {
-    console.log('CIV_MAXIMIZE_USB_LEVELS=0; leaving the radio\'s own USB audio levels as found.');
+    console.log('USB audio level setup skipped for this connection.');
   }
 
   let tls = null;
@@ -421,6 +417,40 @@ async function main() {
   });
   if (ALLOWED_ORIGINS.length) console.log(`WebSocket connections also allowed from: ${ALLOWED_ORIGINS.join(', ')}`);
   const boundPort = await controlServer.listen();
+  const idleSettings = civ.session ? radioIdleSettingsPath() : null;
+  controlServer.radioTxBusy = () => Boolean(cwTxBridge?.transmitting || cwPaddleBridge?.active
+    || ttyBridge?.transmitting || sstvTxBridge?.transmitting || easypalTxBridge?.transmitting
+    || wsprBridge?.transmitting || js8Bridge?.state?.sending
+    || ft8Bridge?._pendingTxMessage || ft8Bridge?._pttReleaseTimer
+    || varaBridge?.state?.pending || varaBridge?.state?.buffer > 0);
+  wireRadioConnection(civ, controlServer, {
+    idleTimeoutMinutes: loadRadioIdleTimeout(idleSettings),
+    saveIdleTimeout: (minutes) => saveRadioIdleTimeout(idleSettings, minutes),
+  });
+  controlServer.on('radio-disconnected', () => {
+    ttyBridge?.abort();
+    sstvTxBridge?.abort();
+    easypalTxBridge?.abort();
+    wsprBridge?.setTx({ enabled: false });
+    js8Bridge?.request({ action: 'stop' }).catch((err) => console.error('Could not stop JS8 after radio loss:', err.message));
+    ft8Bridge?.cancelTx('Radio disconnected');
+    if (controlServer.state.freeDvActive) {
+      controlServer.state.freeDvActive = false;
+      controlServer.emit('freedv-active', false);
+      controlServer._broadcastAppModes();
+    }
+    if (controlServer.state.varaActive) controlServer.setVaraActiveFromServer(false);
+    // Stop pipelines while the actual radio state remains unknown. This is
+    // an internal producer signal; the browser snapshot keeps ptt=null.
+    controlServer.emit('ptt', false);
+  });
+  controlServer.on('client-disconnected', () => {
+    if (!civ.session || controlServer.clients.size) return;
+    ft8Bridge?.cancelTx('Last browser disconnected');
+    js8Bridge?.request({ action: 'stop' }).catch((err) => console.error('Could not stop JS8 after the last browser left:', err.message));
+    ttyBridge?.abort();
+    if (civ.session.connected) controlServer.setPttFromServer(false).catch(() => {});
+  });
   const scheme = tls ? 'https' : 'http';
   console.log(`Control server listening on ${scheme}://0.0.0.0:${boundPort}`);
   console.log(`Serving PWA app shell from ${STATIC_DIR}`);
@@ -463,7 +493,7 @@ async function main() {
     console.log('FREEDV_REPORTER_ENABLED=0; FreeDV Reporter disabled.');
   }
 
-  if (AUDIO_RX_DEVICE) {
+  if (AUDIO_RX_DEVICE || civ.session) {
     audioBridge = new AudioBridge({
       controlServer,
       // Only ever used to pick which HamNoise model (CW vs. voice) is
@@ -473,6 +503,7 @@ async function main() {
       civ,
       rxDevice: AUDIO_RX_DEVICE,
       txDevice: AUDIO_TX_DEVICE,
+      ...(civ.session ? { capture: civ.capture, playback: civ.playback, maximizeVolumeOnStart: false } : {}),
       sampleRate: AUDIO_SAMPLE_RATE,
       channels: AUDIO_CHANNELS,
       opusBitrate: AUDIO_OPUS_BITRATE,
@@ -489,7 +520,7 @@ async function main() {
       opusBitrate: AUDIO_OPUS_BITRATE,
     });
     console.log(
-      `Audio bridge started (rx: ${AUDIO_RX_DEVICE}, tx: ${AUDIO_TX_DEVICE}, ` +
+      `Audio bridge started (rx: ${civ.session ? 'Icom LAN' : AUDIO_RX_DEVICE}, tx: ${civ.session ? 'Icom LAN' : AUDIO_TX_DEVICE}, ` +
         `${AUDIO_SAMPLE_RATE}Hz, ${AUDIO_CHANNELS}ch, compressed: ${audioBridge.compressedCodecs.join("/") || "none"}, ` +
         `HamNoise quality: ${HAMNOISE_QUALITY})`
     );
@@ -794,16 +825,24 @@ async function main() {
   console.log('CW text sending ready (the Send button in CW mode).');
   controlServer.cwTxBusy = () => cwTxBridge.transmitting;
 
-  cwPaddleBridge = new CwPaddleBridge({ controlServer, keyLine: CW_KEY_LINE, delayMs: CW_PADDLE_DELAY_MS });
+  const paddleKeyLine = civ.session ? null : CW_KEY_LINE;
+  cwPaddleBridge = new CwPaddleBridge({ controlServer, keyLine: paddleKeyLine, delayMs: CW_PADDLE_DELAY_MS });
   cwPaddleBridge.start();
   console.log(
-    CW_KEY_LINE
-      ? `CW paddle ready: keys with the serial port's ${CW_KEY_LINE.toUpperCase()} line (the radio's USB Keying (CW) must be ${CW_KEY_LINE.toUpperCase()}), ${CW_PADDLE_DELAY_MS} ms behind.`
+    paddleKeyLine
+      ? `CW paddle ready: keys with the serial port's ${paddleKeyLine.toUpperCase()} line (the radio's USB Keying (CW) must be ${paddleKeyLine.toUpperCase()}), ${CW_PADDLE_DELAY_MS} ms behind.`
       : `CW paddle ready: keys with CI-V PTT, ${CW_PADDLE_DELAY_MS} ms behind (set CW_KEY_LINE for more exact timing).`
   );
 
   if (SCOPE_ENABLED) {
     scopeBridge = new ScopeBridge({ civ, controlServer });
+    civ.on('radio-ready', () => scopeBridge.start().then(() => {
+      controlServer.setScopeInfo({ enabled: true });
+      console.log('Scope output enabled after radio reconnect.');
+    }).catch((err) => {
+      controlServer.setScopeInfo({ enabled: false });
+      controlServer.broadcastJsonEvent('scope-error', { message: err.message });
+    }));
     try {
       await scopeBridge.start();
       controlServer.setScopeInfo({ enabled: true });
@@ -813,7 +852,7 @@ async function main() {
       console.error(
         '[scope] Radio rejected the enable-scope commands:',
         err.message,
-        '\n         Scope will stay disabled for this session. See docs/civ-notes.md.'
+        '\n         Scope is disabled; radio reconnect will retry. See docs/civ-notes.md.'
       );
     }
   } else {
@@ -834,7 +873,7 @@ let shuttingDown = false;
  */
 async function emergencyUnkey(why) {
   if (!civ || typeof civ.forcePttOff !== 'function') return;
-  if (CW_KEY_LINE) {
+  if (CW_KEY_LINE && !civ.session) {
     // The CW key line keys the radio without PTT: drop it too.
     await civ.setKeyLine(CW_KEY_LINE, false).catch((err) => console.error(`[civ] Could not drop the CW key line (${why}): ${err.message}`));
   }
@@ -855,7 +894,11 @@ async function shutdown(signal, exitCode = 0) {
   try {
     await emergencyUnkey(signal);
     if (scopeBridge) await scopeBridge.stop();
-    if (cwDecoderBridge) cwDecoderBridge.stop();
+    // Start graceful native-worker cleanup, but stop transmit producers
+    // below before waiting for model loading/inference to finish.
+    const cwDecoderStopped = cwDecoderBridge
+      ? Promise.resolve(cwDecoderBridge.stop()).catch((err) => console.error('Could not close CW decoder:', err.message))
+      : null;
     if (rttyDecoderBridge) rttyDecoderBridge.stop();
     if (ft8Bridge) ft8Bridge.stop();
     if (ttyBridge) ttyBridge.stop();
@@ -877,6 +920,7 @@ async function shutdown(signal, exitCode = 0) {
     if (radeBridge) radeBridge.stop();
     if (freeDvReporterBridge) freeDvReporterBridge.stop();
     if (audioBridge) audioBridge.stop();
+    if (cwDecoderStopped) await cwDecoderStopped;
     if (controlServer) await controlServer.close();
     if (civ) await civ.close();
   } catch (err) {

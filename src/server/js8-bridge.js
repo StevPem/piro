@@ -408,7 +408,12 @@ class Js8Bridge {
     else throw new Error(`Unknown JS8 action "${action}"`);
     if (!message) throw new Error('Nothing to send.');
     if (message.length > MAX_TEXT) throw new Error(`Too long (${MAX_TEXT} characters at most).`);
+    const session = this._txSession;
+    const generation = this.controlServer.civ?.session?.generation;
     const { frames } = await this._call({ type: 'encode', mycall: this.callsign, mygrid: this.grid, text: message });
+    if (session !== this._txSession || generation !== this.controlServer.civ?.session?.generation || !this._active) {
+      throw new Error('JS8 transmission was cancelled');
+    }
     if (!frames.length) throw new Error('Nothing to send.');
     if (frames.length > MAX_FRAMES) throw new Error(`That needs ${frames.length} frames (${Math.ceil((frames.length * SLOT_MS) / 60000)} minutes); ${MAX_FRAMES} (10 minutes) is the most. Shorten it.`);
     if (this._queue.length || this.state.sending) throw new Error('A message is still being sent. Wait for it, or press Stop.');
@@ -426,6 +431,9 @@ class Js8Bridge {
     const session = this._txSession;
     const sending = this.state.sending;
     const txHz = this.state.txHz;
+    const civ = this.controlServer.civ;
+    const generation = civ?.session?.generation;
+    const current = () => session === this._txSession && generation === civ?.session?.generation;
     try {
       const tones = encodeTones(f.frame, f.bits);
       const leadMs = Math.max(0, START_DELAY_MS - this.latencyMs);
@@ -434,17 +442,13 @@ class Js8Bridge {
       const audio = new Float32Array(lead + tone.length);
       audio.set(tone, lead);
       const pcm = upsampleFloatToPcm(audio, RATE, this.audioBridge.sampleRate);
-      const civ = this.controlServer.civ;
       // DATA mode must be on, or PTT would put the microphone on the air.
       if (civ) await ensureDataMode(civ, true, { settleMs: this.dataSettleMs });
-      if (session !== this._txSession) return;
+      if (!current()) return;
       this._keyed = true;
       await this.controlServer.setPttFromServer(true);
+      if (!current()) return; // Stop already queued release; do not touch a newer TX.
       this._update({ keyed: true });
-      if (session !== this._txSession) {
-        await this._unkey();
-        return;
-      }
       this.audioBridge.playback.write(pcm);
       const own = { slotStartMs, freq: txHz, snr: null, text: f.text, own: true, first: (f.bits & 1) === 1, last: (f.bits & 2) === 2 };
       this._remember([own]);
@@ -456,13 +460,23 @@ class Js8Bridge {
       });
       this._releaseTimer = null;
       this._releaseResolve = null;
-      if (session !== this._txSession) return; // stopped: _stopSending() unkeyed
+      if (!current()) return; // stopped: _stopSending() unkeyed
+      // LAN playback is sample-paced and may still have queued data after a
+      // delayed event-loop tick. Keep PTT until the final samples and radio
+      // buffer drain; Stop still flushes it immediately through restart().
+      if (this.audioBridge.playback.drain) {
+        const drained = await this.audioBridge.playback.drain();
+        if (!current()) return;
+        if (!drained) throw new Error('JS8 audio drain was cancelled');
+      }
       await this._unkey();
+      if (!current()) return;
       if (sending) {
         const sent = sending.sent + 1;
         this._update({ sending: this._queue.length ? { ...sending, sent } : null });
       }
     } catch (err) {
+      if (!current()) return; // An old failure must not cancel a newer message.
       this._error(`transmit failed: ${err.message}`);
       this._queue = [];
       this._txSession++;

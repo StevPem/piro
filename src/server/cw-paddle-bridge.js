@@ -85,15 +85,18 @@ class CwPaddleBridge {
     this._onClientGone = (ws) => {
       if (this._s && this._s.ws === ws) this._end('browser disconnected');
     };
+    this._onRadioGone = () => this._end('radio disconnected');
   }
 
   start() {
     this.controlServer.on('client-disconnected', this._onClientGone);
+    this.controlServer.on('radio-disconnected', this._onRadioGone);
     this.controlServer.cwPaddle = this;
   }
 
   stop() {
     this.controlServer.off('client-disconnected', this._onClientGone);
+    this.controlServer.off('radio-disconnected', this._onRadioGone);
     if (this.controlServer.cwPaddle === this) this.controlServer.cwPaddle = null;
     if (this._s) this._end('stopped');
   }
@@ -149,8 +152,11 @@ class CwPaddleBridge {
 
   _begin(ws, id, t, now) {
     const cs = this.controlServer;
+    if (cs.civ?.session && (!cs.civ.session.connected || !cs.civ.prepared || cs.state?.ptt === null)) {
+      throw new Error('LAN radio is not ready for CW keying.');
+    }
     const mode = cs.state?.mode?.mode;
-    if (mode !== 'CW' && mode !== 'CW-R') throw new Error('Put the radio in CW first.');
+    if (mode !== 'CW' && mode !== 'CW_R' && mode !== 'CW-R') throw new Error('Put the radio in CW first.');
     if (cs.state?.ptt) throw new Error('The radio is already transmitting.');
     if (cs.cwTxBusy?.()) throw new Error('CW text is being sent.');
     const s = {

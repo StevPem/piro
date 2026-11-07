@@ -1,0 +1,14 @@
+{
+  "time": "2026-11-06T20:57:25.682Z",
+  "before": "MainPID=3079631\nNRestarts=0\nActiveState=active",
+  "errors": [
+    {
+      "context": "rade-rx",
+      "message": "rade-rx: stage \"radae_rx\" stdin failed (write EPIPE)"
+    }
+  ],
+  "after": "MainPID=3079631\nNRestarts=0\nActiveState=active",
+  "rxFramesAfterDisable": 76,
+  "scopeFrames": 48,
+  "passed": true
+}

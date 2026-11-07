@@ -213,6 +213,7 @@ class Ft8Bridge {
     this._nextRequestId = 1;
     this._pendingTxMessage = null; // queued text, sent at the next boundary
     this._pttReleaseTimer = null;
+    this._txGeneration = 0;
 
     this._onPcmData = (chunk) => {
       this._rxChunks.push(chunk);
@@ -242,12 +243,14 @@ class Ft8Bridge {
       this._pskSpotEnabled = enabled;
     };
     this._onVariantRequest = (variant) => this.setVariant(variant);
+    this._onRadioLost = () => this.cancelTx('Radio connection lost');
 
     this.controlServer.on('ptt', this._onPtt);
     this.controlServer.on('ft8-active', this._onActiveRequest);
     this.controlServer.on('ft8-send', this._onSendRequest);
     this.controlServer.on('psk-spot-enabled', this._onPskSpotEnabledRequest);
     this.controlServer.on('ft8-variant', this._onVariantRequest);
+    this.controlServer.on('radio-disconnected', this._onRadioLost);
     this.slotClock.on('boundary', this._onBoundary);
     this.worker.on('message', this._onWorkerMessage);
     this.worker.on('error', (err) => console.error('[ft8] decode worker error:', err.message));
@@ -267,6 +270,7 @@ class Ft8Bridge {
     this.controlServer.off('ft8-send', this._onSendRequest);
     this.controlServer.off('psk-spot-enabled', this._onPskSpotEnabledRequest);
     this.controlServer.off('ft8-variant', this._onVariantRequest);
+    this.controlServer.off('radio-disconnected', this._onRadioLost);
     this.slotClock.off('boundary', this._onBoundary);
     if (this._pttReleaseTimer) clearTimeout(this._pttReleaseTimer);
     for (const { reject } of this._pendingRequests.values()) reject(new Error('Ft8Bridge stopped'));
@@ -540,6 +544,7 @@ class Ft8Bridge {
   }
 
   async _transmitNow({ message, freqHz, resolve, reject }) {
+    const generation = this._txGeneration;
     const actualFreqHz = freqHz ?? this.txBaseFrequencyHz;
     try {
       this.controlServer.broadcastJsonEvent(EVENT.FT8_TX_STATUS, { status: 'sending', message, freqHz: actualFreqHz });
@@ -552,6 +557,7 @@ class Ft8Bridge {
       // The FT8 button turned DATA mode on; make sure it still is before
       // keying (a quick read when it is; see civ/data-mode-guard.js).
       await ensureDataMode(this.civ, true, { settleMs: this.dataSettleMs });
+      if (generation !== this._txGeneration) throw new Error('FT8 transmission cancelled');
       await this.controlServer.setPttFromServer(true);
       this.audioBridge.playback.write(pcm);
 
@@ -561,16 +567,21 @@ class Ft8Bridge {
       // write() returning and the audio actually reaching the speaker has
       // time to drain before the radio de-keys.
       await new Promise((r) => {
+        this._wakeTx = r;
         this._pttReleaseTimer = setTimeout(r, durationMs + this.pttReleaseMarginMs);
       });
       this._pttReleaseTimer = null;
+      this._wakeTx = null;
+      if (generation !== this._txGeneration) throw new Error('FT8 transmission cancelled');
+      await this.audioBridge.playback.drain?.();
+      if (generation !== this._txGeneration) throw new Error('FT8 transmission cancelled');
       await this.controlServer.setPttFromServer(false);
 
       this.controlServer.broadcastJsonEvent(EVENT.FT8_TX_STATUS, { status: 'sent', message, freqHz: actualFreqHz });
       resolve();
     } catch (err) {
       try {
-        await this.controlServer.setPttFromServer(false);
+        if (generation === this._txGeneration) await this.controlServer.setPttFromServer(false);
       } catch {
         // best-effort — if this also fails, the PTT watchdog is still
         // armed from the setPttFromServer(true) above and will force it
@@ -579,6 +590,19 @@ class Ft8Bridge {
       this.controlServer.broadcastJsonEvent(EVENT.FT8_TX_STATUS, { status: 'error', message, error: err.message });
       reject(err);
     }
+  }
+
+  cancelTx(reason = 'FT8 transmission cancelled') {
+    ++this._txGeneration;
+    if (this._pendingTxMessage) {
+      this._pendingTxMessage.reject(new Error(reason));
+      this._pendingTxMessage = null;
+    }
+    clearTimeout(this._pttReleaseTimer);
+    this._pttReleaseTimer = null;
+    this._wakeTx?.();
+    this._wakeTx = null;
+    this.audioBridge.playback.restart?.();
   }
 }
 

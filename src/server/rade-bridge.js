@@ -334,11 +334,30 @@ class RadeBridge extends EventEmitter {
         // real2iq specifically does not belong here.
       ],
     });
-    this._txPipeline.on('data', (chunk) => this._handleModulatedAudio(chunk));
-    this._txPipeline.on('error', (err) => this._reportError('tx', err));
-    this._txPipeline.on('stderr', (msg) => console.error('[rade-tx]', msg));
-    this._txPipeline.start();
+    const pipeline = this._txPipeline;
+    let failed = false;
+    const fail = (err) => {
+      if (failed || this._txPipeline !== pipeline) return;
+      failed = true;
+      pipeline.stop();
+      this._reportError('tx', err);
+      try { this.audioBridge.playback.restart?.(); }
+      catch (flushError) { this._reportError('tx-playback', flushError); }
+      // Keep raw microphone playback muted until the normal confirmed
+      // PTT-off event detaches TX. A rejected release must not expose it.
+      try {
+        Promise.resolve(this.controlServer.setPttFromServer(false))
+          .catch((releaseError) => this._reportError('tx-unkey', releaseError));
+      } catch (releaseError) { this._reportError('tx-unkey', releaseError); }
+    };
+    pipeline.on('data', (chunk) => {
+      if (!failed && this._txPipeline === pipeline) this._handleModulatedAudio(chunk);
+    });
+    pipeline.on('error', fail);
+    pipeline.on('stderr', (msg) => console.error('[rade-tx]', msg));
     this._txAttached = true;
+    try { pipeline.start(); }
+    catch (err) { fail(err); }
   }
 
   _detachTx() {

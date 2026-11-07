@@ -84,7 +84,7 @@ async function run() {
     await flush();
     check(audioBridge.capture.listenerCount('data') === 1, 'start() attaches to the PCM stream immediately if the radio is already in CW mode');
     check(decoder.pitchesSet.length === 1 && decoder.pitchesSet[0] === 600, 'start() reads the radio\'s current CW pitch and applies it');
-    bridge.stop();
+    await bridge.stop();
   }
 
   // --- start() does NOT attach if mode isn't CW ---
@@ -96,7 +96,7 @@ async function run() {
     const bridge = new CwDecoderBridge({ civ, controlServer, audioBridge, decoder });
     await bridge.start();
     check(audioBridge.capture.listenerCount('data') === 0, 'start() does not attach to the PCM stream when the radio is not in CW mode');
-    bridge.stop();
+    await bridge.stop();
   }
 
   // --- Mode change to CW attaches, resets the decoder, and refreshes pitch ---
@@ -113,7 +113,7 @@ async function run() {
     check(audioBridge.capture.listenerCount('data') === 1, 'switching mode to CW attaches to the PCM stream');
     check(decoder.resetCalls === 1, 'switching mode to CW resets the decoder\'s prior state');
     check(decoder.pitchesSet.includes(700), 'switching mode to CW refreshes the pitch from the radio, picking up the new value');
-    bridge.stop();
+    await bridge.stop();
   }
 
   // --- Mode change away from CW detaches ---
@@ -127,7 +127,7 @@ async function run() {
     await flush();
     civ.emit('mode', { mode: 'USB', filter: 1 });
     check(audioBridge.capture.listenerCount('data') === 0, 'switching mode away from CW detaches from the PCM stream');
-    bridge.stop();
+    await bridge.stop();
   }
 
   // --- PTT engaging pauses decoding; releasing resumes it ---
@@ -146,7 +146,7 @@ async function run() {
 
     controlServer.emit('ptt', false);
     check(audioBridge.capture.listenerCount('data') === 1, 'releasing PTT re-attaches to the PCM stream (still in CW mode)');
-    bridge.stop();
+    await bridge.stop();
   }
 
   // --- PTT engaging while NOT in CW mode has no effect (nothing attached either way) ---
@@ -160,7 +160,7 @@ async function run() {
     controlServer.emit('ptt', true);
     controlServer.emit('ptt', false);
     check(audioBridge.capture.listenerCount('data') === 0, 'PTT toggling while not in CW mode never attaches to the PCM stream');
-    bridge.stop();
+    await bridge.stop();
   }
 
   // --- Decoded characters/spaces broadcast as EVENT.CW_TEXT ---
@@ -182,7 +182,7 @@ async function run() {
         controlServer.broadcasts[2].data.text === ' ',
       `each decoded character/space broadcasts as a separate EVENT.CW_TEXT, got ${JSON.stringify(controlServer.broadcasts)}`
     );
-    bridge.stop();
+    await bridge.stop();
   }
 
   // --- CW1/CW2 variant switching ---
@@ -226,7 +226,7 @@ async function run() {
       `after switching, only CW2's output is broadcast, got ${JSON.stringify(controlServer.broadcasts)}`
     );
 
-    bridge.stop();
+    await bridge.stop();
     check(
       decoder1.listenerCount('char') === 0 && decoder2.listenerCount('char') === 0,
       'stop() removes this bridge\'s listeners from BOTH decoders'
@@ -242,7 +242,7 @@ async function run() {
     const decoder1 = new StubDecoder();
     const bridge = new CwDecoderBridge({ civ, controlServer, audioBridge, decoder: decoder1 });
     check(bridge.decoders.CW2 instanceof HamfistCwDecoder, 'CW2 defaults to a real HamfistCwDecoder when not injected');
-    bridge.stop();
+    await bridge.stop();
   }
 
   // --- A real (non-stub) DeepCwDecoder is used for CW3 by default ---
@@ -258,7 +258,7 @@ async function run() {
     // this test only cares about which class got instantiated, not
     // whether the ONNX model actually loads in this environment.
     bridge.decoders.CW3._ready.catch(() => {});
-    bridge.stop();
+    await bridge.stop();
   }
 
   // --- Three-way variant cycling (CW1 -> CW2 -> CW3 -> CW1), including CW3 ---
@@ -299,7 +299,7 @@ async function run() {
     controlServer.emit('cw-decoder-variant', 'bogus');
     check(bridge.variant === 'CW1', 'an unrecognized variant is ignored, leaving the active variant unchanged');
 
-    bridge.stop();
+    await bridge.stop();
     check(
       decoder3.listenerCount('char') === 0 && decoder3.listenerCount('error') === 0,
       'stop() removes this bridge\'s listeners from CW3 too, including its error listener'
@@ -331,7 +331,7 @@ async function run() {
       `CW3's error is broadcast as EVENT.AUDIO_ERROR while it's active, got ${JSON.stringify(controlServer.broadcasts)}`
     );
 
-    bridge.stop();
+    await bridge.stop();
   }
 
   // --- stop() fully detaches and removes all listeners ---
@@ -344,7 +344,7 @@ async function run() {
     await bridge.start();
     await flush();
     check(decoder.listenerCount('pitch') === 1, 'sanity: the bridge is listening for the decoder\'s own pitch-calibration event');
-    bridge.stop();
+    await bridge.stop();
     check(audioBridge.capture.listenerCount('data') === 0, 'stop() detaches from the PCM stream');
     check(civ.listenerCount('mode') === 0, 'stop() removes the mode-change listener from civ');
     check(controlServer.listenerCount('ptt') === 0, 'stop() removes the ptt listener from controlServer');
@@ -377,7 +377,26 @@ async function run() {
       `a failed getCwPitch() read broadcasts a RIG_ERROR naming the underlying failure instead of failing silently, got ${JSON.stringify(controlServer.broadcasts)}`
     );
     check(decoder.pitchesSet.length === 0, 'the decoder keeps whatever pitch it already had when the read fails, rather than being set to something bogus');
-    bridge.stop();
+    await bridge.stop();
+  }
+
+  // The server must be able to await native worker cleanup after detaching.
+  {
+    const decoder3 = new StubDecoder();
+    let finish;
+    decoder3.close = () => new Promise((resolve) => { finish = resolve; });
+    const bridge = new CwDecoderBridge({ civ: new StubCiv('USB'), controlServer: new StubControlServer(),
+      audioBridge: makeStubAudioBridge(), decoder: new StubDecoder(), decoder2: new StubDecoder(), decoder3 });
+    await bridge.start();
+    let finished = false;
+    const closing = bridge.stop();
+    Promise.resolve(closing).then(() => { finished = true; });
+    await flush();
+    check(!finished, 'stop waits for the decoder worker cleanup rather than returning before it finishes');
+    finish();
+    await closing;
+    await flush();
+    check(finished, 'stop completes after decoder worker cleanup');
   }
 
   if (failures > 0) {

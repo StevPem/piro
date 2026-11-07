@@ -68,6 +68,7 @@ const root = path.join(__dirname, '..');
 const files = [
   ...fs.readdirSync(path.join(root, 'test')).filter((f) => f.endsWith('.js')).map((f) => path.join('test', f)),
   'src/server/index.js',
+  'src/server/radio-connection.js',
 ];
 const opening = files.filter((f) => {
   const text = fs.readFileSync(path.join(root, f), 'utf8');

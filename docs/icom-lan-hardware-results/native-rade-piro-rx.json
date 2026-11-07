@@ -1,0 +1,10 @@
+{
+  "time": "2026-11-06T21:33:08.957Z",
+  "rfTransmission": false,
+  "protocol": "RADE v1",
+  "errors": [],
+  "decodedSeconds": 9.43,
+  "rms": 3519.025666356509,
+  "peak": 32766,
+  "passed": true
+}

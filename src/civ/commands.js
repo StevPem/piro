@@ -235,6 +235,7 @@ const DEFAULT_CONTROLLER_ADDR = 0xe0;
  */
 const KNOWN_RADIO_ADDR = {
   'IC-7300': 0x94,
+  'IC-7300MK2': 0xb6,
   'IC-7610': 0x98,
   'IC-9700': 0xa2,
   'IC-705': 0xa4,

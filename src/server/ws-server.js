@@ -9,6 +9,7 @@ const { EventEmitter } = require('events');
 const { WebSocketServer } = require('ws');
 const { REQUEST, EVENT, BINARY_TYPE, makeResult, makeError, makeEvent } = require('./protocol');
 const { createStaticHandler } = require('./static-server');
+const REQUEST_TYPES = new Set(Object.values(REQUEST));
 
 // Operator notes (REQUEST.POST_NOTE)
 const NOTES_KEEP = 3;
@@ -93,10 +94,9 @@ function parseAllowedOrigins(value) {
  * the audio bridge to consume, rather than handled here directly, to keep
  * control and audio concerns decoupled.
  *
- * Note: this layer does not arbitrate simultaneous control from multiple
- * clients (e.g. two people both keying PTT, or both sending TX audio at
- * once) — every connected client has equal, unrestricted control. Access
- * control/locking, if wanted, would be a later addition on top of this.
+ * Connected clients share rig controls. Native LAN microphone audio follows
+ * the current or pending browser PTT owner, so another browser's late packets
+ * cannot interfere with a server modem. USB retains its existing audio routing.
  *
  * Events emitted: 'client-connected' (ws), 'client-disconnected' (ws),
  * 'binary-message' (ws, Buffer), 'frequency' (hz — internal-only, for
@@ -159,6 +159,7 @@ class ControlServer extends EventEmitter {
     // If that browser goes (closed, network lost, heartbeat missed), PTT
     // is released at once rather than when the watchdog fires.
     this._pttOwner = null;
+    this._pendingPtt = null;
     // Ping every heartbeatMs (0 turns it off); see HEARTBEAT_MS.
     this.heartbeatMs = heartbeatMs;
     this._heartbeatTimer = null;
@@ -453,6 +454,15 @@ class ControlServer extends EventEmitter {
 
       ws.on('message', (raw, isBinary) => {
         if (isBinary) {
+          if (this.radioConnectionManager && !this.radioConnectionManager.ready) return;
+          if (this.civ.session) {
+            // Native modem audio is server-produced. Late microphone packets
+            // must not contaminate it or trigger another producer's unkey path.
+            // Preserve the current owner's audio during asynchronous key prep.
+            const owner = this._pendingPtt ? this._pendingPtt.owner
+              : this.state.ptt === true ? this._pttOwner : null;
+            if (owner !== ws) return;
+          }
           this.emit('binary-message', ws, raw);
           return;
         }
@@ -599,6 +609,11 @@ class ControlServer extends EventEmitter {
     this.emit('vara-active', active);
   }
 
+  setVaraActiveFromServer(active) {
+    this._setVaraActive(active);
+    this._broadcastAppModes();
+  }
+
   _setWsprActive(active) {
     this.state.wsprActive = active;
     // Handled by WsprBridge (internal-only event).
@@ -693,7 +708,45 @@ class ControlServer extends EventEmitter {
     }
 
     try {
+      const deactivating = msg.active === false && [REQUEST.SET_FT8_ACTIVE, REQUEST.SET_FREEDV_ACTIVE,
+        REQUEST.SET_JTTY_ACTIVE, REQUEST.SET_OLIVIA_ACTIVE, REQUEST.SET_HELL_ACTIVE, REQUEST.SET_JS8_ACTIVE,
+        REQUEST.SET_VARA_ACTIVE, REQUEST.SET_SSTV_ACTIVE, REQUEST.SET_WSPR_ACTIVE, REQUEST.SET_FAX_ACTIVE,
+        REQUEST.SET_EASYPAL_ACTIVE].includes(type);
+      const stopping = [REQUEST.ABORT_CW, REQUEST.ABORT_TTY, REQUEST.ABORT_SSTV, REQUEST.ABORT_EASYPAL].includes(type)
+        || (type === REQUEST.SET_PTT && msg.value === false);
+      if (this.radioConnectionManager && !this.radioConnectionManager.ready
+        && ![REQUEST.SET_RADIO_CONNECTED, REQUEST.SET_RADIO_IDLE_TIMEOUT, REQUEST.RADIO_ACTIVITY,
+          REQUEST.SET_AUDIO_CODEC, REQUEST.POST_NOTE,
+          REQUEST.GET_SSTV_PICTURES, REQUEST.GET_BAND_CONDITIONS].includes(type)
+        && !deactivating && !stopping) {
+        throw new Error('Radio is disconnected or changing connection; connect the radio first');
+      }
+      const operatorActivity = REQUEST_TYPES.has(type) && msg.background !== true
+        && !type.startsWith('get') && ![REQUEST.SET_AUDIO_CODEC, REQUEST.RADIO_ACTIVITY,
+          REQUEST.SET_RADIO_IDLE_TIMEOUT, REQUEST.SET_RADIO_CONNECTED].includes(type);
+      // Count intent before awaiting radio I/O: an idle receive probe may
+      // already be pending, and must not close the link under a new command.
+      if (operatorActivity) this.radioConnectionManager?.recordActivity();
       switch (type) {
+        case REQUEST.SET_RADIO_IDLE_TIMEOUT: {
+          if (!this.radioConnectionManager) throw new Error('Radio idle disconnect is available for native LAN connections only');
+          const radioConnection = await this.radioConnectionManager.setIdleTimeout(msg.minutes);
+          ws.send(makeResult(id, { radioConnection }));
+          break;
+        }
+        case REQUEST.RADIO_ACTIVITY: {
+          if (!this.radioConnectionManager) throw new Error('Radio activity is available for native LAN connections only');
+          this.radioConnectionManager.recordActivity();
+          ws.send(makeResult(id, {}));
+          break;
+        }
+        case REQUEST.SET_RADIO_CONNECTED: {
+          if (typeof msg.connected !== 'boolean') throw new Error('"connected" must be a boolean');
+          if (!this.radioConnectionManager) throw new Error('Radio connection management is available for native LAN connections only');
+          const radioConnection = this.radioConnectionManager.setConnected(msg.connected);
+          ws.send(makeResult(id, { radioConnection }));
+          break;
+        }
         case REQUEST.GET_FREQUENCY: {
           const value = await this.civ.getFrequency();
           this.state.frequency = value;
@@ -1380,6 +1433,9 @@ class ControlServer extends EventEmitter {
         default:
           throw new Error(`Unknown request type "${type}"`);
       }
+      // A completed operation grants a fresh interval as well. Polls, codec
+      // negotiation and explicit background synchronization remain excluded.
+      if (operatorActivity) this.radioConnectionManager?.recordActivity();
     } catch (err) {
       // Also logged server-side, not just sent back to the requesting
       // client — the client-side error banner (see app.js's showError())
@@ -1420,6 +1476,7 @@ class ControlServer extends EventEmitter {
   /** Broadcast a JSON event (see protocol.js `EVENT` types) to all clients. */
   broadcastJsonEvent(type, data) {
     this._broadcast(makeEvent(type, data));
+    if (type === EVENT.CW_KEYING) this.emit('cw-keying', data.active);
   }
 
   /**
@@ -1558,15 +1615,24 @@ class ControlServer extends EventEmitter {
    * rather than needing a separate exemption path for automated TX.
    */
   async setPttFromServer(on, { except, owner, urgent = false } = {}) {
-    await this.civ.setPtt(on, { urgent });
-    this.state.ptt = on;
-    // `owner`: the browser that keyed it (REQUEST.SET_PTT); none when a bridge keyed it.
-    this._pttOwner = on ? owner ?? null : null;
-    this._armOrClearPttWatchdog(on);
-    this._broadcast(makeEvent(EVENT.PTT, { value: on }), except);
-    this.emit('ptt', on);
-    // The browser went while the radio was being keyed: unkey now.
-    if (on && owner && !this.clients.has(owner)) this._releasePttIfOwnerGone(owner);
+    if (on && this.radioConnectionManager && !this.radioConnectionManager.ready) {
+      throw new Error('Radio is not connected and ready');
+    }
+    const pending = { owner: on ? owner ?? null : null };
+    this._pendingPtt = pending;
+    try {
+      await this.civ.setPtt(on, { urgent });
+      this.state.ptt = on;
+      // `owner`: the browser that keyed it (REQUEST.SET_PTT); none for a modem.
+      this._pttOwner = on ? owner ?? null : null;
+      this._armOrClearPttWatchdog(on);
+      this._broadcast(makeEvent(EVENT.PTT, { value: on }), except);
+      this.emit('ptt', on);
+      // The browser went while the radio was being keyed: unkey now.
+      if (on && owner && !this.clients.has(owner)) this._releasePttIfOwnerGone(owner);
+    } finally {
+      if (this._pendingPtt === pending) this._pendingPtt = null;
+    }
   }
 
   _armOrClearPttWatchdog(pttOn) {
@@ -1582,21 +1648,26 @@ class ControlServer extends EventEmitter {
   async _onPttWatchdogTimeout() {
     this._pttWatchdogTimer = null;
     this._pttOwner = null;
+    let confirmed = false;
     try {
       await this.civ.setPtt(false);
+      confirmed = true;
     } catch (err) {
       // Still tell clients what happened even if the force-off itself
       // failed to confirm — better to surface it than fail silently on
       // exactly the kind of malfunction this watchdog exists to catch.
       this._broadcast(makeEvent(EVENT.RIG_ERROR, { message: `PTT watchdog fired but the force-off failed: ${err.message}` }));
     }
-    this.state.ptt = false;
+    // A lost LAN link cannot confirm the radio released its transmitter.
+    // Still stop local producers below while keeping that uncertainty visible.
+    this.state.ptt = confirmed || !this.civ.session ? false : null;
     this._broadcast(makeEvent(EVENT.PTT_TIMEOUT, { pttWatchdogMs: this.pttWatchdogMs }));
-    this._broadcast(makeEvent(EVENT.PTT, { value: false }));
+    this._broadcast(makeEvent(EVENT.PTT, { value: this.state.ptt }));
     this.emit('ptt', false); // internal, server-side-only — see the SET_PTT handler's matching emission
   }
 
   close() {
+    this.radioConnectionManager?.stopIdleTimer();
     clearTimeout(this._notesIdleTimer);
     clearTimeout(this._notesEmptyTimer);
     if (this._pttWatchdogTimer) {

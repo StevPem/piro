@@ -1,0 +1,27 @@
+{
+  "time": "2026-11-06T21:21:54.365Z",
+  "transmitTest": false,
+  "mainPidBefore": "3083076",
+  "frequencyBefore": 10120710,
+  "modeBefore": {
+    "mode": "CW",
+    "filter": 2
+  },
+  "radioSocketsBefore": 3,
+  "disconnectMs": 23,
+  "radioSocketsDisconnected": 0,
+  "audioFramesWhileOff": 0,
+  "scopeFramesWhileOff": 0,
+  "newBrowserSeesDisconnected": true,
+  "reconnectMs": 83,
+  "audioFramesAfterReconnect": 99,
+  "scopeFramesAfterReconnect": 60,
+  "radioSocketsAfter": 3,
+  "frequencyAfter": 10120710,
+  "modeAfter": {
+    "mode": "CW",
+    "filter": 2
+  },
+  "mainPidAfter": "3083076",
+  "passed": true
+}

@@ -26,13 +26,41 @@
         <h1 class="panel__title"><a class="panel__title-link" id="app-title-link" href="https://github.com/StevPem/piro" target="_blank" rel="noopener" title="PiRO's source code (AGPL-3.0)">PiRO</a></h1>
         <span class="app-version" id="app-version"></span>
       </div>
-      <span class="led">
-        <span class="led__dot" id="led-dot" data-state="connecting"></span>
-        <span id="led-text">Connecting&hellip;</span>
-        <!-- How many browsers are connected, this one included: "(2)".
-             From the server's connect snapshot and 'clients' events. -->
-        <span class="led__count" id="led-count" hidden></span>
-      </span>
+      <div class="panel__connections">
+        <span class="led" title="Browser connection to PiRO">
+          <span class="led__dot" id="led-dot" data-state="connecting"></span>
+          <span id="led-text">Connecting&hellip;</span>
+          <!-- How many browsers are connected, this one included: "(2)".
+               From the server's connect snapshot and 'clients' events. -->
+          <span class="led__count" id="led-count" hidden></span>
+        </span>
+        <details class="radio-manager" id="radio-connection-manager" hidden>
+          <summary class="radio-manager__toggle" aria-label="Manage radio connection">
+            <span class="radio-link-status" id="radio-link-status" role="status">Radio</span>
+            <span class="radio-manager__arrow" aria-hidden="true">&#9662;</span>
+          </summary>
+          <div class="radio-manager__panel">
+            <p class="radio-manager__heading">Radio connection</p>
+            <p id="radio-connection-message">This connection is shared by all browsers.</p>
+            <button class="chip radio-manager__action" id="radio-connection-action" type="button" disabled>Disconnect</button>
+            <form class="radio-idle" id="radio-idle-form">
+              <label class="radio-idle__toggle" for="radio-idle-enabled">
+                <input id="radio-idle-enabled" type="checkbox" checked disabled />
+                <span>Disconnect when idle</span>
+              </label>
+              <div class="radio-idle__minutes">
+                <label for="radio-idle-minutes">Minutes</label>
+                <input id="radio-idle-minutes" type="number" min="1" max="1440" step="1" value="60" inputmode="numeric" required disabled />
+              </div>
+              <p class="radio-idle__hint">No operator activity in any browser. Active transmissions keep the radio connected.</p>
+              <button class="chip radio-manager__action" id="radio-idle-save" type="submit" disabled>Save timeout</button>
+              <p class="radio-idle__status" id="radio-idle-status" role="status" hidden></p>
+              <p class="radio-manager__error" id="radio-idle-error" role="alert" hidden></p>
+            </form>
+            <p class="radio-manager__error" id="radio-connection-error" role="alert" hidden></p>
+          </div>
+        </details>
+      </div>
     </header>
 
     <div class="panel__body">

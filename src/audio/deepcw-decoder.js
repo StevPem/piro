@@ -145,19 +145,21 @@ class DeepCwDecoder extends EventEmitter {
     // inWorker: false runs them here (tests compare the two).
     this._engine = inWorker ? new WorkerEngine({ modelPath, metadata: this.metadata }) : new DeepCwEngine({ modelPath, metadata: this.metadata });
     this._loaded = false;
+    this._closed = false;
     this._ready = this._engine
       .load()
       .then(() => {
-        this._loaded = true;
+        if (!this._closed) this._loaded = true;
       })
       .catch((err) => {
-        this.emit('error', new Error(`CW3 (DeepCW) model failed to load from ${this._modelPath}: ${err.message}`));
+        if (!this._closed) this.emit('error', new Error(`CW3 (DeepCW) model failed to load from ${this._modelPath}: ${err.message}`));
       });
   }
 
-  /** Stops the worker thread. The decoder can't be used after this. */
+  /** Disables decoding now; resolves once accepted native work and worker teardown finish. */
   close() {
-    this._engine.close();
+    this._closed = true;
+    return this._engine.close();
   }
 
   reset() {
@@ -183,6 +185,7 @@ class DeepCwDecoder extends EventEmitter {
   }
 
   pushSamples(samples) {
+    if (this._closed) return;
     for (let n = 0; n < samples.length; n++) {
       const raw = samples[n] / 32768; // normalize to [-1, 1], matching the WAV-reading convention this model was validated against
 
@@ -202,21 +205,23 @@ class DeepCwDecoder extends EventEmitter {
   }
 
   async _decodeWindow(window) {
+    if (this._closed) return;
     let peak = 0;
     for (let i = 0; i < window.length; i++) peak = Math.max(peak, Math.abs(window[i]));
     if (peak < SILENCE_PEAK_THRESHOLD) return; // nothing worth running inference on
 
     await this._ready;
-    if (!this._loaded) return; // model never loaded — already reported via 'error'
+    if (!this._loaded || this._closed) return; // model failed or shutdown began
 
     try {
       const text = await this._engine.decode(window);
+      if (this._closed) return;
       for (const c of text) {
         if (c === ' ') this.emit('space');
         else this.emit('char', c);
       }
     } catch (err) {
-      this.emit('error', new Error(`CW3 (DeepCW) inference failed: ${err.message}`));
+      if (!this._closed) this.emit('error', new Error(`CW3 (DeepCW) inference failed: ${err.message}`));
     }
   }
 }
@@ -296,6 +301,7 @@ class WorkerEngine {
     this._pending = new Map();
     this._nextId = 1;
     this._closed = false;
+    this._exited = false;
     this._loaded = new Promise((resolve, reject) => {
       this._settleLoad = { resolve, reject };
     });
@@ -308,6 +314,10 @@ class WorkerEngine {
         this._pending.delete(msg.id);
         if (msg.type === 'text') p.resolve(msg.text);
         else p.reject(new Error(msg.message));
+      } else if (msg.type === 'closed') {
+        // The worker has settled native loading/inference callbacks. Killing
+        // its environment before this acknowledgement can abort Node in N-API.
+        this._worker.terminate().catch(() => {});
       }
     });
     const fail = (err) => {
@@ -317,7 +327,9 @@ class WorkerEngine {
     };
     this._worker.on('error', fail);
     this._worker.on('exit', (code) => {
+      this._exited = true;
       if (!this._closed) fail(new Error(`the DeepCW worker stopped (exit code ${code})`));
+      this._settleClose?.();
     });
   }
 
@@ -336,9 +348,14 @@ class WorkerEngine {
   }
 
   close() {
-    if (this._closed) return;
+    if (this._closing) return this._closing;
     this._closed = true;
-    this._worker.terminate();
+    if (this._exited) return Promise.resolve();
+    this._closing = new Promise((resolve) => { this._settleClose = resolve; });
+    // Keep cleanup alive even if this is the final outstanding test handle.
+    this._worker.ref();
+    this._worker.postMessage({ type: 'close' });
+    return this._closing;
   }
 }
 

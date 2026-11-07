@@ -95,6 +95,31 @@ function parisElements(unit = 60) {
 }
 
 async function run() {
+  {
+    const time = fakeTime();
+    const { cs, civ } = rig(time);
+    const bridge = new CwPaddleBridge({ controlServer: cs, delayMs: 250,
+      now: time.now, setTimer: time.setTimer, clearTimer: time.clearTimer });
+    bridge.start();
+    bridge.key({}, { session: 'lan-before-loss', t: 0, d: 60 });
+    cs.state.ptt = null;
+    cs.emit('radio-disconnected');
+    await time.advance(time.now() + 1000);
+    check(!bridge.active && !cs.pttCalls.some((call) => call.on), 'radio loss discards pending paddle elements instead of keying after reconnect');
+    civ.session = { connected: false };
+    civ.prepared = false;
+    let rejected = false;
+    try { bridge.key({}, { session: 'during-loss', t: 0, d: 60 }); }
+    catch (err) { rejected = /not ready/.test(err.message); }
+    check(rejected, 'LAN paddle refuses new elements while the radio is disconnected');
+    civ.session.connected = true;
+    civ.prepared = true;
+    cs.state.ptt = false;
+    await time.advance(time.now() + 1000);
+    check(!cs.pttCalls.some((call) => call.on), 'an element refused during radio loss cannot key after recovery');
+    bridge.stop();
+    check(cs.listenerCount('radio-disconnected') === 0, 'paddle stop removes the radio-loss listener');
+  }
   // Jittery arrival, even timing on air.
   {
     const time = fakeTime();

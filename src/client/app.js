@@ -1025,6 +1025,207 @@ function setClientCount(n) {
 }
 link.addEventListener('clients', (event) => setClientCount(event.detail?.count));
 
+const radioLinkStatus = document.getElementById('radio-link-status');
+const radioManager = document.getElementById('radio-connection-manager');
+const radioConnectionAction = document.getElementById('radio-connection-action');
+const radioConnectionMessage = document.getElementById('radio-connection-message');
+const radioConnectionError = document.getElementById('radio-connection-error');
+const radioIdleForm = document.getElementById('radio-idle-form');
+const radioIdleEnabled = document.getElementById('radio-idle-enabled');
+const radioIdleMinutes = document.getElementById('radio-idle-minutes');
+const radioIdleSave = document.getElementById('radio-idle-save');
+const radioIdleStatus = document.getElementById('radio-idle-status');
+const radioIdleError = document.getElementById('radio-idle-error');
+let radioConnectionInfo = null;
+let radioConnectionRequestPending = false;
+let radioIdleRequestPending = false;
+let radioIdleRenderedMinutes = null;
+let lastRadioActivitySent = -Infinity;
+let pendingRadioActivityTimer = null;
+const RADIO_ACTIVITY_INTERVAL_MS = 10000;
+
+function syncRadioIdleSettings() {
+  if (!canRecordRadioActivity()) clearPendingRadioActivity();
+  if (!radioIdleForm) return;
+  const minutes = radioConnectionInfo?.idleTimeoutMinutes;
+  if (Number.isInteger(minutes) && minutes !== radioIdleRenderedMinutes) {
+    radioIdleEnabled.checked = minutes > 0;
+    if (minutes > 0) radioIdleMinutes.value = String(minutes);
+    radioIdleRenderedMinutes = minutes;
+  }
+  const available = link.connected && radioConnectionInfo?.managed
+    && Number.isInteger(minutes) && !radioIdleRequestPending;
+  radioIdleEnabled.disabled = !available;
+  radioIdleMinutes.disabled = !available || !radioIdleEnabled.checked;
+  radioIdleSave.disabled = !available;
+}
+
+function radioReadyForPolling() {
+  return radioConnectionInfo?.transport !== 'lan' || radioConnectionInfo.state === 'connected';
+}
+
+function syncTtySendAvailability() {
+  const mode = ttyMode();
+  let available = link.connected && radioReadyForPolling();
+  if (mode === 'VARA') available = available && !!varaStatus?.available && varaStatus.state === 'connected';
+  else if (mode === 'JS8') available = available && !!js8Status?.available
+    && (!!js8Status.sending || !!js8Status.canTransmit);
+  ttySendBtn.disabled = !available;
+}
+
+function syncRadioControls() {
+  const available = link.connected && radioReadyForPolling();
+  const controls = [pttBtn, cwSendBtn, cwDotBtn, cwDashBtn,
+    tunerBtn, tuneBtn, txPowerSelect, rxGainSlider, freqDisplay, freqInput,
+    ...Object.values(freqStepButtonEls),
+    ...FUNCTION_CONTROLS.map((control) => control.buttonEl),
+    ...bandsEl.querySelectorAll('button'), ...modesEl.querySelectorAll('button')];
+  for (const control of controls) if (control) control.disabled = !available;
+  syncTtySendAvailability();
+  scopeSpanSlider.disabled = !available || !scopeEnabled;
+  if (!available) {
+    audioPipeline?.stopTransmitting();
+    paddleDotDown = false;
+    paddleDashDown = false;
+    if (cwSession) cwSession.failed = true;
+    if (pttActive) {
+      pttActive = false;
+      updatePttVisual(false);
+    }
+  }
+}
+
+function showRadioConnection(info) {
+  const previous = radioConnectionInfo;
+  radioConnectionInfo = info;
+  syncRadioControls();
+  syncRadioIdleSettings();
+  if (!radioLinkStatus || !radioManager) return;
+  radioManager.hidden = info?.transport !== 'lan';
+  if (radioManager.hidden) {
+    radioManager.open = false;
+    radioLinkStatus.textContent = '';
+    radioLinkStatus.title = '';
+    return;
+  }
+  const labels = { connecting: 'Connecting to radio', authenticating: 'Radio login',
+    negotiating: 'Opening radio link', 'opening-streams': 'Opening radio audio',
+    identifying: 'Checking radio', connected: 'Radio connected',
+    disconnecting: 'Disconnecting radio', disconnected: 'Radio disconnected',
+    reconnecting: 'Reconnecting to radio', failed: 'Radio unavailable' };
+  radioLinkStatus.textContent = labels[info?.state] || 'Radio unavailable';
+  radioLinkStatus.title = info?.message || info?.model || '';
+  if (info.state === 'connected' && previous?.state !== 'connected') {
+    radioConnectionError.hidden = true;
+    radioConnectionError.textContent = '';
+  }
+  const connect = info.manual || info.state === 'failed';
+  radioConnectionAction.textContent = info.state === 'disconnecting' ? 'Disconnecting\u2026' : connect ? 'Connect' : 'Disconnect';
+  radioConnectionAction.disabled = !link.connected || !info.managed || radioConnectionRequestPending || info.state === 'disconnecting';
+  radioConnectionMessage.textContent = info.message || (info.manual
+    ? 'The radio is disconnected. PiRO stays available to all browsers.'
+    : 'This radio connection is shared by all browsers.');
+}
+link.addEventListener('radio-connection', (event) => showRadioConnection(event.detail));
+radioConnectionAction?.addEventListener('click', async () => {
+  if (!radioConnectionInfo || radioConnectionAction.disabled) return;
+  const connected = !!(radioConnectionInfo.manual || radioConnectionInfo.state === 'failed');
+  radioConnectionError.hidden = true;
+  radioConnectionError.textContent = '';
+  radioConnectionRequestPending = true;
+  showRadioConnection(radioConnectionInfo);
+  try {
+    await link.request('setRadioConnected', { connected });
+  } catch (err) {
+    radioConnectionError.textContent = `Could not ${connected ? 'connect' : 'disconnect'} the radio: ${err.message}`;
+    radioConnectionError.hidden = false;
+  } finally {
+    radioConnectionRequestPending = false;
+    showRadioConnection(radioConnectionInfo);
+  }
+});
+radioIdleEnabled?.addEventListener('change', () => {
+  radioIdleStatus.hidden = true;
+  radioIdleError.hidden = true;
+  syncRadioIdleSettings();
+});
+radioIdleMinutes?.addEventListener('input', () => {
+  radioIdleStatus.hidden = true;
+  radioIdleError.hidden = true;
+});
+radioIdleForm?.addEventListener('submit', async (event) => {
+  event.preventDefault();
+  if (radioIdleSave.disabled) return;
+  const minutes = radioIdleEnabled.checked ? Number(radioIdleMinutes.value) : 0;
+  if (!Number.isSafeInteger(minutes) || minutes < 0 || minutes > 1440
+    || (radioIdleEnabled.checked && minutes < 1)) {
+    radioIdleError.textContent = 'Choose a whole number of minutes from 1 to 1440, or turn idle disconnect off.';
+    radioIdleError.hidden = false;
+    return;
+  }
+  radioIdleRequestPending = true;
+  radioIdleStatus.hidden = true;
+  radioIdleError.hidden = true;
+  syncRadioIdleSettings();
+  try {
+    const data = await link.request('setRadioIdleTimeout', { minutes });
+    if (data.radioConnection) showRadioConnection(data.radioConnection);
+    radioIdleStatus.textContent = minutes === 0
+      ? 'Automatic disconnect is off.'
+      : `Saved: disconnect after ${minutes} minute${minutes === 1 ? '' : 's'} without activity.`;
+    radioIdleStatus.hidden = false;
+  } catch (err) {
+    radioIdleError.textContent = `Could not save idle timeout: ${err.message}`;
+    radioIdleError.hidden = false;
+  } finally {
+    radioIdleRequestPending = false;
+    syncRadioIdleSettings();
+  }
+});
+
+function canRecordRadioActivity() {
+  const info = radioConnectionInfo;
+  return link.connected && info?.managed && info.state === 'connected' && info.idleTimeoutMinutes > 0;
+}
+
+function clearPendingRadioActivity() {
+  if (pendingRadioActivityTimer !== null) clearTimeout(pendingRadioActivityTimer);
+  pendingRadioActivityTimer = null;
+}
+
+function sendRadioActivity() {
+  lastRadioActivitySent = performance.now();
+  link.request('radioActivity').catch(() => {});
+}
+
+function recordRadioActivity(event) {
+  if (!event.isTrusted || !(event.target instanceof Element) || !event.target.closest('main') || !canRecordRadioActivity()) return;
+  const remaining = RADIO_ACTIVITY_INTERVAL_MS - (performance.now() - lastRadioActivitySent);
+  if (remaining <= 0) {
+    clearPendingRadioActivity();
+    sendRadioActivity();
+  } else if (pendingRadioActivityTimer === null) {
+    // This one trailing send belongs to an actual suppressed gesture, not a
+    // periodic heartbeat. Never expire earlier than the last user action.
+    pendingRadioActivityTimer = setTimeout(() => {
+      pendingRadioActivityTimer = null;
+      if (canRecordRadioActivity()) sendRadioActivity();
+    }, Math.ceil(remaining));
+  }
+}
+document.addEventListener('pointerdown', recordRadioActivity, { capture: true, passive: true });
+document.addEventListener('keydown', recordRadioActivity, { capture: true });
+radioManager?.addEventListener('keydown', (event) => {
+  if (event.code === 'Space' || event.key === 'Enter') event.stopPropagation();
+  if (event.key === 'Escape') {
+    radioManager.open = false;
+    radioManager.querySelector('summary').focus();
+  }
+});
+document.addEventListener('pointerdown', (event) => {
+  if (radioManager?.open && !radioManager.contains(event.target)) radioManager.open = false;
+});
+
 function showError(message) {
   errorLine.textContent = message;
   errorLine.hidden = false;
@@ -1040,6 +1241,7 @@ link.addEventListener('connected', (event) => {
   const data = event.detail || {};
   setLed('connected', 'Connected');
   setClientCount(data.clients);
+  showRadioConnection(data.radioConnection);
 
   if (data.screenTitle) {
     document.title = data.screenTitle;
@@ -1167,7 +1369,7 @@ link.addEventListener('connected', (event) => {
     if (!hasRequestedDefaultSpan) {
       hasRequestedDefaultSpan = true;
       const defaultOption = SPAN_OPTIONS.find((o) => o.isDefault) || SPAN_OPTIONS[0];
-      requestScopeSpan(defaultOption);
+      requestScopeSpan(defaultOption, { background: true });
     }
   } else {
     scopePlaceholder.hidden = false;
@@ -1176,10 +1378,14 @@ link.addEventListener('connected', (event) => {
 
   startMeterPolling();
   startFunctionPolling();
+  syncRadioControls();
 });
 
 link.addEventListener('close', () => {
   setLed('disconnected', 'Disconnected \u2014 retrying\u2026');
+  if (radioConnectionAction) radioConnectionAction.disabled = true;
+  syncRadioControls();
+  syncRadioIdleSettings();
   stopMeterPolling();
   stopFunctionPolling();
 });
@@ -1727,17 +1933,17 @@ function syncAppModesOnConnect(data) {
   const radio = data.mode?.mode;
   const fits = sstvActive || freeDvActive ? radio === 'LSB' || radio === 'USB' : radio === 'USB';
   if (!serverAny && appModeActive() && fits) {
-    if (ft8Active) link.request('setFt8Active', { active: true }).catch(() => {});
-    if (wsprActive) link.request('setWsprActive', { active: true }).catch(() => {});
-    if (freeDvActive) link.request('setFreeDvActive', { active: true }).catch(() => {});
-    if (jttyActive) link.request('setJttyActive', { active: true, txHz: ttyFreqByMode.JTTY }).catch(() => {});
-    if (oliviaActive) link.request('setOliviaActive', { active: true, centreHz: ttyFreqByMode.OLIVIA }).catch(() => {});
-    if (js8Active) link.request('setJs8Active', { active: true, txHz: ttyFreqByMode.JS8 }).catch(() => {});
-    if (varaActive) link.request('setVaraActive', { active: true }).catch(() => {});
-    if (hellActive) link.request('setHellActive', { active: true, toneHz: ttyFreqByMode.HELL }).catch(() => {});
-    if (sstvActive) link.request('setSstvActive', { active: true }).catch(() => {});
-    if (faxActive) link.request('setFaxActive', { active: true }).catch(() => {});
-    if (easypalActive) link.request('setEasypalActive', { active: true }).catch(() => {});
+    if (ft8Active) link.request('setFt8Active', { active: true, background: true }).catch(() => {});
+    if (wsprActive) link.request('setWsprActive', { active: true, background: true }).catch(() => {});
+    if (freeDvActive) link.request('setFreeDvActive', { active: true, background: true }).catch(() => {});
+    if (jttyActive) link.request('setJttyActive', { active: true, txHz: ttyFreqByMode.JTTY, background: true }).catch(() => {});
+    if (oliviaActive) link.request('setOliviaActive', { active: true, centreHz: ttyFreqByMode.OLIVIA, background: true }).catch(() => {});
+    if (js8Active) link.request('setJs8Active', { active: true, txHz: ttyFreqByMode.JS8, background: true }).catch(() => {});
+    if (varaActive) link.request('setVaraActive', { active: true, background: true }).catch(() => {});
+    if (hellActive) link.request('setHellActive', { active: true, toneHz: ttyFreqByMode.HELL, background: true }).catch(() => {});
+    if (sstvActive) link.request('setSstvActive', { active: true, background: true }).catch(() => {});
+    if (faxActive) link.request('setFaxActive', { active: true, background: true }).catch(() => {});
+    if (easypalActive) link.request('setEasypalActive', { active: true, background: true }).catch(() => {});
     return;
   }
   applyAppModes(data);
@@ -2397,11 +2603,8 @@ function updateTtyUi() {
   else if (ttyShownMode === 'JS8' && !ttyTxInFlight) {
     ttySendBtn.textContent = 'Send';
     ttySendBtn.classList.remove('ptt--active');
-    ttySendBtn.disabled = false;
   }
-  // VARA sends only within a QSO.
-  if (mode === 'VARA') ttySendBtn.disabled = varaStatus?.state !== 'connected';
-  else if (ttyShownMode === 'VARA') ttySendBtn.disabled = false;
+  syncTtySendAvailability();
   if (mode !== null) {
     pttBtn.hidden = true;
     pttHintEl.textContent = TTY_HINT[mode];
@@ -2517,6 +2720,7 @@ ttyFreqEl.addEventListener('input', () => {
 
 /** Send button / Enter key: transmit the composer text, or cut a running transmission short. */
 function sendTty() {
+  if (!radioReadyForPolling()) return;
   const mode = ttyMode();
   if (!mode) return;
   if (ttyTxInFlight) {
@@ -2701,6 +2905,7 @@ function renderVaraStatus(v) {
     varaCqBtn.disabled = true;
     varaQsydBtn.disabled = true;
     varaQsyuBtn.disabled = true;
+    if (ttyMode() === 'VARA') syncTtySendAvailability();
     return;
   }
   const st = v.state;
@@ -2769,7 +2974,7 @@ function renderVaraStatus(v) {
       varaHeardEl.appendChild(b);
     }
   }
-  if (ttyMode() === 'VARA') ttySendBtn.disabled = st !== 'connected';
+  if (ttyMode() === 'VARA') syncTtySendAvailability();
   // A QSO this page started on a slot has ended: back to where it was.
   const wasBusy = varaShownState === 'calling' || varaShownState === 'connected' || varaShownState === 'disconnecting';
   varaShownState = st;
@@ -2987,7 +3192,7 @@ function renderJs8SendButton() {
   const sending = !!v?.sending;
   ttySendBtn.textContent = sending ? 'Stop' : 'Send';
   ttySendBtn.classList.toggle('ptt--active', sending);
-  ttySendBtn.disabled = !v?.available || (!sending && !v.canTransmit);
+  syncTtySendAvailability();
 }
 
 /** Shows JS8's state: the status line, CQ, and the Send/Stop button. */
@@ -5254,9 +5459,9 @@ function updateSpanSliderFromRange(lo, hi) {
   scopeSpanValueEl.textContent = SPAN_OPTIONS[index].label;
 }
 
-function requestScopeSpan(option) {
+function requestScopeSpan(option, { background = false } = {}) {
   link
-    .request('setScopeSpan', { spanHz: option.spanHz })
+    .request('setScopeSpan', { spanHz: option.spanHz, background })
     .catch((err) => showError(`Couldn't set scope span: ${err.message}`));
   // No optimistic slider/label update beyond what the 'input' handler
   // already applied — updateSpanSliderFromRange() will reflect the
@@ -5622,7 +5827,7 @@ function startMeterPolling() {
   stopMeterPolling();
   let inFlight = false;
   meterPollTimer = setInterval(async () => {
-    if (inFlight || !link.connected) return;
+    if (inFlight || !link.connected || !radioReadyForPolling()) return;
     inFlight = true;
     try {
       const shown = shownMeter(meterMode, pttActive);
@@ -5667,7 +5872,7 @@ function startFunctionPolling() {
   stopFunctionPolling();
   let inFlight = false;
   const poll = async () => {
-    if (inFlight || !link.connected) return;
+    if (inFlight || !link.connected || !radioReadyForPolling()) return;
     inFlight = true;
     try {
       for (const control of FUNCTION_CONTROLS) {
@@ -6135,6 +6340,7 @@ let cwTxBusy = false;
 let cwTxTimer = null;
 
 function sendCwText() {
+  if (!radioReadyForPolling()) return;
   if (cwTxBusy) {
     link.request('abortCw').catch((err) => showError(`Couldn't stop the CW: ${err.message}`));
     return;
@@ -6314,7 +6520,7 @@ function updatePttVisual(on) {
 }
 
 async function engagePtt() {
-  if (pttActive) return;
+  if (pttActive || !link.connected || !radioReadyForPolling()) return;
   pttActive = true;
   updatePttVisual(true);
   if (audioPipeline) {
@@ -6471,7 +6677,7 @@ function playSidetone(start, d) {
 const sleepUntil = (t) => new Promise((resolve) => setTimeout(resolve, Math.max(0, t - performance.now())));
 
 async function runKeyerLoop() {
-  if (keyerLoopRunning) return;
+  if (keyerLoopRunning || !link.connected || !radioReadyForPolling()) return;
   keyerLoopRunning = true;
   startKeyerSession();
   const now = performance.now();

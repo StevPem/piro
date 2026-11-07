@@ -5315,3 +5315,131 @@ Items 8 and 15 from the code review, and two requests. Not tested on air
   than a few ms (in-process: over 300 ms); a missing model is reported
   from the worker; every decoder closed at the end).
 - Service-worker cache v134.
+
+## Native LAN branch history (before upstream integration)
+
+### Native IC-7300MK2 LAN connection (v120)
+
+- Added `CIV_CONNECTION=lan` with server-side radio host, credentials and
+  UDP port settings. USB remains the default.
+- Added Icom session/lease handling, CI-V control and CW, raw RX/TX audio
+  adapters and scope delivery. Native LAN audio needs no ALSA hardware.
+- The header reports radio connection state separately from the browser's
+  connection to PiRO. New clients receive the same status in their snapshot.
+- MK2 LAN input settings use the model's own menu numbers. Finite digital
+  transmitters drain queued audio before unkeying. Stop and reconnect flush
+  pending audio and invalidate earlier keying packets.
+- Added an independent localhost peer, literal byte expectations, protocol,
+  lifecycle, fault, CW, PCM, scope and normal-process integration tests.
+- The baseline SSTV bridge test could read its spectrum result before the
+  separate spectrum timer fired. It now waits for both expected asynchronous
+  outputs, keeping both assertions unchanged.
+- Hardware and on-air checks are still pending. See `docs/icom-lan.md` and
+  `docs/icom-lan-sources.md` for setup, evidence and the acceptance checklist.
+- Build/cache v120. Final test results are recorded in `icom-lan-plan.md`.
+
+### Native LAN audit fixes (v121)
+
+- Fixed all ten findings from the independent review of v120. Malformed
+  microphone input no longer escapes the WebSocket handler. VARA waits for
+  confirmed PTT release before a QSY.
+- Streaming TX preserves short native-pipe chunks until a full frame is
+  available. RX uses a sample clock to catch up after delayed callbacks.
+- Token renewal honors its ACK grace period. Retry budgets reset after
+  complete radio initialization rather than after UDP handshake alone.
+- Reconnect refreshes tuning, mode and DATA state. Radio loss clears VARA's
+  selected state so the browser can activate it again after reconnect.
+- Failed restoration retains saved values for retry without falsely leaving
+  PTT on in the server state. Failed startup rolls back RX settings before
+  closing a reachable session.
+- Added socket, native-pipe and normal-process regressions for the original
+  reproductions. See `icom-lan-audit-fixes.md` and `icom-lan-plan.md`.
+- Build/cache v121. Physical-radio and on-air checks remain pending.
+
+### Native LAN restoration and state races (v122)
+
+- Fixed the six findings from the independent review of v121. Reconnect
+  initialization and PTT routing now share one settings queue. Failed
+  restoration records survive overlapping release requests.
+- A new front-panel source or level selection becomes the baseline for the
+  next transmission, replacing an obsolete saved value after a failed restore.
+- Connection loss during restoration rejects the stale release result. The
+  browser keeps PTT unknown until the new radio session confirms its state.
+- Reconnect preserves transceive updates received during or after its state
+  reads. RX rollback runs on failed reconnects as well as initial startup.
+- Confirmed external PTT-off clears VARA's local key latch after a cancelled
+  drain, so the next modem burst can key normally. Its own QSY release still
+  waits for drain and PTT confirmation.
+- Added localhost regressions for all six findings, including source and
+  level changes, two transceive timings and real VARA/ControlServer keying.
+  Final checks are recorded in `icom-lan-plan.md`.
+- Build/cache v122. Not tested on a physical radio or on air.
+
+
+### Native IC-7300MK2 LAN integrated with upstream (v135)
+
+- Integrated upstream through v134, preserving USB, JS8, STT, DeepCW worker,
+  Origin checking, PTT ownership/heartbeat, backpressure, queue ordering and
+  CW keyline/paddle support.
+- Native LAN discovery uses the advertised CI-V address and still verifies
+  the MK2 identity. Reconnect updates cached scope availability.
+- Preserve USB keyline selection; LAN paddles use CI-V and discard queued
+  elements on radio loss. JS8 cancels stale encode results, drains LAN audio,
+  and cannot let an old completion replace a newer transmission.
+- Failed LAN watchdog release reports unknown PTT while stopping local
+  producers. The LAN test wrapper remains compatible with upstream CI.
+- Earlier physical-radio evidence and remaining checks are recorded in
+  `docs/icom-lan-hardware-validation.md`; the integrated build needs a fresh
+  hardware sweep after deployment. Service-worker cache v135.
+
+
+### Shared LAN radio connection manager (v136)
+
+- The header groups the browser's Connected/count indicator with an accessible
+  radio-status dropdown. Connect/Disconnect affects the shared native LAN
+  session, not the browser connection. USB behavior is unchanged.
+- Deliberate disconnect cancels retries and queued transmit work, releases
+  CW/PTT and restores reachable radio routing before closing the streams.
+  Reconnect starts fresh audio and scope without accumulating listeners.
+- Radio controls and polling pause while disconnected; speaker and notes remain
+  available. Keyboard operation inside the manager does not trigger Space PTT.
+- Initialization cancellation waits for a confirmed CI-V transaction boundary,
+  restores RX settings before releasing the association, and does not reuse a
+  late ACK. Rapid changes from different browsers settle at the latest request.
+- The manual state is process-scoped; normal startup still auto-connects.
+  Service-worker cache v136. See `docs/icom-lan.md` for operation.
+
+
+### Reconnect outside CW mode (v137)
+
+- A physical MK2 in USB/FIL2 returned CI-V FA for the unconditional CW-stop
+  command during Connect. Model ID B6 and receive state were confirmed.
+- Initialization now releases PTT first, reads the current mode, and requires
+  keyer stop only for CW/CW_R (including the CW-R spelling). It confirms an
+  actual receive-state value0 before restoring routes or accepting controls.
+  It does not change the operator's selected mode.
+- Manual cancellation waits for the safety phase to finish before releasing
+  the association; model, CW-stop-in-CW, PTT and receive-readback failures
+  remain fatal. Unknown modes and mode-read failures do not bypass checks.
+- Added startup regressions and retained the reconnect snapshot race test
+  after the new safety mode read. The packet-loss test now uses the normal
+  80ms reorder window so a20ms tick cannot skip its retransmit opportunity.
+- Verified96 LAN subtests, existing CI-V driver tests, syntax/diff and version
+  checks. Cache/build v137; physical acceptance is recorded separately.
+
+
+### Shared idle radio disconnect (v138)
+
+- The radio menu includes an enabled/default 60-minute idle option, custom
+  minutes and Off. Saved settings are shared by browsers and persist on the
+  server; failures leave the prior timeout in effect.
+- Operator gestures send leading/trailing throttled activity, not recurring
+  keepalive. Polling, audio, pings and background synchronization do not count.
+- Server command intent counts before asynchronous I/O. Active or unknown PTT,
+  CW and queued modem work defer expiry; actual receive is confirmed before
+  closing, and a concurrent new action cancels the pending expiry.
+- Expiry reuses safe deliberate disconnect and requires explicit reconnect.
+- Full validation also exposed an older DeepCW shutdown N-API race. Native
+  model loading/inference now settles before worker termination, with transmit
+  producers cancelled before waiting for decoder shutdown.
+- Build/cache v138. Test records are in the hardware validation report.

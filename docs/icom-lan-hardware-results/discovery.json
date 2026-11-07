@@ -1,0 +1,14 @@
+{
+  "time": "2026-11-06T20:31:23.138Z",
+  "advertisedAddress": 182,
+  "verifiedAddress": 182,
+  "model": "IC-7300MK2",
+  "frequency": 7030030,
+  "mode": {
+    "mode": "CW",
+    "filter": 2
+  },
+  "transmitting": false,
+  "keySpeed": 32,
+  "breakIn": 0
+}

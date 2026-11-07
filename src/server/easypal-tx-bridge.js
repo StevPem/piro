@@ -152,6 +152,33 @@ class EasypalTxBridge {
     if (this._tx) this.abort();
   }
 
+  // A producer owns the session it started in, including asynchronous cleanup.
+  _sameSession(tx) {
+    const civ = this.controlServer.civ;
+    return tx.generation == null || (civ?.session === tx.session && civ.session.generation === tx.generation);
+  }
+
+  _radio(tx) {
+    const civ = this.controlServer.civ;
+    if (!civ || tx.generation == null) return civ;
+    // Guard each call, including retries and DATA watchdog callbacks after awaits.
+    return new Proxy(civ, { get: (target, key) => {
+      const value = target[key];
+      if (typeof value !== 'function') return value;
+      return (...args) => {
+        if (!this._sameSession(tx)) throw new Error('Transmission belongs to a disconnected radio session');
+        return value.apply(target, args);
+      };
+    } });
+  }
+
+  async _releasePtt(tx) {
+    const release = this.controlServer.setPttFromServer(false);
+    // Capture our OFF intent before its acknowledgement can start another TX.
+    tx.restoreRevision = this.controlServer.civ?.txRevision;
+    await release;
+  }
+
   get transmitting() {
     return this._tx !== null;
   }
@@ -174,11 +201,14 @@ class EasypalTxBridge {
       this._status({ status: 'error', error });
       return Promise.reject(new Error(error));
     };
+    if (this._tx && !this._sameSession(this._tx)) this._tx = null;
     if (this._tx) return fail('Already sending a picture.');
     if (this.controlServer.state?.ptt) return fail('The radio is already transmitting.');
     if (!jpeg || jpeg.length < 4 || jpeg[0] !== 0xff || jpeg[1] !== 0xd8) return fail('The picture must be a JPEG.');
-    const civ = this.controlServer.civ;
-    const tx = { aborted: false, timer: null, wake: null };
+    const session = this.controlServer.civ?.session;
+    const tx = { aborted: false, timer: null, wake: null, session, generation: session?.generation,
+      restoreRevision: this.controlServer.civ?.txRevision };
+    const civ = this._radio(tx);
     this._tx = tx;
     let dataOn = false;
     let prevPower = null;
@@ -187,7 +217,7 @@ class EasypalTxBridge {
     try {
       const radioMode = civ ? (await civ.getMode()).mode : null;
       if (civ && radioMode !== 'USB') throw new Error('Put the radio on USB first (the EasyPal button does this).');
-      this._status({ status: 'preparing' });
+      if (this._sameSession(tx)) this._status({ status: 'preparing' });
       const name = this._fileName();
       const r = await this.encode({
         jpeg: Uint8Array.from(jpeg),
@@ -198,9 +228,11 @@ class EasypalTxBridge {
         sampleRate: this.audioBridge.sampleRate,
         amplitude: this.amplitude,
       });
-      if (tx.aborted) {
-        this._tx = null;
-        this._status({ status: 'aborted' });
+      if (tx.aborted || !this._sameSession(tx)) {
+        if (this._tx === tx) {
+          this._tx = null;
+          this._status({ status: 'aborted' });
+        }
         return;
       }
       if (r.durationSec > this.seconds) {
@@ -227,12 +259,12 @@ class EasypalTxBridge {
         quality: r.quality,
         jpeg: r.jpeg.toString('base64'),
       };
-      if (!tx.aborted) {
+      if (!tx.aborted && this._sameSession(tx)) {
         keyed = true;
         await this.controlServer.setPttFromServer(true);
-        this._status({ status: 'sending', durationSec: r.durationSec, startTime: this.now(), elapsedSec: 0, ...info });
+        if (this._sameSession(tx)) this._status({ status: 'sending', durationSec: r.durationSec, startTime: this.now(), elapsedSec: 0, ...info });
       }
-      if (!tx.aborted) {
+      if (!tx.aborted && this._sameSession(tx)) {
         this.audioBridge.playback.write(r.pcm);
         if (civ) {
           stopWatch = watchDataMode(civ, {
@@ -249,30 +281,40 @@ class EasypalTxBridge {
       tx.timer = null;
       if (stopWatch) await stopWatch();
       stopWatch = null;
-      if (keyed) await this.controlServer.setPttFromServer(false);
+      if (!tx.aborted && this._sameSession(tx)) {
+        const drained = await this.audioBridge.playback.drain?.();
+        if (tx.session && drained === false) tx.aborted = true;
+      }
+      if (keyed && this._sameSession(tx)) await this._releasePtt(tx);
       keyed = false;
-      await this._restore(civ, dataOn, prevPower);
+      await this._restore(civ, dataOn, prevPower, tx);
       dataOn = false;
       prevPower = null;
-      this._tx = null;
-      this._status({ status: tx.aborted ? 'aborted' : 'sent', durationSec: r.durationSec, fileName: r.fileName });
-      if (!tx.aborted) this._addOwnPicture(r);
+      if (this._tx === tx) {
+        this._tx = null;
+        this._status({ status: tx.aborted || !this._sameSession(tx) ? 'aborted' : 'sent', durationSec: r.durationSec, fileName: r.fileName });
+      }
+      if (!tx.aborted && this._sameSession(tx)) this._addOwnPicture(r);
     } catch (err) {
       if (stopWatch) await stopWatch().catch(() => {});
-      if (keyed) {
+      if (keyed && this._sameSession(tx)) {
         try {
-          await this.controlServer.setPttFromServer(false);
+          await this._releasePtt(tx);
+          keyed = false;
         } catch {
           // best effort; the PTT watchdog is still armed
         }
       }
       try {
-        await this._restore(civ, dataOn, prevPower);
+        // A failed release must not restore high power or microphone routing while keyed.
+        if (!civ?.session || !keyed) await this._restore(civ, dataOn, prevPower, tx);
       } catch {
         // best effort
       }
-      this._tx = null;
-      this._status({ status: 'error', error: err.message });
+      if (this._tx === tx) {
+        this._tx = null;
+        this._status({ status: 'error', error: err.message });
+      }
       throw err;
     }
   }
@@ -282,10 +324,20 @@ class EasypalTxBridge {
     this.controlServer.broadcastJsonEvent(EVENT.AUDIO_ERROR, { message: `EasyPal transmit: ${message}` });
   }
 
-  async _restore(civ, dataOn, prevPower) {
+  async _restore(civ, dataOn, prevPower, tx) {
     if (!civ) return;
-    if (prevPower != null) await civ.setTxPower(prevPower);
-    if (dataOn) await civ.setDataMode(false);
+    const restore = async () => {
+      if (prevPower != null) await civ.setTxPower(prevPower);
+      if (dataOn) await civ.setDataMode(false);
+    };
+    if (civ.session && typeof civ.queueSettings === 'function') {
+      return civ.queueSettings(async () => {
+        if (!this._sameSession(tx) || civ.txRevision !== tx.restoreRevision
+          || this.controlServer.state.ptt !== false) return;
+        await restore();
+      });
+    }
+    await restore();
   }
 
   abort() {
@@ -293,7 +345,7 @@ class EasypalTxBridge {
     if (!tx || tx.aborted) return;
     tx.aborted = true;
     if (tx.timer) clearTimeout(tx.timer);
-    if (typeof this.audioBridge.playback.restart === 'function') this.audioBridge.playback.restart();
+    if (this._sameSession(tx) && typeof this.audioBridge.playback.restart === 'function') this.audioBridge.playback.restart();
     if (tx.wake) tx.wake();
   }
 

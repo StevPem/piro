@@ -146,6 +146,8 @@ class VaraBridge {
     this._active = false;
     this._session = 0; // bumped on every start/stop, so late replies from an old modem are ignored
     this._keyed = false;
+    this._keyTask = null;
+    this._keyRadio = null;
     this._keyTimer = null;
     this._idleTimer = null;
     this._dataReady = false;
@@ -156,6 +158,7 @@ class VaraBridge {
     this._transcript = []; // [{text, own?, note?}]
     this._transcriptChars = 0;
     this._warnedKey = false;
+    this._keyEpoch = 0;
     this._lastSn = null; // {sn, time}: the modem's latest S/N report
     this._link = null; // the QSO now: {parser, openingSent, disc: {at, timer}|null}
     this._slotsHeard = []; // slots VarAC CQs were heard waiting on: [{cfHz, offsetHz, time}]
@@ -165,6 +168,11 @@ class VaraBridge {
     this._onActive = (active) => (active ? this.activate() : this.deactivate()).catch(() => {});
     this._onRequest = (req) => this.request(req);
     this._onPcm = (chunk) => this._handlePcm(chunk);
+    this._onPtt = (on) => {
+      // An external release can cancel our pending audio drain before its
+      // CI-V acknowledgment arrives. Reconcile the latch on confirmation.
+      if (!on && this.controlServer.state.ptt === false) this._clearKey();
+    };
     this._onClientJoined = (ws) => {
       if (this._transcript.length && typeof this.controlServer.sendJsonEvent === 'function') {
         this.controlServer.sendJsonEvent(ws, EVENT.VARA_TEXT, { replace: true, segments: this._transcript });
@@ -196,6 +204,7 @@ class VaraBridge {
   start() {
     this.controlServer.on('vara-active', this._onActive);
     this.controlServer.on('vara', this._onRequest);
+    this.controlServer.on('ptt', this._onPtt);
     this.controlServer.on('client-connected', this._onClientJoined);
     // A browser that connected while the server was still starting has a
     // snapshot without this state: send it now.
@@ -206,6 +215,7 @@ class VaraBridge {
   stop() {
     this.controlServer.off('vara-active', this._onActive);
     this.controlServer.off('vara', this._onRequest);
+    this.controlServer.off('ptt', this._onPtt);
     this.controlServer.off('client-connected', this._onClientJoined);
     return this.deactivate();
   }
@@ -309,6 +319,12 @@ class VaraBridge {
     clearTimeout(this._idleTimer);
     this._idleTimer = null;
     await this._unkey();
+    // The producer is stopped even if the unreachable radio cannot confirm
+    // release. Do not carry its local key latch into a later activation.
+    this._keyed = false;
+    ++this._keyEpoch;
+    clearTimeout(this._keyTimer);
+    this._keyTimer = null;
     if (this._stopWatch) await this._stopWatch().catch(() => {});
     this._stopWatch = null;
     this._dataReady = false;
@@ -443,8 +459,12 @@ class VaraBridge {
       case 'PTT':
         if (rest[0] === 'ON') this._key().catch(() => {});
         else {
-          this._unkey().catch(() => {});
-          if (this._link?.qsy?.phase === 'ack') this._qsyMove();
+          const link = this._link;
+          this._unkey({ drain: true }).then((released) => {
+            const q = link?.qsy;
+            if (released && this._link === link && (q?.phase === 'ack'
+              || (q?.phase === 'sending' && q.queued && this.state.buffer === 0))) this._qsyMove();
+          }).catch(() => {});
         }
         break;
       case 'KISS':
@@ -583,6 +603,10 @@ class VaraBridge {
       return;
     }
     if (this.controlServer.state.ptt) return; // someone else is transmitting
+    ++this._keyEpoch;
+    const session = this.controlServer.civ?.session;
+    const key = { session, generation: session?.generation };
+    this._keyRadio = key;
     this._keyed = true;
     this._update({ ptt: true });
     this._keyTimer = setTimeout(() => {
@@ -591,24 +615,57 @@ class VaraBridge {
       this._unkey().catch(() => {});
     }, this.maxKeyMs);
     this._keyTimer.unref?.();
+    const pending = this.controlServer.setPttFromServer(true);
+    this._keyTask = pending;
     try {
-      await this.controlServer.setPttFromServer(true);
+      await pending;
     } catch (err) {
-      this._error(`Couldn't key the radio: ${err.message}`);
-      await this._unkey();
+      if (this._keyRadio === key && this._sameKeySession(key)) {
+        this._error(`Couldn't key the radio: ${err.message}`);
+        await this._unkey();
+      }
+    } finally {
+      if (this._keyTask === pending) this._keyTask = null;
     }
   }
 
-  async _unkey() {
+  _sameKeySession(key) {
+    const session = this.controlServer.civ?.session;
+    return !key?.session || (session === key.session && session.generation === key.generation);
+  }
+
+  _clearKey() {
     clearTimeout(this._keyTimer);
     this._keyTimer = null;
-    if (!this._keyed) return;
     this._keyed = false;
     this._update({ ptt: false });
+  }
+
+  async _unkey({ drain = false } = {}) {
+    const key = this._keyRadio;
+    // Native LAN playback is armed while CI-V routing/keying is still pending.
+    // A drain in that state returns false, not proof that a late ON is cancelled.
+    // Keep the latch/watchdog until ON settles, then drain and release it.
+    // Immediate aborts still send OFF at once so the driver can cancel ON.
+    if (drain && this._keyTask) await this._keyTask.catch(() => {});
+    if (key !== this._keyRadio || !this._sameKeySession(key)) return false;
+    if (!this._keyed) return this.controlServer.state.ptt === false;
+    const epoch = ++this._keyEpoch;
+    if (drain && typeof this.audioBridge.playback.drain === 'function') {
+      if (await this.audioBridge.playback.drain() === false) {
+        if (epoch === this._keyEpoch && this.controlServer.state.ptt === false) this._clearKey();
+        return false;
+      }
+    }
+    if (!this._keyed || epoch !== this._keyEpoch || !this._sameKeySession(key)) return false;
     try {
       await this.controlServer.setPttFromServer(false);
+      if (epoch !== this._keyEpoch) return false;
+      this._clearKey();
+      return true;
     } catch (err) {
       this._error(`Couldn't unkey the radio: ${err.message}`);
+      return false;
     }
   }
 
@@ -768,6 +825,7 @@ class VaraBridge {
     const link = this._link;
     const q = link?.qsy;
     if (!q || (q.phase !== 'ack' && q.phase !== 'sending') || q.moving) return;
+    if (this._keyed || this.controlServer.state.ptt !== false) return;
     q.moving = true;
     clearTimeout(q.timer);
     try {

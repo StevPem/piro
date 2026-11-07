@@ -1,0 +1,44 @@
+{
+  "source": "https://github.com/freedv/rade_c",
+  "commit": "c8a3dc156045cae2cd251e1a4be0c304c9ddf2f9",
+  "architecture": "aarch64",
+  "protocol": "RADE v1",
+  "stages": [
+    {
+      "name": "features",
+      "seconds": 0.065
+    },
+    {
+      "name": "encode",
+      "seconds": 0.265
+    },
+    {
+      "name": "decode",
+      "seconds": 0.966
+    },
+    {
+      "name": "synthesis",
+      "seconds": 0.165
+    },
+    {
+      "name": "wav-encode",
+      "seconds": 0.215
+    },
+    {
+      "name": "wav-decode",
+      "seconds": 0.567
+    }
+  ],
+  "rfTransmission": false,
+  "inputSeconds": 9.8220625,
+  "pipeline": {
+    "featureBytes": 141408,
+    "iqBytes": 640512,
+    "receivedFeatureBytes": 134784,
+    "decodedSeconds": 9.31,
+    "peak": 32767,
+    "rms": 3587.85
+  },
+  "wavDecodedSeconds": 9.43,
+  "passed": true
+}

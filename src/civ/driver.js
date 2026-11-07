@@ -25,8 +25,8 @@ const {
 const BROADCAST_ADDR = 0x00;
 
 /**
- * Driver for talking to an Icom transceiver over CI-V via a USB serial
- * connection. Handles framing, echo suppression, and a simple
+ * Driver for talking to an Icom transceiver over CI-V via USB serial or
+ * an injected LAN transport. Handles framing, echo suppression, and a simple
  * request/response queue on top of the half-duplex CI-V bus, and emits
  * events for unsolicited ("transceive") updates the radio pushes when the
  * operator changes something from the front panel.
@@ -55,7 +55,7 @@ const BROADCAST_ADDR = 0x00;
 class CivDriver extends EventEmitter {
   /**
    * @param {object} opts
-   * @param {string} opts.path - serial device path, e.g. '/dev/ttyUSB0'
+   * @param {string} [opts.path] - serial device path, required without transport
    * @param {number} [opts.baudRate=19200]
    * @param {number} [opts.controllerAddr=0xE0] - our (host) CI-V address
    * @param {number} [opts.radioAddr] - radio's CI-V address, if known
@@ -69,13 +69,13 @@ class CivDriver extends EventEmitter {
    *   radio's USB Keying (CW) setting). Linux raises DTR and RTS when a
    *   port is opened, which would key the radio; this line is dropped as
    *   soon as the port reports open. See setKeyLine().
-   * @param {object} [opts.transport] - inject a fake serial-port-like object
+   * @param {object} [opts.transport] - inject a serial-port-like object
    *   (must support write(buf, cb), on(event, cb), isOpen, close(cb)) instead
-   *   of opening a real SerialPort — used by tests, not needed for real use.
+   *   of opening a real SerialPort. May expose async open() for a LAN session.
    */
   constructor(opts) {
     super();
-    if (!opts || !opts.path) {
+    if (!opts || (!opts.path && !opts.transport)) {
       throw new Error('CivDriver requires opts.path (serial device path)');
     }
     this.path = opts.path;
@@ -107,9 +107,11 @@ class CivDriver extends EventEmitter {
       if (this._transport) {
         this.port = this._transport;
         this._wirePortEvents();
-        this._dropKeyLineOnOpen();
-        this.emit('open');
-        resolve();
+        Promise.resolve(this.port.open?.()).then(() => {
+          this._dropKeyLineOnOpen();
+          this.emit('open');
+          resolve();
+        }, reject);
         return;
       }
       this.port = new SerialPort(
@@ -155,17 +157,26 @@ class CivDriver extends EventEmitter {
   }
 
   _wirePortEvents() {
+    // Manual LAN disconnect/reconnect reuses the same transport object.
+    if (this._wiredPort === this.port) return;
+    this._wiredPort = this.port;
     this.port.on('data', (chunk) => this._handleData(chunk));
     this.port.on('error', (err) => this.emit('error', err));
-    this.port.on('close', () => this.emit('close'));
+    this.port.on('close', () => {
+      this.cancelPending(new Error('CI-V connection closed'));
+      this._parser.reset();
+      this._scope.reset();
+      this.emit('close');
+    });
   }
 
   /** Close the serial connection. */
   close() {
-    clearTimeout(this._guardTimer);
-    this._guardTimer = null;
+    this.cancelPending(new Error('CI-V driver closing'));
+    this._parser.reset();
+    this._scope.reset();
     return new Promise((resolve, reject) => {
-      if (!this.port || !this.port.isOpen) {
+      if (!this.port || (!this.port.isOpen && !this._transport)) {
         resolve();
         return;
       }
@@ -217,6 +228,8 @@ class CivDriver extends EventEmitter {
   _frameMatchesCurrent(frame) {
     const job = this._current;
     if (!job) return false;
+    if (frame.to !== this.controllerAddr && frame.to !== BROADCAST_ADDR) return false;
+    if (this.radioAddr !== BROADCAST_ADDR && frame.from !== this.radioAddr) return false;
     // OK/NG replies confirm a "set" command completed.
     if (frame.cmd === CMD.OK || frame.cmd === CMD.NG) return true;
     if (frame.cmd !== job.cmd) return false;
@@ -267,7 +280,7 @@ class CivDriver extends EventEmitter {
    * Send a command and wait for its reply. Requests are queued and sent
    * one at a time, since CI-V is a shared half-duplex bus.
    *
-   * `urgent` requests (PTT off) go ahead of everything queued, behind only
+   * `urgent` requests (PTT off or CW stop) go ahead of everything queued, behind only
    * the request already on the bus, other urgent ones, and any earlier
    * request for the same command (so PTT on then off keeps that order).
    * Unkeying never waits behind meter or scope polling. Urgent requests
@@ -275,6 +288,7 @@ class CivDriver extends EventEmitter {
    * @returns {Promise<object>} the parsed reply frame
    */
   _send(cmd, subCmd, data, { urgent = false } = {}) {
+    if (!this.port?.isOpen) return Promise.reject(new Error('CI-V connection is not open'));
     if (this.radioAddr === null || this.radioAddr === undefined) {
       return Promise.reject(
         new Error('radioAddr is not set; call detectRadioAddress() or pass it in opts')
@@ -324,6 +338,13 @@ class CivDriver extends EventEmitter {
     job.timer = setTimeout(() => {
       this._current = null;
       job.reject(new Error(`CI-V request timed out (cmd 0x${job.cmd.toString(16)})`));
+      // LAN replies carry no CI-V transaction IDs. Reset the association on a
+      // timeout so a delayed ACK cannot confirm a different/newer command.
+      if (typeof this.port.resetSession === 'function') {
+        this.cancelPending(new Error('CI-V reply timed out; reconnecting LAN session'));
+        this.port.resetSession('CI-V reply timed out; reconnecting LAN session');
+        return;
+      }
       // The radio may still answer the request that timed out. Pause
       // before the next one so that late OK/NG is dropped (see
       // _handleFrame()) instead of answering the wrong request.
@@ -339,12 +360,24 @@ class CivDriver extends EventEmitter {
 
     this.port.write(job.raw, (err) => {
       if (err) {
+        if (this._current !== job) return;
         clearTimeout(job.timer);
         this._current = null;
         job.reject(err);
         this._dequeueNext();
       }
     });
+  }
+
+  cancelPending(error = new Error('CI-V requests cancelled')) {
+    clearTimeout(this._guardTimer);
+    this._guardTimer = null;
+    if (this._current) {
+      clearTimeout(this._current.timer);
+      this._current.reject(error);
+      this._current = null;
+    }
+    for (const job of this._queue.splice(0)) job.reject(error);
   }
 
   // ---- high-level rig control ---------------------------------------
@@ -649,7 +682,9 @@ class CivDriver extends EventEmitter {
    * keyed over CI-V.
    */
   async getTransmitting() {
-    return (await this._readSingleByteSetting(CMD.PTT, SUBCMD.PTT, 'transmit state')) === 1;
+    const value = await this._readSingleByteSetting(CMD.PTT, SUBCMD.PTT, 'transmit state');
+    if (value !== 0 && value !== 1) throw new Error(`Unexpected transmit state reply: ${value}`);
+    return value === 1;
   }
 
   // ---- CW keyer (sending text) ----
@@ -696,7 +731,7 @@ class CivDriver extends EventEmitter {
 
   /** Stops the radio's CW keyer, dropping whatever is left to send (CI-V 17 FF). */
   async stopCw() {
-    const frame = await this._send(CMD.SEND_CW, undefined, Buffer.from([0xff]));
+    const frame = await this._send(CMD.SEND_CW, undefined, Buffer.from([0xff]), { urgent: true });
     this._throwIfNG(frame, 'stop CW');
     return true;
   }

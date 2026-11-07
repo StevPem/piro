@@ -10,6 +10,7 @@
  * model's sample rate}. Out: {type: 'ready'} or {type: 'load-error',
  * message} once, then {type: 'text', id, text} or {type: 'decode-error',
  * id, message} per window, in order.
+ * A close request drains accepted work, then acknowledges with 'closed'.
  */
 
 const { parentPort, workerData } = require('worker_threads');
@@ -30,7 +31,23 @@ const loading = engine.load().then(
 
 // One window at a time, in the order they came.
 let queue = Promise.resolve();
+let closing = false;
 parentPort.on('message', (msg) => {
+  if (closing) return;
+  if (msg.type === 'close') {
+    closing = true;
+    // Never tear down the worker while an ONNX native callback still owns
+    // its environment. Acknowledge only after all accepted work has settled.
+    queue = queue.then(() => loading)
+      // Leave the native completion callback's turn before acknowledging
+      // teardown; promise continuations alone can still run inside it.
+      .then(() => new Promise((resolve) => setImmediate(resolve)))
+      .then(() => {
+        engine.close();
+        parentPort.postMessage({ type: 'closed' });
+      });
+    return;
+  }
   if (msg.type !== 'decode') return;
   queue = queue.then(async () => {
     if (!(await loading)) return;
