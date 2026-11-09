@@ -1,5 +1,6 @@
 'use strict';
 
+const { refreshTransmitting } = require('./tx-safety');
 const { EVENT } = require('./protocol');
 
 /**
@@ -172,6 +173,7 @@ class CwPaddleBridge {
     this._s = s;
     cs.state.cwKeying = true;
     cs.broadcastJsonEvent(EVENT.CW_KEYING, { active: true });
+    refreshTransmitting(cs); // settings can't be changed while the paddle keys
     return s;
   }
 
@@ -242,6 +244,7 @@ class CwPaddleBridge {
       cs.setPttFromServer(false, { urgent: true }).catch((err) => console.error('[cw-paddle] key up failed:', err.message));
     }
     cs.state.cwKeying = false;
+    refreshTransmitting(cs);
     cs.broadcastJsonEvent(EVENT.CW_KEYING, { active: false, reason: why, ...(message ? { message } : {}) });
   }
 }

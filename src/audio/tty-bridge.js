@@ -1,5 +1,6 @@
 'use strict';
 
+const { releasePtt, restoreWhenReceiving, settingStillIs, RELEASE_NOT_CONFIRMED } = require('../server/tx-safety');
 const { ensureDataMode, watchDataMode } = require('../civ/data-mode-guard');
 const { EVENT } = require('../server/protocol');
 const { encodeRtty } = require('./rtty-encoder');
@@ -161,11 +162,28 @@ class TtyBridge {
   }
 
   /** Back to the radio's RTTY mode on the mark frequency. */
-  async _leaveRttyAfsk(plan) {
+  async _leaveRttyAfsk(plan, held = false) {
     const civ = this.controlServer.civ;
+    if (held) {
+      // Put the radio back only if it is still on the sideband and dial
+      // frequency set for sending: a change made by hand while waiting is kept.
+      const still =
+        (await settingStillIs(async () => (await civ.getMode()).mode, plan.sideband)) &&
+        (await settingStillIs(() => civ.getFrequency(), plan.dialHz, 1));
+      if (!still) {
+        this._warn('Mode and tuning left as they are: they were changed while waiting to put them back after RTTY.');
+        return;
+      }
+    }
     await civ.setDataMode(false);
     await civ.setMode(plan.restoreMode, plan.restoreFilter);
     await civ.setFrequency(plan.markRfHz);
+  }
+
+  /** Leaves AFSK now, or once the radio confirms it unkeyed (held). */
+  async _finishRtty(plan) {
+    const now = await restoreWhenReceiving(this.controlServer, ({ held }) => this._leaveRttyAfsk(plan, held));
+    if (!now) this._warn('RTTY mode and tuning will be put back once the radio confirms it has stopped transmitting.');
   }
 
   /** Builds the PCM (S16LE mono at the audio bridge's rate) for a request, or returns {error}. */
@@ -314,28 +332,31 @@ class TtyBridge {
       tx.timer = null;
       if (stopWatch) await stopWatch();
       stopWatch = null;
-      await this.controlServer.setPttFromServer(false);
+      // Always released, as before (harmless if it never keyed). Mode and
+      // tuning go back only once the radio has confirmed it (see tx-safety.js).
+      const released = await releasePtt(this.controlServer);
       if (switched) {
         switched = false;
-        await this._leaveRttyAfsk(rttyPlan);
+        await this._finishRtty(rttyPlan);
+      }
+      if (!released) {
+        this._tx = null;
+        this._status({ status: 'error', mode, error: RELEASE_NOT_CONFIRMED });
+        return;
       }
       this._status({ status: tx.aborted ? 'aborted' : 'sent', ...info });
     } catch (err) {
       if (stopWatch) await stopWatch().catch(() => {});
-      try {
-        await this.controlServer.setPttFromServer(false);
-      } catch {
-        // best effort — the PTT watchdog is still armed from setPttFromServer(true)
-      }
+      const released = await releasePtt(this.controlServer);
       if (switched) {
         try {
-          await this._leaveRttyAfsk(rttyPlan);
+          await this._finishRtty(rttyPlan);
         } catch {
           // best effort; the error below tells the operator something went wrong
         }
       }
       this._tx = null;
-      this._status({ status: 'error', mode, error: err.message });
+      this._status({ status: 'error', mode, error: released ? err.message : `${err.message}. ${RELEASE_NOT_CONFIRMED}` });
       throw err;
     }
     this._tx = null;

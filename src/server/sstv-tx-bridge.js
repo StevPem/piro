@@ -1,5 +1,6 @@
 'use strict';
 
+const { releasePtt, restoreWhenReceiving, settingStillIs, RELEASE_NOT_CONFIRMED } = require('./tx-safety');
 const path = require('path');
 const { Worker } = require('worker_threads');
 const { EVENT } = require('./protocol');
@@ -244,30 +245,30 @@ class SstvTxBridge {
       tx.timer = null;
       if (stopWatch) await stopWatch();
       stopWatch = null;
-      if (keyed) await this.controlServer.setPttFromServer(false);
+      // Settings go back only once the radio has confirmed it unkeyed (see tx-safety.js).
+      const released = keyed ? await releasePtt(this.controlServer) : true;
       keyed = false;
-      await this._restore(civ, dataOn, prevPower);
+      await this._finish(civ, dataOn, prevPower);
       dataOn = false;
       prevPower = null;
       this._tx = null;
+      if (!released) {
+        this._status({ status: 'error', error: RELEASE_NOT_CONFIRMED });
+        return;
+      }
       this._status({ status: tx.aborted ? 'aborted' : 'sent', durationSec });
       if (!tx.aborted) this._addOwnPicture(rgb, width, height);
     } catch (err) {
       if (stopWatch) await stopWatch().catch(() => {});
-      if (keyed) {
-        try {
-          await this.controlServer.setPttFromServer(false);
-        } catch {
-          // best effort; the PTT watchdog is still armed
-        }
-      }
+      // keyed is set before the key-up is tried: a failed key-up may still have reached the radio.
+      const released = keyed ? await releasePtt(this.controlServer) : true;
       try {
-        await this._restore(civ, dataOn, prevPower);
+        await this._finish(civ, dataOn, prevPower);
       } catch {
-        // best effort
+        // best effort; restoreWhenReceiving reports its own failures
       }
       this._tx = null;
-      this._status({ status: 'error', error: err.message });
+      this._status({ status: 'error', error: released ? err.message : `${err.message}. ${RELEASE_NOT_CONFIRMED}` });
       throw err;
     }
   }
@@ -277,10 +278,25 @@ class SstvTxBridge {
     this.controlServer.broadcastJsonEvent(EVENT.AUDIO_ERROR, { message: `SSTV transmit: ${message}` });
   }
 
-  async _restore(civ, dataOn, prevPower) {
+  /** Puts DATA mode and power back now, or once the radio confirms it unkeyed (held). */
+  async _finish(civ, dataOn, prevPower) {
+    if (!civ || (!dataOn && prevPower == null)) return;
+    const now = await restoreWhenReceiving(this.controlServer, ({ held }) => this._restore(civ, dataOn, prevPower, held));
+    if (!now) this._warn('DATA mode and power will be put back once the radio confirms it has stopped transmitting.');
+  }
+
+  async _restore(civ, dataOn, prevPower, held = false) {
     if (!civ) return;
-    if (prevPower != null) await civ.setTxPower(prevPower);
-    if (dataOn) await civ.setDataMode(false);
+    // Held: put a setting back only if it still has the value set for the
+    // picture, so a change made by hand while waiting is kept.
+    if (prevPower != null) {
+      if (!held || (await settingStillIs(() => civ.getTxPower(), this.txPowerW, 1))) await civ.setTxPower(prevPower);
+      else this._warn(`Power left as it is: it was changed while waiting to put ${prevPower} W back.`);
+    }
+    if (dataOn) {
+      if (!held || (await settingStillIs(() => civ.getDataMode(), true))) await civ.setDataMode(false);
+      else this._warn('DATA mode left as it is: it was changed while waiting to turn it off.');
+    }
   }
 
   abort() {

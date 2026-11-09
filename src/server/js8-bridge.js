@@ -1,5 +1,6 @@
 'use strict';
 
+const { releasePtt, RELEASE_NOT_CONFIRMED } = require('./tx-safety');
 const path = require('path');
 const { Worker } = require('worker_threads');
 const { EVENT } = require('./protocol');
@@ -127,6 +128,12 @@ class Js8Bridge {
     this._onRequest = (req) => this.request(req);
     this._onPtt = (on) => {
       this._pttActive = !!on;
+      // A PTT-off confirmed elsewhere (Stop again, the watchdog) after our own
+      // release failed: the radio has unkeyed. Not while we are keying up.
+      if (!on && this._keyed && !this._keyingUp) {
+        this._keyed = false;
+        this._update({ keyed: false });
+      }
       this._sync();
     };
     this._onPcm = (chunk) => this._handlePcm(chunk);
@@ -438,8 +445,13 @@ class Js8Bridge {
       // DATA mode must be on, or PTT would put the microphone on the air.
       if (civ) await ensureDataMode(civ, true, { settleMs: this.dataSettleMs });
       if (session !== this._txSession) return;
-      this._keyed = true;
-      await this.controlServer.setPttFromServer(true);
+      this._keyed = true; // before the key-up: a failed one may still have reached the radio
+      this._keyingUp = true;
+      try {
+        await this.controlServer.setPttFromServer(true);
+      } finally {
+        this._keyingUp = false;
+      }
       this._update({ keyed: true });
       if (session !== this._txSession) {
         await this._unkey();
@@ -457,7 +469,8 @@ class Js8Bridge {
       this._releaseTimer = null;
       this._releaseResolve = null;
       if (session !== this._txSession) return; // stopped: _stopSending() unkeyed
-      await this._unkey();
+      // Counted as sent only once the radio has confirmed it unkeyed.
+      if (!(await this._unkey())) return;
       if (sending) {
         const sent = sending.sent + 1;
         this._update({ sending: this._queue.length ? { ...sending, sent } : null });
@@ -471,15 +484,29 @@ class Js8Bridge {
     }
   }
 
-  async _unkey() {
-    if (!this._keyed) return;
-    this._keyed = false;
-    try {
-      await this.controlServer.setPttFromServer(false);
-    } catch (err) {
-      this._error(`couldn't release PTT: ${err.message}`);
+  /**
+   * Releases PTT; resolves whether the radio confirmed it. If not, JS8 stays
+   * shown as keyed and stops sending (the queue is dropped, no further frame
+   * is keyed); Stop tries the release again.
+   */
+  _unkey() {
+    // Stop and the end of a frame can ask at the same moment: share one release.
+    if (!this._unkeying) this._unkeying = this._release().finally(() => (this._unkeying = null));
+    return this._unkeying;
+  }
+
+  async _release() {
+    if (!this._keyed) return true;
+    if (!(await releasePtt(this.controlServer))) {
+      this._error(RELEASE_NOT_CONFIRMED);
+      this._queue = [];
+      this._txSession++;
+      this._update({ sending: null });
+      return false;
     }
+    this._keyed = false;
     this._update({ keyed: false });
+    return true;
   }
 
   async _stopSending() {

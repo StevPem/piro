@@ -1,5 +1,6 @@
 'use strict';
 
+const { refreshTransmitting } = require('./tx-safety');
 const { EVENT } = require('./protocol');
 const { MORSE_TABLE } = require('../audio/cw-decoder');
 
@@ -13,6 +14,10 @@ const BUSY_RETRY_MS = 250; // the radio's buffer was full: try again after this
 const LEAD_SEC = 3; // hand the radio the next piece this long before it runs out
 const TX_END_QUIET_MS = 800; // the radio counts as finished once it has been back on receive this long
 const TX_END_MAX_WAIT_MS = 15000; // ...or after this much longer than the estimate, whatever it says
+
+// Thrown by send()'s setup when Stop was pressed meanwhile (issue #79), so
+// the catch can tell it from a radio error.
+const ABORTED = Symbol('CW text aborted');
 
 const MORSE = Object.fromEntries(Object.entries(MORSE_TABLE).map(([code, ch]) => [ch, code]));
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
@@ -93,12 +98,13 @@ class CwTxBridge {
    * @param {number} [opts.leadSec]
    * @param {number} [opts.txEndQuietMs]
    */
-  constructor({ controlServer, estimateSeconds = cwSeconds, leadSec = LEAD_SEC, txEndQuietMs = TX_END_QUIET_MS } = {}) {
+  constructor({ controlServer, estimateSeconds = cwSeconds, leadSec = LEAD_SEC, txEndQuietMs = TX_END_QUIET_MS, txEndMaxWaitMs = TX_END_MAX_WAIT_MS } = {}) {
     if (!controlServer) throw new Error('CwTxBridge requires opts.controlServer');
     this.controlServer = controlServer;
     this.estimateSeconds = estimateSeconds;
     this.leadSec = leadSec;
     this.txEndQuietMs = txEndQuietMs;
+    this.txEndMaxWaitMs = txEndMaxWaitMs;
     this._tx = null;
     this._onSend = (req) => this.send(req).catch(() => {});
     this._onAbort = () => this.abort();
@@ -162,6 +168,11 @@ class CwTxBridge {
 
     const tx = { aborted: false, wakers: new Set() };
     this._tx = tx;
+    refreshTransmitting(this.controlServer); // the radio's keyer is about to send: settings can't be changed meanwhile
+    // After each awaited step: stop before changing anything once Stop was pressed.
+    const step = () => {
+      if (tx.aborted) throw ABORTED;
+    };
     let prevSpeed = null;
     let prevBreakIn = null;
     let changedSpeed = false;
@@ -171,16 +182,21 @@ class CwTxBridge {
     if (dropped.length) info.dropped = dropped;
     try {
       const mode = (await civ.getMode()).mode;
+      step();
       if (mode !== 'CW' && mode !== 'CW-R') throw new Error('Put the radio in CW first.');
       prevSpeed = await civ.getKeySpeed().catch(() => null);
+      step();
       prevBreakIn = await civ.getBreakIn().catch(() => null);
+      step();
       if (prevSpeed !== speed) {
+        changedSpeed = true; // before the write: if it lands, it is put back
         await civ.setKeySpeed(speed);
-        changedSpeed = true;
+        step();
       }
       if (prevBreakIn !== 1 && prevBreakIn !== 2) {
-        await civ.setBreakIn(1);
         changedBreakIn = true;
+        await civ.setBreakIn(1);
+        step();
       }
       this._status({ status: 'sending', ...info, startTime: Date.now() });
 
@@ -197,28 +213,58 @@ class CwTxBridge {
       }
       // Then until it has all gone out: the estimate, then until the radio is back on receive.
       await this._wait(tx, queuedSec * 1000 - (Date.now() - t0));
-      if (!tx.aborted && typeof civ.getTransmitting === 'function') {
-        const until = Date.now() + TX_END_MAX_WAIT_MS;
-        let quietSince = null;
-        while (!tx.aborted && Date.now() < until) {
-          const on = await civ.getTransmitting().catch(() => false);
-          if (on) quietSince = null;
-          else if (quietSince === null) quietSince = Date.now();
-          else if (Date.now() - quietSince >= this.txEndQuietMs) break;
-          await this._wait(tx, 150);
-        }
-      }
-      if (tx.aborted) await civ.stopCw().catch(() => {});
+      // "sent" only once the radio has reported receive for txEndQuietMs (issue #78).
+      const confirmed = tx.aborted || typeof civ.getTransmitting !== 'function' || (await this._confirmReceive(tx, civ));
+      if (tx.aborted || !confirmed) await civ.stopCw().catch(() => {});
       await this._restore(civ, { changedSpeed, prevSpeed, changedBreakIn, prevBreakIn });
-      this._tx = null;
+      this._done();
+      if (!confirmed) {
+        this._status({ status: 'error', ...info, error: "The radio didn't confirm it had stopped sending, so the keyer was stopped. Check the radio." });
+        return;
+      }
       this._status({ status: tx.aborted ? 'aborted' : 'sent', ...info });
     } catch (err) {
       if (started) await civ.stopCw().catch(() => {});
       await this._restore(civ, { changedSpeed, prevSpeed, changedBreakIn, prevBreakIn }).catch(() => {});
-      this._tx = null;
+      this._done();
+      if (err === ABORTED) {
+        this._status({ status: 'aborted', ...info });
+        return;
+      }
       this._status({ status: 'error', ...info, error: err.message });
       throw err;
     }
+  }
+
+  _done() {
+    this._tx = null;
+    refreshTransmitting(this.controlServer);
+  }
+
+  /**
+   * Whether the radio reported receive (transmit state false) continuously
+   * for txEndQuietMs before TX_END_MAX_WAIT_MS ran out. A read that fails,
+   * or anything but a plain false, doesn't count as receive.
+   */
+  async _confirmReceive(tx, civ) {
+    const until = Date.now() + this.txEndMaxWaitMs;
+    let quietSince = null;
+    while (!tx.aborted && Date.now() < until) {
+      let on;
+      try {
+        on = await civ.getTransmitting();
+      } catch {
+        on = null; // not known: not receive
+      }
+      if (on === false) {
+        if (quietSince === null) quietSince = Date.now();
+        else if (Date.now() - quietSince >= this.txEndQuietMs) return true;
+      } else {
+        quietSince = null;
+      }
+      await this._wait(tx, 150);
+    }
+    return tx.aborted;
   }
 
   async _restore(civ, { changedSpeed, prevSpeed, changedBreakIn, prevBreakIn }) {

@@ -944,6 +944,31 @@ class Civ extends EventEmitter {
   await sleep(200);
   check(civ.mode === 'LSB' && civ.dataMode === false && server.state.oliviaActive === false && (await vis('#ptt-btn')), 'Olivia -> SSB (LSB on 40 m): Olivia off, DATA MODE off, PTT back');
 
+  // No setting changes while transmitting: one message, nothing changed on the page or the radio
+  {
+    await server.setPttFromServer(true); // as FT8, WSPR or a picture mode keys up
+    await sleep(150);
+    civ.log.length = 0;
+    const modeBefore = civ.mode;
+    const errText = async (p) => ((await p.locator('#error-line').isVisible()) ? await p.locator('#error-line').textContent() : '');
+    await page.locator('#modes .chip', { hasText: /^CW/ }).click();
+    check((await errText(page)) === "Can't change that while transmitting.", `transmitting: a mode chip shows "Can't change that while transmitting." ("${await errText(page)}")`);
+    check(!(await vis('#cw-paddle')) && (await vis('#ptt-btn')) && civ.mode === modeBefore, 'and the page and the radio stay in SSB');
+    await page.locator('#bands .chip', { hasText: /^20m$/ }).click();
+    await page.locator('#tx-power-select').click({ force: true, timeout: 2000 }).catch(() => {});
+    check(!civ.log.some((e) => ['setMode', 'setFrequency', 'setTxPower', 'setDataMode'].includes(e[0])), 'a band button and the power list change nothing on the radio: ' + JSON.stringify(civ.log.filter((e) => e[0] !== 'setPtt')));
+    await pageB.locator('#modes .chip', { hasText: /^CW/ }).click();
+    check((await errText(pageB)) === "Can't change that while transmitting.", 'the second browser is refused the same way');
+    await server.setPttFromServer(false);
+    await sleep(150);
+    await page.locator('#modes .chip', { hasText: /^CW/ }).click();
+    await page.waitForFunction(() => !document.getElementById('cw-paddle').hidden, null, { timeout: 3000 }).catch(() => {});
+    check(civ.mode === 'CW' && (await vis('#cw-paddle')), 'once the radio is receiving, the same click changes the mode');
+    await chip('SSB').click();
+    await page.waitForFunction(() => !document.getElementById('ptt-btn').hidden, null, { timeout: 3000 }).catch(() => {});
+    await sleep(200);
+  }
+
   // Speech to text (copy aid), in LSB
   {
     await page.waitForFunction(() => !document.querySelector('.stt-toggle').hidden, null, { timeout: 3000 }).catch(() => {});
