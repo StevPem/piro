@@ -5315,3 +5315,76 @@ Items 8 and 15 from the code review, and two requests. Not tested on air
   than a few ms (in-process: over 300 ms); a missing model is reported
   from the worker; every decoder closed at the end).
 - Service-worker cache v134.
+
+### Transmit safety: confirmed PTT release, held restores, no changes while transmitting (v135)
+
+Fixes issues #75-#79 (reported by s53zo, each checked against `main`), and
+an operator request. Not tested on air; checked with a stand-in radio that
+rejects PTT-off, as the issues' reproductions did.
+
+- **The bugs.** Each transmitting feature ended its own way, and none
+  handled a PTT-off the radio rejected:
+  - #75: SSTV, EasyPal and RTTY: after two rejected releases, cleanup still
+    turned DATA mode off and put the power back (RTTY: mode and frequency)
+    on a radio that might be keyed, so the microphone or more power could
+    go out.
+  - #76: JS8 showed itself released, counted the frame as sent and keyed
+    the next one.
+  - #77: leaving WSPR restored 100 W without waiting for the transmission's
+    release; a failed release was ignored and receive resumed.
+  - #78: CW text took a failed transmit-state read as "receiving", and
+    reported "sent" at the 15 s deadline without confirming.
+  - #79: Stop during CW text setup still changed key speed and break-in.
+  - The PTT watchdog had the same flaw: a failed force-off still set PTT
+    off and told everyone the radio had released.
+- **The fix: one place for the rules (ControlServer, tx-safety.js).**
+  - `releasePtt()`: PTT-off (urgent), up to three tries 200 ms apart;
+    resolves whether the radio confirmed it. If not, PTT stays shown on,
+    every browser is told "PTT release not confirmed", and the watchdog
+    stays armed.
+  - `restoreWhenReceiving(fn)`: settings a feature changed go back only on
+    a radio confirmed unkeyed. Otherwise the restore is held and runs at
+    the next confirmed PTT-off (Stop, PTT release, the watchdog). Restores
+    run one at a time and a key-up waits for a running one, so a restore
+    can't overlap a new transmission (#77's race).
+  - Option (b), chosen by the operator: a held restore first reads the
+    setting and puts the old value back only if the radio still has the
+    one the feature set; a change made by hand meanwhile is kept, and the
+    operator is told (`settingStillIs()`).
+  - The watchdog's force-off, if rejected, keeps PTT on, reports it, and
+    tries again every 5 s.
+- **Per feature.** SSTV, EasyPal and RTTY report "sent" only after a
+  confirmed release and restore through `restoreWhenReceiving` (RTTY's
+  held restore puts the mode and tuning back only if still on the AFSK
+  sideband and dial frequency). JS8's release returns whether it was
+  confirmed: if not, it stays keyed, stops sending and Stop retries (two
+  releases asked at once share one). WSPR waits for the transmission's
+  release before restoring power, cancels the next planned transmission
+  on a failed release, and resumes receive only once unkeyed. CW text
+  needs a quiet receive period read from the radio before "sent" (a
+  failed read or the deadline is an error, and the keyer is stopped), and
+  checks for Stop after every setup step (a private ABORTED marker).
+- **No changes while transmitting** (operator request). The server keeps a
+  `transmitting` state (PTT on, an unconfirmed release, the CW paddle
+  keying, or CW text being sent), in the connect snapshot and broadcast as
+  EVENT.TRANSMITTING. While it is set, requests that change a radio setting
+  or the app mode are refused with "Can't change that while transmitting."
+  (re-stating the current app mode is not a change, so a reconnecting
+  browser isn't refused). The browser checks first, with capture-phase
+  listeners on the mode and band chips, function buttons, frequency steps
+  and editor, tuner, power list, RF gain and span sliders, and the
+  scope's click-to-tune, so it shows the message without changing its own
+  display; the mode chips update the page before asking the server.
+- Tests: tx-safety.test.js (new, 53 checks with a real ControlServer and a
+  stand-in radio: release confirmed after two rejections, or reported
+  after three; held and immediate restores; a key-up waits for a running
+  restore; the watchdog; settingStillIs; every setting request refused
+  while transmitting and allowed after; and #75-#79 each reproduced. Run
+  against the old bridges, the #75-#79 checks fail: 8 of 14, 4 of 4, 3 of
+  6 and 4 of 5). manual-tty-ui.js: with PTT keyed, a mode chip, a band and
+  the power list show the message in both browsers and change nothing on
+  the page or radio; after unkeying the same click works. ws-server.test.js
+  keeps the new event apart from its ordered checks. Running the browser
+  test with every refusal logged showed none during its FT8, TTY, SSTV,
+  CW and WSPR flows.
+- Service-worker cache v135.

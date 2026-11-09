@@ -21,6 +21,47 @@ const NOTES_EMPTY_GRACE_MS = 2 * 60 * 1000; // ...or two minutes after the last 
 // network is noticed in 15-30 s, not when TCP gives up many minutes later.
 const HEARTBEAT_MS = 15 * 1000;
 
+// Transmit safety (see releasePtt() and restoreWhenReceiving()).
+const PTT_RELEASE_ATTEMPTS = 3; // a rejected PTT-off is tried this many times in all
+const PTT_RELEASE_RETRY_MS = 200; // ...this far apart
+const WATCHDOG_RETRY_MS = 5000; // the watchdog's force-off is retried this often until it is confirmed
+const TRANSMITTING_REFUSAL = "Can't change that while transmitting.";
+
+// Requests that change a setting on the radio, or the app mode (which
+// changes radio settings). While the radio is transmitting they are refused
+// with TRANSMITTING_REFUSAL: a change mid-transmission could put the
+// microphone or higher power on the air, or move the signal. Transmit
+// controls (PTT, Stop/abort, sending) and reads are not in this list.
+const RADIO_SETTING_REQUESTS = new Set([
+  REQUEST.SET_FREQUENCY,
+  REQUEST.SET_MODE,
+  REQUEST.SET_DATA_MODE,
+  REQUEST.SET_FILTER,
+  REQUEST.SET_TX_POWER,
+  REQUEST.SET_RX_GAIN,
+  REQUEST.SET_PREAMP,
+  REQUEST.SET_NOISE_REDUCTION,
+  REQUEST.SET_NOISE_BLANKER,
+  REQUEST.SET_NOTCH,
+  REQUEST.SET_TUNER,
+  REQUEST.SET_SCOPE_SPAN,
+]);
+// App-mode switches: refused only when they would change the mode (a
+// reconnecting browser re-stating the current mode is not a change).
+const APP_MODE_REQUESTS = new Map([
+  [REQUEST.SET_FT8_ACTIVE, 'ft8Active'],
+  [REQUEST.SET_FREEDV_ACTIVE, 'freeDvActive'],
+  [REQUEST.SET_JTTY_ACTIVE, 'jttyActive'],
+  [REQUEST.SET_OLIVIA_ACTIVE, 'oliviaActive'],
+  [REQUEST.SET_JS8_ACTIVE, 'js8Active'],
+  [REQUEST.SET_HELL_ACTIVE, 'hellActive'],
+  [REQUEST.SET_VARA_ACTIVE, 'varaActive'],
+  [REQUEST.SET_SSTV_ACTIVE, 'sstvActive'],
+  [REQUEST.SET_WSPR_ACTIVE, 'wsprActive'],
+  [REQUEST.SET_FAX_ACTIVE, 'faxActive'],
+  [REQUEST.SET_EASYPAL_ACTIVE, 'easypalActive'],
+]);
+
 // The largest WebSocket message accepted from a browser. The biggest the
 // protocol allows is REQUEST.SEND_EASYPAL: a JPEG of up to 4 MB, about
 // 5.6 MB as base64 (SEND_SSTV's RGB is at most 3 MB, 4 MB as base64).
@@ -159,6 +200,15 @@ class ControlServer extends EventEmitter {
     // If that browser goes (closed, network lost, heartbeat missed), PTT
     // is released at once rather than when the watchdog fires.
     this._pttOwner = null;
+    // Transmit safety. _rxConfirmed: the radio's last answer was that it is
+    // unkeyed (a PTT-off it acknowledged). False from the moment a key-up
+    // is attempted (it may reach the radio even if the answer doesn't) until
+    // a PTT-off is acknowledged. Settings a feature changed for a
+    // transmission are put back only while it is true (restoreWhenReceiving).
+    this._rxConfirmed = true;
+    this._heldRestores = []; // restores waiting for a confirmed unkey
+    this._restoreChain = Promise.resolve(); // restores run one at a time; a key-up waits for them
+    this._lastTransmitting = false;
     // Ping every heartbeatMs (0 turns it off); see HEARTBEAT_MS.
     this.heartbeatMs = heartbeatMs;
     this._heartbeatTimer = null;
@@ -416,6 +466,7 @@ class ControlServer extends EventEmitter {
       // time} with time in epoch ms. See REQUEST.POST_NOTE.
       notes: [],
       cwKeying: false, // the CW paddle is keying (EVENT.CW_KEYING); see cw-paddle-bridge.js
+      transmitting: false, // the radio is, or may be, transmitting (EVENT.TRANSMITTING); see ControlServer#transmitting
     };
     this.cwPaddle = null; // set by CwPaddleBridge#start()
 
@@ -689,6 +740,12 @@ class ControlServer extends EventEmitter {
     const { id, type } = msg;
     if (!type) {
       ws.send(makeError(id ?? null, 'Missing "type"'));
+      return;
+    }
+
+    // No setting changes while the radio is transmitting (see RADIO_SETTING_REQUESTS).
+    if (this.transmitting && this._changesSetting(type, msg)) {
+      ws.send(makeError(id ?? null, TRANSMITTING_REFUSAL));
       return;
     }
 
@@ -1558,8 +1615,21 @@ class ControlServer extends EventEmitter {
    * rather than needing a separate exemption path for automated TX.
    */
   async setPttFromServer(on, { except, owner, urgent = false } = {}) {
-    await this.civ.setPtt(on, { urgent });
+    if (on) {
+      // Never key up in the middle of putting settings back.
+      await this._restoreChain;
+      // From here the radio may be transmitting, even if the answer is lost.
+      this._rxConfirmed = false;
+      this.refreshTransmitting();
+    }
+    try {
+      await this.civ.setPtt(on, { urgent });
+    } catch (err) {
+      this.refreshTransmitting();
+      throw err;
+    }
     this.state.ptt = on;
+    if (!on) this._confirmedReceive();
     // `owner`: the browser that keyed it (REQUEST.SET_PTT); none when a bridge keyed it.
     this._pttOwner = on ? owner ?? null : null;
     this._armOrClearPttWatchdog(on);
@@ -1583,17 +1653,115 @@ class ControlServer extends EventEmitter {
     this._pttWatchdogTimer = null;
     this._pttOwner = null;
     try {
-      await this.civ.setPtt(false);
+      await this.civ.setPtt(false, { urgent: true });
     } catch (err) {
-      // Still tell clients what happened even if the force-off itself
-      // failed to confirm — better to surface it than fail silently on
-      // exactly the kind of malfunction this watchdog exists to catch.
-      this._broadcast(makeEvent(EVENT.RIG_ERROR, { message: `PTT watchdog fired but the force-off failed: ${err.message}` }));
+      // Tell every browser, keep PTT shown as on (the radio may still be
+      // transmitting) and try again shortly: claiming the radio released
+      // when it didn't say so would let features put settings back, or
+      // start again, on a live transmitter.
+      this._broadcast(makeEvent(EVENT.RIG_ERROR, { message: `PTT watchdog fired but the force-off failed: ${err.message}. Trying again; check the radio.` }));
+      this._pttWatchdogTimer = setTimeout(() => this._onPttWatchdogTimeout(), WATCHDOG_RETRY_MS);
+      return;
     }
     this.state.ptt = false;
+    this._confirmedReceive();
     this._broadcast(makeEvent(EVENT.PTT_TIMEOUT, { pttWatchdogMs: this.pttWatchdogMs }));
     this._broadcast(makeEvent(EVENT.PTT, { value: false }));
     this.emit('ptt', false); // internal, server-side-only — see the SET_PTT handler's matching emission
+  }
+
+  /**
+   * Unkeys the radio and reports whether the radio confirmed it: true once
+   * a PTT-off is acknowledged, false if PTT_RELEASE_ATTEMPTS tries were all
+   * rejected or unanswered. Then PTT stays shown as on (the radio may still
+   * be transmitting), every browser is told, and the watchdog stays armed.
+   * Features use this to end a transmission: they must not report it
+   * released, or put settings back directly, unless it returns true (see
+   * restoreWhenReceiving()).
+   */
+  async releasePtt({ attempts = PTT_RELEASE_ATTEMPTS, retryMs = PTT_RELEASE_RETRY_MS } = {}) {
+    let lastErr = null;
+    for (let i = 0; i < attempts; i++) {
+      try {
+        await this.setPttFromServer(false, { urgent: true });
+        return true;
+      } catch (err) {
+        lastErr = err;
+        if (i < attempts - 1) await new Promise((r) => setTimeout(r, retryMs));
+      }
+    }
+    const message = `PTT release not confirmed: the radio may still be transmitting (${lastErr?.message || 'no answer'}). Check the radio.`;
+    console.error(`[ptt] ${message}`);
+    this._broadcast(makeEvent(EVENT.RIG_ERROR, { message }));
+    this.refreshTransmitting();
+    return false;
+  }
+
+  /** Whether the radio's last answer was that it is unkeyed (see _rxConfirmed). */
+  get receiveConfirmed() {
+    return this._rxConfirmed && !this.state.ptt;
+  }
+
+  /**
+   * Puts settings back after a transmission, but only on a radio confirmed
+   * unkeyed. `restore({held})` runs now if it is (resolving true once it
+   * has run), or is held until the next confirmed PTT-off (resolving false
+   * at once, so the caller isn't stuck). Restores run one at a time, in the
+   * order given, and a key-up waits for any running one. A held restore is
+   * passed {held: true}: a setting may have been changed by hand while it
+   * waited, so it should check the radio still has the value the feature
+   * set before putting the old one back (see tx-safety.js's settingStillIs()).
+   */
+  async restoreWhenReceiving(restore) {
+    if (this.receiveConfirmed) {
+      await this._runRestore(restore, false);
+      return true;
+    }
+    this._heldRestores.push(restore);
+    console.warn('[ptt] holding a settings restore until the radio confirms it has stopped transmitting');
+    return false;
+  }
+
+  _runRestore(restore, held) {
+    const run = this._restoreChain.then(() => restore({ held }));
+    this._restoreChain = run.catch((err) => {
+      console.error('[ptt] restoring settings after a transmission failed:', err.message);
+      this._broadcast(makeEvent(EVENT.RIG_ERROR, { message: `Couldn't put a setting back after transmitting: ${err.message}` }));
+    });
+    return run;
+  }
+
+  /** A PTT-off was acknowledged: the radio is receiving. Runs any held restores. */
+  _confirmedReceive() {
+    this._rxConfirmed = true;
+    const held = this._heldRestores.splice(0);
+    for (const restore of held) this._runRestore(restore, true).catch(() => {});
+    this.refreshTransmitting();
+  }
+
+  /**
+   * Whether the radio is, or may be, transmitting: PTT on, an unconfirmed
+   * release, the CW paddle keying, or CW text being sent by the radio's
+   * keyer. Radio settings can't be changed meanwhile (RADIO_SETTING_REQUESTS).
+   */
+  get transmitting() {
+    return !!(this.state.ptt || !this._rxConfirmed || this.state.cwKeying || this.cwTxBusy?.());
+  }
+
+  /** Re-checks `transmitting` and tells every browser if it changed (EVENT.TRANSMITTING). Features that key without PTT call this. */
+  refreshTransmitting() {
+    const now = this.transmitting;
+    this.state.transmitting = now;
+    if (now === this._lastTransmitting) return;
+    this._lastTransmitting = now;
+    this._broadcast(makeEvent(EVENT.TRANSMITTING, { active: now }));
+  }
+
+  /** Whether request `type` would change a radio setting or the app mode (refused while transmitting). */
+  _changesSetting(type, msg) {
+    if (RADIO_SETTING_REQUESTS.has(type)) return true;
+    const key = APP_MODE_REQUESTS.get(type);
+    return key !== undefined && !!msg.active !== !!this.state[key];
   }
 
   close() {
@@ -1612,4 +1780,4 @@ class ControlServer extends EventEmitter {
   }
 }
 
-module.exports = { ControlServer, originAllowed, parseAllowedOrigins, HEARTBEAT_MS, MAX_MESSAGE_BYTES, MAX_FREQUENCY_HZ, LIVE_BACKLOG_BYTES, LIVE_FRAME_TYPES };
+module.exports = { ControlServer, TRANSMITTING_REFUSAL, RADIO_SETTING_REQUESTS, originAllowed, parseAllowedOrigins, HEARTBEAT_MS, MAX_MESSAGE_BYTES, MAX_FREQUENCY_HZ, LIVE_BACKLOG_BYTES, LIVE_FRAME_TYPES };

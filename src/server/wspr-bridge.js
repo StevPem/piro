@@ -34,6 +34,7 @@
  * unattended receive makes; see _tune() for its time limit).
  */
 
+const { releasePtt, restoreWhenReceiving, settingStillIs, RELEASE_NOT_CONFIRMED } = require('./tx-safety');
 const path = require('node:path');
 const { Worker } = require('node:worker_threads');
 const { ensureDataMode, watchDataMode } = require('../civ/data-mode-guard');
@@ -390,9 +391,13 @@ class WsprBridge {
       await this._limitPower();
       if (this.status.txEnabled) this._planNextTx(this.slotClock.currentSlotStart());
     } else {
+      // Stop any transmission and wait for its PTT release before the power
+      // goes back up: the higher power must never reach a keyed radio.
+      const done = this._tx?.done;
       this._abortTx();
       this._plannedTxSlot = null;
       this._setStatus({ nextTx: null });
+      if (done) await done;
       await this._restorePower();
     }
     this._syncAttachment();
@@ -438,13 +443,22 @@ class WsprBridge {
     const civ = this._civ();
     if (!civ || this._prevPower == null) return Promise.resolve();
     this._powerBusy = this._powerBusy.then(async () => {
-      const w = this._prevPower;
-      this._prevPower = null;
-      try {
-        await civ.setTxPower(w);
-      } catch (err) {
-        this._warn(`could not put the power back to ${w} W: ${err.message}`);
-      }
+      // Only on a radio confirmed unkeyed (held until then); see tx-safety.js.
+      const now = await restoreWhenReceiving(this.controlServer, async ({ held }) => {
+        const w = this._prevPower;
+        if (w == null) return;
+        this._prevPower = null;
+        if (held && !(await settingStillIs(() => civ.getTxPower(), MAX_POWER_W, 1))) {
+          this._warn(`power left as it is: it was changed while waiting to put ${w} W back`);
+          return;
+        }
+        try {
+          await civ.setTxPower(w);
+        } catch (err) {
+          this._warn(`could not put the power back to ${w} W: ${err.message}`);
+        }
+      });
+      if (!now) this._warn('the power will be put back once the radio confirms it has stopped transmitting');
     });
     return this._powerBusy;
   }
@@ -452,7 +466,8 @@ class WsprBridge {
   // ------------------------------------------------------------ receiving
 
   _receiving() {
-    return (this._active || !!this._unattended) && !this._pttActive && !this._tx;
+    // Not while an unkey is unconfirmed: the radio may still be transmitting.
+    return (this._active || !!this._unattended) && !this._pttActive && !this._tx && this.controlServer.receiveConfirmed !== false;
   }
 
   _syncAttachment() {
@@ -627,6 +642,7 @@ class WsprBridge {
   async _transmit(slotStartMs) {
     const civ = this._civ();
     const tx = { aborted: false, timer: null, wake: null };
+    tx.done = new Promise((resolve) => (tx.finished = resolve)); // settles once its PTT release is done (setActive waits for it)
     this._tx = tx;
     this._syncAttachment();
     let keyed = false;
@@ -677,15 +693,15 @@ class WsprBridge {
       this._warn(`transmit failed: ${err.message}`);
     } finally {
       if (stopWatch) await stopWatch().catch(() => {});
-      if (keyed) {
-        try {
-          await this.controlServer.setPttFromServer(false);
-        } catch {
-          // best effort; the PTT watchdog is still armed
-        }
+      // keyed is set before the key-up is tried: a failed key-up may still have reached the radio.
+      if (keyed && !(await releasePtt(this.controlServer))) {
+        this._warn(RELEASE_NOT_CONFIRMED);
+        this._plannedTxSlot = null;
+        this._setStatus({ nextTx: null });
       }
       if (this._tx === tx) this._tx = null;
-      this._syncAttachment();
+      this._syncAttachment(); // receive resumes only once the radio is confirmed unkeyed (_receiving)
+      tx.finished();
     }
   }
 

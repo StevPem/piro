@@ -877,6 +877,7 @@ const scopeDisplay = new ScopeDisplay({
     updateSpanSliderFromRange(lo, hi);
   },
   onFrequencyClick: (hz) => {
+    if (refuseWhileTransmitting()) return;
     link
       .request('setFrequency', { value: hz })
       .then(() => updateFrequencyDisplay(hz))
@@ -1041,6 +1042,7 @@ link.addEventListener('connected', (event) => {
   setLed('connected', 'Connected');
   setClientCount(data.clients);
 
+  radioTransmitting = !!data.transmitting;
   if (data.screenTitle) {
     document.title = data.screenTitle;
     if (appTitleLinkEl) appTitleLinkEl.textContent = data.screenTitle;
@@ -1286,6 +1288,7 @@ function commitFreqEdit() {
   const mhz = parseFloat(freqInput.value);
   freqInput.hidden = true;
   freqDisplay.hidden = false;
+  if (refuseWhileTransmitting()) return;
   if (!Number.isFinite(mhz) || mhz <= 0 || mhz > 100000) {
     showError('Enter a frequency in MHz, e.g. 14.195000');
     return;
@@ -6544,3 +6547,67 @@ cwDashBtn.addEventListener('pointercancel', () => {
 cwDashBtn.addEventListener('lostpointercapture', () => {
   paddleDashDown = false;
 });
+
+// --- No setting changes while transmitting ---
+// While the radio is (or may be) transmitting, the server refuses requests
+// that change a radio setting or the app mode (ControlServer#transmitting).
+// The controls are stopped here first, before their handlers run: some
+// (the mode chips) change this page before asking the server, and would
+// otherwise leave it out of step with the radio. One message for all.
+const TRANSMITTING_MESSAGE = "Can't change that while transmitting.";
+let radioTransmitting = false; // from the server: the connect snapshot and 'transmitting' events
+
+function isTransmitting() {
+  return radioTransmitting || pttActive; // pttActive: this browser's own PTT, before the server says so
+}
+
+/** Shows the message and returns true if a setting may not be changed now; stops `event` if given. */
+function refuseWhileTransmitting(event) {
+  if (!isTransmitting()) return false;
+  if (event) {
+    event.preventDefault();
+    event.stopImmediatePropagation();
+  }
+  showError(TRANSMITTING_MESSAGE);
+  return true;
+}
+
+link.addEventListener('transmitting', (event) => {
+  radioTransmitting = !!event.detail.active;
+});
+
+// Buttons: a capture-phase listener on their container sees the click first.
+for (const el of [
+  document.getElementById('modes'),
+  document.getElementById('bands'),
+  document.getElementById('function-controls'),
+  freqDisplay,
+  tunerBtn,
+  tuneBtn,
+  ...document.querySelectorAll('.freq__step'),
+]) {
+  el?.addEventListener(
+    'click',
+    (event) => {
+      if (event.target.closest('button')) refuseWhileTransmitting(event);
+    },
+    true
+  );
+}
+
+// Lists and sliders: stop them being opened or dragged, and undo a change
+// made from the keyboard (re-read from the radio).
+for (const [el, resync] of [
+  [txPowerSelect, () => syncTxPower()],
+  [rxGainSlider, () => syncRxGain()],
+  [scopeSpanSlider, null],
+]) {
+  el.addEventListener('pointerdown', (event) => refuseWhileTransmitting(event), true);
+  el.addEventListener(
+    'change',
+    (event) => {
+      if (refuseWhileTransmitting(event)) resync?.();
+    },
+    true
+  );
+}

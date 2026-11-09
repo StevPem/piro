@@ -90,5 +90,15 @@ operators, so frequency tables follow the WIA band plans.
   serves CI-V, audio and the WebSocket.
 - Put back any radio setting a feature changes (mode, DATA mode, power,
   key speed, break-in), including on Stop and on errors.
+- End a transmission with `releasePtt()` and put settings back with
+  `restoreWhenReceiving()` (src/server/tx-safety.js), never directly: a
+  release the radio didn't confirm must not be reported as released, and
+  settings must not change on a radio that may still be keyed. Report
+  "sent" only after a confirmed release. A feature that transmits without
+  PTT calls `refreshTransmitting()` when it starts and stops.
+- While transmitting, the server refuses requests that change a radio
+  setting or the app mode ("Can't change that while transmitting."; see
+  RADIO_SETTING_REQUESTS in ws-server.js). A new setting request goes in
+  that list.
 - Third-party code keeps its licence notice (`third_party/`, `models/`).
   Parts are AGPL-3.0, so `SOURCE_CODE_URL` matters.

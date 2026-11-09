@@ -133,6 +133,10 @@ function connect(port) {
         ws._clientCounts.push(parsed.data.count);
         return;
       }
+      if (parsed.type === 'transmitting') {
+        (ws._transmitting ??= []).push(parsed.data.active); // kept apart too, so the order of the rest is unchanged
+        return;
+      }
       if (ws._msgWaiters.length) ws._msgWaiters.shift()(parsed);
       else ws._msgQueue.push(parsed);
     });

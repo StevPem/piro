@@ -12,7 +12,7 @@ Hamlib, no separate audio server and no extra apps.
 Written by VK3TR. Licensed AGPL-3.0-only (see
 [Licence](#licence)).
 
-**Current build: v134.** This is the version the app shows next to its title.
+**Current build: v135.** This is the version the app shows next to its title.
 It is the `CACHE_NAME` number in `src/client/sw.js`, which goes up with every
 change to the web app.
 
@@ -606,6 +606,24 @@ browser holding PTT disconnects, or stops answering the server's pings
 for about 15 to 30 seconds (a phone that lost its signal), PTT is released
 at once. PiRO also sends PTT off to the radio when the service stops or
 crashes.
+
+**No changes while transmitting.** While the radio is transmitting (voice,
+the CW paddle, CW text, or a digital or picture mode), the frequency, band,
+mode and the radio's other settings can't be changed: PiRO says "Can't
+change that while transmitting." in every browser that tries. Stop or
+release PTT first. A change part-way through a transmission could put the
+microphone or more power on the air, or move the signal. Stop, PTT release
+and the abort buttons always work.
+
+**When the radio doesn't confirm it has stopped.** After a transmission
+PiRO waits for the radio to confirm it has unkeyed, trying a few times.
+Only then does it put back what it changed for the transmission (DATA
+mode, power, the RTTY tuning). If the radio never confirms, every browser
+shows "PTT release not confirmed: the radio may still be transmitting",
+the radio is left as it was, and the 10-minute limit still applies. Check
+the radio, then press Stop or release PTT to try again. Once the radio
+confirms, PiRO puts the settings back, except one you changed by hand
+meanwhile, which it leaves as you set it and says so.
 
 #### Sharing the radio
 
@@ -1888,6 +1906,13 @@ one hard refresh (Ctrl+Shift+R, or Cmd+Shift+R on a Mac).
   can't be taken for the answer to the next request. Now and then is
   harmless; often means the CI-V link is slow or overloaded (check the
   baud rate, and try with the scope off).
+- **"PTT release not confirmed: the radio may still be transmitting."** The
+  radio rejected, or didn't answer, PTT off several times. Look at the
+  radio: if it is transmitting, unkey it on the front panel. Then press Stop
+  or release PTT in PiRO; once the radio confirms, PiRO puts back the
+  settings it changed. Check the CI-V cable and baud rate if it happens again.
+- **"Can't change that while transmitting."** A setting was changed while the
+  radio was on the air. Stop, or release PTT, and try again.
 - **The CW paddle plays a sidetone but the radio doesn't transmit.** With
   `CW_KEY_LINE`, the radio's USB Keying (CW) must be set to the same line
   (DTR or RTS), and the radio must be in CW. PiRO turns semi break-in on
@@ -2541,7 +2566,15 @@ is under 6 MB); a bigger one closes that browser's connection (code 1009).
 digits), rounded to whole Hz; whether the radio covers it is up to the
 radio. `cwKey` (`{session, t, d}`) is one CW paddle element: the server
 holds it `CW_PADDLE_DELAY_MS` and keys it on its own clock; `cw-keying`
-(`{active}`) is broadcast when the paddle starts and stops keying. Live binary frames (audio, scope lines, spectra) are skipped for a
+(`{active}`) is broadcast when the paddle starts and stops keying.
+`transmitting` (`{active}`, also in the `connected` snapshot) is broadcast
+when the radio starts or stops being, or maybe being, on the air: PTT on, an
+unconfirmed PTT release, the CW paddle keying or CW text being sent. While
+it is active, requests that change a radio setting or the app mode
+(`setFrequency`, `setMode`, `setDataMode`, `setFilter`, `setTxPower`,
+`setRxGain`, `setPreamp`, `setNoiseReduction`, `setNoiseBlanker`,
+`setNotch`, `setTuner`, `setScopeSpan`, and `set…Active` when it would
+change the mode) are refused with "Can't change that while transmitting." Live binary frames (audio, scope lines, spectra) are skipped for a
 browser with more than `LIVE_BACKLOG_BYTES` waiting (128 kB on raw audio,
 32 kB on compressed) until it is under a quarter of that; picture frames
 (SSTV, fax, Feld-Hell) and JSON are always sent. See `src/server/protocol.js` for the full JSON message
@@ -2904,6 +2937,12 @@ The test files:
   cw-tx-bridge.test.js    CW text through the radio's keyer: speed and
                            break-in set and put back, 30-character pieces,
                            buffer-full retries, Stop, refusals, timing
+  tx-safety.test.js       transmit safety (issues #75-#79), with a stand-in
+                           radio that rejects PTT-off: release confirmed or
+                           reported; settings put back only once unkeyed
+                           (held, then kept if changed by hand); SSTV,
+                           EasyPal, RTTY, JS8, WSPR and CW text each checked;
+                           the watchdog; settings refused while transmitting
   cw-paddle-bridge.test.js  the CW paddle timed at the server: with up to
                            180 ms of network jitter every element and gap
                            keyed exactly as sent (fake clock) and within
