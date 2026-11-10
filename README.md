@@ -14,7 +14,7 @@ Hamlib, no separate audio server and no extra apps.
 Written by VK3TR. Licensed AGPL-3.0-only (see
 [Licence](#licence)).
 
-**Current build: v136.** This is the version the app shows next to its title.
+**Current build: v137.** This is the version the app shows next to its title.
 It is the `CACHE_NAME` number in `src/client/sw.js`, which goes up with every
 change to the web app.
 
@@ -1799,6 +1799,7 @@ All settings are environment variables. For the systemd service they go in
 
 | Variable | Default | What it does |
 |---|---|---|
+| `CIV_CONNECTION` | `usb` | `lan` controls an IC-7300MK2 over its own network interface instead of USB. It needs the `ICOM_LAN_*` settings and the radio's CI-V time-out turned on. See [LAN setup and safety](docs/icom-lan.md). |
 | `CIV_SERIAL_PATH` | `/dev/ttyUSB0` | The radio's CI-V serial port. |
 | `CIV_RADIO_MODEL` | none | Radio model, such as `IC-7300`. Picks the CI-V address. |
 | `CIV_BAUD_RATE` | `19200` | Must equal the radio's "CI-V USB Baud Rate" menu setting. |
@@ -1858,7 +1859,7 @@ All settings are environment variables. For the systemd service they go in
 | `WSPR_SKIP_BANDS` | none | Bands left out of the unattended band cycle, separated by commas: for example `160m,6m` (or `160,6`). The bands are 160m 80m 40m 30m 20m 17m 15m 12m 10m 6m. If the radio is on a skipped band, the cycle starts on the next one. |
 | `TLS_CERT_PATH`, `TLS_KEY_PATH` | none | Set both to serve HTTPS and WSS. Needed for the microphone from other devices. |
 | `ALLOWED_ORIGINS` | none | Extra web origins allowed to open the WebSocket, separated by commas, such as `https://radio.example.net`. Normally not needed: PiRO's own page is always allowed. Set it only behind a reverse proxy that changes the `Host` header. `*` allows any origin (not recommended). |
-| `CW_KEY_LINE` | none | `dtr` or `rts`: the CW paddle keys the radio with that line of the USB serial port. Set the radio's USB Keying (CW) to the same line. Unset or `off`: the paddle keys with CI-V PTT. See [CW](#cw). |
+| `CW_KEY_LINE` | none | USB only; ignored with `CIV_CONNECTION=lan`. `dtr` or `rts`: the CW paddle keys the radio with that line of the USB serial port. Set the radio's USB Keying (CW) to the same line. Unset or `off`: the paddle keys with CI-V PTT. See [CW](#cw). |
 | `CW_PADDLE_DELAY_MS` | `250` | How long the server holds paddle elements before sending them, so they go out with even timing (50 to 1000). Lower at home, higher on a poor link. |
 | `SOURCE_CODE_URL` | PiRO's repository | Where the page's title links: the source of the PiRO you run. Leave it unset for an unchanged copy; if you have changed PiRO, point it at your own source (see [Licence](#licence)). |
 | `STATIC_DIR` | `src/client` | Folder the web app is served from. |
@@ -2793,6 +2794,17 @@ shapes.
 The test files:
 
 ```
+  icom-lan-core.test.js   the IC-7300MK2 LAN driver against a local UDP
+                           stand-in radio: packets, login, the CI-V time-out
+                           (0032) check that blocks transmitting, audio
+                           drain on PTT-off, link loss, and CW paddle
+                           elements skipping the 0032 and mode reads within
+                           a burst
+  lan-startup.test.js     the server started with CIV_CONNECTION=lan, in its
+                           own process: the LAN settings are checked, the
+                           time-out warning reaches every browser, a lost
+                           link exits non-zero so systemd restarts it, and
+                           a VARA CQ is sent over the stand-in radio
   frame.test.js           unit tests for CI-V framing/BCD, no hardware needed;
                            numbers that would encode as garbage are refused
   scope.test.js           unit tests for scope waveform decoding/reassembly,

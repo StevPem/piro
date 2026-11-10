@@ -855,8 +855,9 @@ let shuttingDown = false;
  */
 async function emergencyUnkey(why) {
   if (!civ || typeof civ.forcePttOff !== 'function') return;
-  if (CW_KEY_LINE) {
-    // The CW key line keys the radio without PTT: drop it too.
+  if (CW_KEY_LINE && CIV_CONNECTION !== 'lan') {
+    // The CW key line keys the radio without PTT: drop it too. LAN has no
+    // serial lines, and the LAN paddle keys with CI-V PTT (issue #83).
     await civ.setKeyLine(CW_KEY_LINE, false).catch((err) => console.error(`[civ] Could not drop the CW key line (${why}): ${err.message}`));
   }
   try {

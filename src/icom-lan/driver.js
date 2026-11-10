@@ -9,6 +9,18 @@ const MK2 = Object.freeze({ id: 0xb6, name: 'IC-7300MK2', timeout: [0, 0x32],
   modOff: [0, 0x84], modData: [0, 0x85], lanSource: 5 });
 const TIMEOUT_MINUTES = [0, 3, 5, 10, 20, 30];
 
+// CW paddle keying (issue #83). Each paddle element is a PTT key-down and
+// key-up. Reading 0032 and the mode before every key-down made key-down
+// late but not key-up, so dots came out short and uneven. Within a burst
+// of CW keying, a key-down skips those reads when:
+// - the last key-down found CW mode, and its key-up was less than
+//   CW_BURST_MS ago,
+// - no mode change has been seen since (our own or the radio's),
+// - 0032 was read and found on less than TIMEOUT_RECHECK_MS ago.
+// USB keying never reads the mode before PTT, so this is no weaker than USB.
+const CW_BURST_MS = 2000;
+const TIMEOUT_RECHECK_MS = 30000;
+
 class IcomLanDriver extends CivDriver {
   constructor(options) {
     const session = new IcomSession({ ...options, deferReady: true });
@@ -27,6 +39,10 @@ class IcomLanDriver extends CivDriver {
     this.prepared = false;
     this.timeoutMinutes = null;
     this.timeoutWarning = null;
+    this.timeoutCheckedAt = -Infinity; // when 0032 was last read and found on
+    this.lastTxCw = false; // the last key-down found CW mode
+    this.cwBurstUntil = -Infinity; // key-downs before this may skip the reads
+    this.on('mode', () => this.endCwBurst());
     if (options.modLevel !== undefined && (!Number.isInteger(options.modLevel) || options.modLevel < 0 || options.modLevel > 255)) {
       throw new Error('ICOM_LAN_MOD_LEVEL must be an integer from 0 to 255');
     }
@@ -48,6 +64,7 @@ class IcomLanDriver extends CivDriver {
     this.port.on('error', (err) => this.emit('error', err));
     this.port.on('close', () => {
       this.prepared = false;
+      this.endCwBurst();
       ++this.txRevision;
       ++this.cwRevision;
       ++this.tunerRevision;
@@ -134,13 +151,20 @@ class IcomLanDriver extends CivDriver {
     }
   }
 
+  endCwBurst() {
+    this.cwBurstUntil = -Infinity;
+    this.lastTxCw = false;
+  }
+
   async refreshTimeout() {
     let warning;
+    this.timeoutCheckedAt = -Infinity;
     try {
       const value = await this.readParameter(MK2.timeout);
       if (!Number.isInteger(value) || value < 0 || value >= TIMEOUT_MINUTES.length) throw new Error('invalid value');
       this.timeoutMinutes = TIMEOUT_MINUTES[value];
       warning = value === 0 ? 'Radio CI-V time-out (0032) is OFF. LAN transmission is disabled; enable the radio time-out before transmitting.' : null;
+      if (!warning) this.timeoutCheckedAt = performance.now();
     } catch (err) {
       if (!this.session.connected) throw err;
       this.timeoutMinutes = null;
@@ -194,11 +218,23 @@ class IcomLanDriver extends CivDriver {
     }
   }
 
+  /** True when a key-down can skip the 0032 and mode reads (see CW_BURST_MS). */
+  inCwBurst() {
+    const now = performance.now();
+    return this.lastTxCw && now < this.cwBurstUntil && !this.timeoutWarning
+      && now - this.timeoutCheckedAt < TIMEOUT_RECHECK_MS && this.prepared && this.session.connected;
+  }
+
   async prepareTx(revision) {
+    if (this.inCwBurst()) return;
+    this.endCwBurst();
     await this.requireTimeout();
     if (revision !== this.txRevision) throw new Error('PTT request was cancelled');
     const mode = (await this.getMode()).mode;
-    if (mode === 'CW' || mode === 'CW_R') return;
+    if (mode === 'CW' || mode === 'CW_R') {
+      this.lastTxCw = true;
+      return;
+    }
     if (mode === 'RTTY' || mode === 'RTTY_R') throw new Error('LAN audio TX requires an audio mode, not FSK RTTY');
     const parameter = await this.getDataMode() ? MK2.modData : MK2.modOff;
     const settings = [{ parameter, value: MK2.lanSource }];
@@ -219,6 +255,7 @@ class IcomLanDriver extends CivDriver {
       if (!on) {
         // Existing bridges keep their ALSA interface. Finish the already queued
         // tail, not future modem silence. restart()/abort flushes it promptly.
+        // In CW the LAN audio is never keyed (below), so this returns at once.
         const epoch = this.playback.epoch;
         const drained = await this.playback.drain({ maxMs: this.options.drainTimeoutMs ?? 2000 });
         if (!drained && this.playback.epoch === epoch && this.playback.keyed && this.session.connected) {
@@ -226,6 +263,7 @@ class IcomLanDriver extends CivDriver {
         }
         this.playback.setKeyed(false);
         const result = await super.setPtt(false, options);
+        if (this.lastTxCw) this.cwBurstUntil = performance.now() + CW_BURST_MS;
         await this.restore(this.txSaved).catch((err) => this.emit('error', err));
         return result;
       }
@@ -236,7 +274,9 @@ class IcomLanDriver extends CivDriver {
         if (revision !== this.txRevision) throw new Error('PTT request was cancelled');
         await super.setPtt(true, options);
         if (revision !== this.txRevision) throw new Error('PTT request was cancelled');
-        this.playback.setKeyed(true);
+        // CW sends no audio. Keying the LAN audio would only make key-up
+        // wait for the audio buffer to empty.
+        this.playback.setKeyed(!this.lastTxCw);
         return true;
       } catch (err) {
         if (revision === this.txRevision && this.session.connected) {
@@ -265,6 +305,7 @@ class IcomLanDriver extends CivDriver {
   }
 
   forcePttOff(...args) {
+    this.endCwBurst();
     ++this.txRevision;
     ++this.cwRevision;
     ++this.tunerRevision;
@@ -307,6 +348,7 @@ class IcomLanDriver extends CivDriver {
 
   async close() {
     this.prepared = false;
+    this.endCwBurst();
     ++this.txRevision;
     ++this.cwRevision;
     ++this.tunerRevision;
@@ -323,4 +365,4 @@ class IcomLanDriver extends CivDriver {
   }
 }
 
-module.exports = { IcomLanDriver, MK2, TIMEOUT_MINUTES };
+module.exports = { IcomLanDriver, MK2, TIMEOUT_MINUTES, CW_BURST_MS, TIMEOUT_RECHECK_MS };
