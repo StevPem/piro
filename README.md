@@ -2147,7 +2147,8 @@ browser. There is no build step: the browser loads plain ES modules.
 
 [`docs/architecture.drawio`](docs/architecture.drawio) is a UML diagram of
 the main classes and how they connect: browser client, server, feature
-bridges, CI-V and audio, and the programs and services outside PiRO. Its
+bridges, CI-V, the IC-7300MK2 LAN driver, audio, and the programs and
+services outside PiRO. Its
 second page lists which events each server
 part listens to and sends. Open it in [draw.io](https://app.diagrams.net/)
 or the draw.io desktop app. [`docs/architecture.png`](docs/architecture.png)
@@ -2772,14 +2773,17 @@ shapes.
 ### Testing
 
 - `npm test` runs every test that needs no hardware. It must pass before
-  a commit.
+  a commit. It runs each `test/*.test.js` and `test/*.test.mjs` file in
+  its own process (`test/run-all.js`), carries on after a failure, and
+  lists the failures at the end. A new test file is picked up by its
+  name; there is no list to edit.
+- `npm test -- deepcw lan` runs only the files whose names contain one of
+  the words given.
 - GitHub Actions runs the same tests on every pull request and every push
   to `main`, on Node 20 and 22 (`.github/workflows/test.yml`). It uses
-  `npm run test:ci` (`test/run-all.js`), which runs the files listed in
-  `npm test` but carries on after a failure and runs a failed file once
-  more. A file that passes the second time is shown as a "flaky" warning;
-  one that fails both times fails the check. `TEST_RETRIES=0` turns the
-  retry off.
+  `npm run test:ci`, which runs a failed file once more. A file that
+  passes the second time is shown as a "flaky" warning; one that fails
+  both times fails the check. `TEST_RETRIES=0` turns the retry off.
 - `test/manual-tty-ui.js` drives the real web app in headless Chromium
   against a real ControlServer with a stub radio, with several browsers at
   once. It is not part of `npm test`; run it for any UI change. It needs
@@ -2858,8 +2862,9 @@ The test files:
                            server keeps running)
   tls-server.test.js      confirms the server actually works over
                            HTTPS/WSS when TLS_CERT_PATH/TLS_KEY_PATH are set
-  run-all.js              not a test: runs the files in `npm test` for CI,
-                           retrying a failed file once (npm run test:ci)
+  run-all.js              not a test: runs every *.test.js and *.test.mjs
+                           file (npm test); with npm run test:ci, a failed
+                           file is run once more
   readme-version.test.js  checks the README's "Current build" number matches
                            CACHE_NAME in src/client/sw.js
   scope-display.test.mjs  unit tests for the client's waterfall color

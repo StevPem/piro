@@ -1,30 +1,37 @@
 'use strict';
 
-// Run with: node test/run-all.js   (or npm run test:ci)
+// Runs every test that needs no hardware: each test/*.test.js and
+// test/*.test.mjs file, in name order, each in its own Node process. A
+// new test file is picked up by its name; there is no list to edit.
 //
-// Runs the same test files as `npm test`, read from its script in
-// package.json so there is one list. Unlike `npm test` it runs every file
-// even after one fails, and retries a failed file once (TEST_RETRIES, 0 to
-// turn off). A file that fails and then passes is reported as flaky: a
-// warning, not a failure. One that fails every time fails the run.
-// Used by CI (.github/workflows/test.yml).
+//   npm test                      every file; no retries (--no-retry)
+//   npm test -- deepcw lan        only files whose names contain one of these
+//   npm run test:ci               every file; a failed file is run once more
+//
+// It runs every file even after one fails, then lists the failures. With
+// retries (TEST_RETRIES, default 1; CI uses this), a file that fails and
+// then passes is reported as flaky: a warning, not a failure. One that
+// fails every time fails the run. Used by CI (.github/workflows/test.yml).
 
 const { spawnSync } = require('child_process');
 const fs = require('fs');
 const path = require('path');
 
 const ROOT = path.join(__dirname, '..');
-const RETRIES = Math.max(0, Number.parseInt(process.env.TEST_RETRIES ?? '1', 10) || 0);
+const ARGS = process.argv.slice(2);
+const NO_RETRY = ARGS.includes('--no-retry');
+const FILTERS = ARGS.filter((a) => !a.startsWith('--'));
+const RETRIES = NO_RETRY ? 0 : Math.max(0, Number.parseInt(process.env.TEST_RETRIES ?? '1', 10) || 0);
 const IN_ACTIONS = process.env.GITHUB_ACTIONS === 'true';
 
-/** The test files in package.json's "test" script, in order. */
+/** test/*.test.js and test/*.test.mjs, in name order, narrowed by FILTERS if given. */
 function testFiles() {
-  const script = require(path.join(ROOT, 'package.json')).scripts.test;
-  return script.split('&&').map((part) => {
-    const m = /^node\s+(\S+)$/.exec(part.trim());
-    if (!m) throw new Error(`run-all.js only understands "node <file>" steps; "npm test" has: ${part.trim()}`);
-    return m[1];
-  });
+  const all = fs
+    .readdirSync(__dirname)
+    .filter((name) => /\.test\.m?js$/.test(name))
+    .sort()
+    .map((name) => `test/${name}`);
+  return FILTERS.length ? all.filter((file) => FILTERS.some((f) => file.includes(f))) : all;
 }
 
 function runOnce(file) {
@@ -35,6 +42,11 @@ function runOnce(file) {
 
 function main() {
   const files = testFiles();
+  if (!files.length) {
+    console.error(FILTERS.length ? `No test file name contains: ${FILTERS.join(', ')}` : 'No test files found.');
+    process.exitCode = 1;
+    return;
+  }
   const results = [];
   for (const file of files) {
     const attempts = [];
