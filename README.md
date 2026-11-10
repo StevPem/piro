@@ -2147,7 +2147,8 @@ browser. There is no build step: the browser loads plain ES modules.
 
 [`docs/architecture.drawio`](docs/architecture.drawio) is a UML diagram of
 the main classes and how they connect: browser client, server, feature
-bridges, CI-V and audio, and the programs and services outside PiRO. Its
+bridges, CI-V, the IC-7300MK2 LAN driver, audio, and the programs and
+services outside PiRO. Its
 second page lists which events each server
 part listens to and sends. Open it in [draw.io](https://app.diagrams.net/)
 or the draw.io desktop app. [`docs/architecture.png`](docs/architecture.png)
