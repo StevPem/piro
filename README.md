@@ -2,7 +2,9 @@
 
 PiRO is a web app for remote control of an Icom transceiver. It runs as one
 Node.js service on a Raspberry Pi (or any small Linux machine) that is
-connected to the radio by USB. You open it in a browser on your network and
+connected to the radio by USB, or to an IC-7300MK2 over its native LAN
+interface. USB is the default; see [LAN setup and safety](docs/icom-lan.md).
+You open it in a browser on your network and
 get frequency, mode and PTT control, RX/TX audio, a spectrum scope and
 waterfall, and a set of digital-mode and noise-reduction tools. It needs no
 Hamlib, no separate audio server and no extra apps.
