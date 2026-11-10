@@ -149,13 +149,13 @@ sudo apt update && sudo apt full-upgrade -y
 sudo apt install -y git alsa-utils build-essential python3
 ```
 
-**2. Install Node.js 18 or newer.** Debian's own package is often too old.
+**2. Install Node.js 20 or newer.** Debian's own package is often too old.
 NodeSource gives a current version on both ARM and x86:
 
 ```bash
 curl -fsSL https://deb.nodesource.com/setup_22.x | sudo -E bash -
 sudo apt install -y nodejs
-node --version      # must print v18 or higher
+node --version      # must print v20 or higher
 ```
 
 **3. Get PiRO and install its Node dependencies.**
