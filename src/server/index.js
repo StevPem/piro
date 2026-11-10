@@ -3,6 +3,8 @@
 const fs = require('fs');
 const path = require('path');
 const { CivDriver, KNOWN_RADIO_ADDR, parseKeyLine } = require('../civ');
+const { createLanRadio } = require('./lan-config');
+const { EVENT } = require('./protocol');
 const { ControlServer, parseAllowedOrigins } = require('./ws-server');
 const { AudioBridge } = require('./audio-bridge');
 const { ScopeBridge } = require('./scope-bridge');
@@ -34,6 +36,7 @@ const { RadeBridge } = require('./rade-bridge');
 const { FreeDvReporterBridge } = require('./freedv-reporter');
 
 const SERIAL_PATH = process.env.CIV_SERIAL_PATH || '/dev/ttyUSB0';
+const CIV_CONNECTION = (process.env.CIV_CONNECTION || 'usb').toLowerCase();
 
 // CW paddle keying (see server/cw-paddle-bridge.js). CW_KEY_LINE=dtr or rts
 // keys CW with that line of the CI-V USB serial port; set the radio's
@@ -362,8 +365,10 @@ async function maximizeUsbAudioLevelsOnRadio(civ) {
 }
 
 async function main() {
+  if (!['usb', 'lan'].includes(CIV_CONNECTION)) throw new Error('CIV_CONNECTION must be usb or lan');
+  const lan = CIV_CONNECTION === 'lan';
   const radioAddr = RADIO_MODEL ? KNOWN_RADIO_ADDR[RADIO_MODEL] : undefined;
-  civ = new CivDriver({ path: SERIAL_PATH, radioAddr, baudRate: CIV_BAUD_RATE, keyLine: CW_KEY_LINE || undefined });
+  civ = lan ? createLanRadio() : new CivDriver({ path: SERIAL_PATH, radioAddr, baudRate: CIV_BAUD_RATE, keyLine: CW_KEY_LINE || undefined });
 
   civ.on('error', (err) => console.error('[civ error]', err.message));
   // Only after a timeout: the radio answered too late, and the answer was dropped.
@@ -375,12 +380,14 @@ async function main() {
   // radio is still away, each start fails at civ.open() and is retried.
   civ.on('close', () => {
     if (shuttingDown) return;
-    console.error(`[civ] The serial port ${SERIAL_PATH} closed unexpectedly (radio off or USB unplugged?). Exiting so the service restarts.`);
-    shutdown('serial port closed', 1);
+    console.error(lan ? '[civ] LAN radio link lost. Exiting so the service restarts.'
+      : `[civ] The serial port ${SERIAL_PATH} closed unexpectedly (radio off or USB unplugged?). Exiting so the service restarts.`);
+    shutdown(lan ? 'LAN link lost' : 'serial port closed', 1);
   });
 
   await civ.open();
-  console.log(`CI-V port open: ${SERIAL_PATH} at ${civ.baudRate} baud`);
+  console.log(lan ? 'Icom LAN radio connected (48 kHz mono PCM)'
+    : `CI-V port open: ${SERIAL_PATH} at ${civ.baudRate} baud`);
 
   if (!civ.radioAddr) {
     console.log('No radio address configured; attempting auto-detect...');
@@ -390,7 +397,11 @@ async function main() {
     console.log(`Using configured radio address 0x${civ.radioAddr.toString(16)}`);
   }
 
-  if (CIV_MAXIMIZE_USB_LEVELS) {
+  if (lan) {
+    console.log('USB audio level setup skipped for LAN.');
+    if (civ.timeoutWarning) console.warn(`[lan] ${civ.timeoutWarning}`);
+    if (CW_KEY_LINE) console.warn('[lan] CW_KEY_LINE is USB-only; the LAN paddle uses CI-V PTT.');
+  } else if (CIV_MAXIMIZE_USB_LEVELS) {
     await maximizeUsbAudioLevelsOnRadio(civ);
   } else {
     console.log('CIV_MAXIMIZE_USB_LEVELS=0; leaving the radio\'s own USB audio levels as found.');
@@ -419,6 +430,14 @@ async function main() {
     sourceCodeUrl: SOURCE_CODE_URL,
     allowedOrigins: ALLOWED_ORIGINS,
   });
+  if (lan) {
+    controlServer.on('client-connected', (ws) => {
+      if (civ.timeoutWarning) controlServer.sendJsonEvent(ws, EVENT.RIG_ERROR, { message: civ.timeoutWarning });
+    });
+    civ.on('timeout-warning', (message) => {
+      if (message) controlServer.broadcastJsonEvent(EVENT.RIG_ERROR, { message });
+    });
+  }
   if (ALLOWED_ORIGINS.length) console.log(`WebSocket connections also allowed from: ${ALLOWED_ORIGINS.join(', ')}`);
   const boundPort = await controlServer.listen();
   const scheme = tls ? 'https' : 'http';
@@ -463,7 +482,7 @@ async function main() {
     console.log('FREEDV_REPORTER_ENABLED=0; FreeDV Reporter disabled.');
   }
 
-  if (AUDIO_RX_DEVICE) {
+  if (lan || AUDIO_RX_DEVICE) {
     audioBridge = new AudioBridge({
       controlServer,
       // Only ever used to pick which HamNoise model (CW vs. voice) is
@@ -473,6 +492,7 @@ async function main() {
       civ,
       rxDevice: AUDIO_RX_DEVICE,
       txDevice: AUDIO_TX_DEVICE,
+      ...(lan ? { capture: civ.capture, playback: civ.playback, maximizeVolumeOnStart: false } : {}),
       sampleRate: AUDIO_SAMPLE_RATE,
       channels: AUDIO_CHANNELS,
       opusBitrate: AUDIO_OPUS_BITRATE,
@@ -794,12 +814,13 @@ async function main() {
   console.log('CW text sending ready (the Send button in CW mode).');
   controlServer.cwTxBusy = () => cwTxBridge.transmitting;
 
-  cwPaddleBridge = new CwPaddleBridge({ controlServer, keyLine: CW_KEY_LINE, delayMs: CW_PADDLE_DELAY_MS });
+  const paddleKeyLine = lan ? null : CW_KEY_LINE;
+  cwPaddleBridge = new CwPaddleBridge({ controlServer, keyLine: paddleKeyLine, delayMs: CW_PADDLE_DELAY_MS });
   cwPaddleBridge.start();
   console.log(
-    CW_KEY_LINE
-      ? `CW paddle ready: keys with the serial port's ${CW_KEY_LINE.toUpperCase()} line (the radio's USB Keying (CW) must be ${CW_KEY_LINE.toUpperCase()}), ${CW_PADDLE_DELAY_MS} ms behind.`
-      : `CW paddle ready: keys with CI-V PTT, ${CW_PADDLE_DELAY_MS} ms behind (set CW_KEY_LINE for more exact timing).`
+    paddleKeyLine
+      ? `CW paddle ready: keys with the serial port's ${paddleKeyLine.toUpperCase()} line (the radio's USB Keying (CW) must be ${paddleKeyLine.toUpperCase()}), ${CW_PADDLE_DELAY_MS} ms behind.`
+      : `CW paddle ready: keys with CI-V PTT, ${CW_PADDLE_DELAY_MS} ms behind${lan ? '.' : ' (set CW_KEY_LINE for more exact timing).'}`
   );
 
   if (SCOPE_ENABLED) {
