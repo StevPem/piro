@@ -4,7 +4,7 @@ const test = require('node:test');
 const assert = require('node:assert/strict');
 const { once } = require('node:events');
 const { IcomPeer, envelope } = require('./fixtures/icom-lan-peer');
-const { IcomLanDriver, TIMEOUT_MINUTES } = require('../src/icom-lan/driver');
+const { IcomLanDriver, TIMEOUT_MINUTES, TIMEOUT_RECHECK_MS } = require('../src/icom-lan/driver');
 const { IcomSession } = require('../src/icom-lan/session');
 const { IcomStream } = require('../src/icom-lan/stream');
 const P = require('../src/icom-lan/protocol');
@@ -262,6 +262,83 @@ test('native receive carries exact PCM and the MK2 one-division 475-point scope 
   peer.replyCiv(Buffer.concat([Buffer.from('270000010100', 'hex'), peer.frequency, Buffer.from('005002000000', 'hex'), points]));
   const [line] = await scope;
   assert.equal(line.centerFreq, 14074000); assert.equal(line.span, 25000); assert.deepEqual(line.points, points);
+});
+
+// Issue #83: CW paddle elements over LAN. Each element is a key-down and
+// key-up; reading 0032 and the mode before every key-down made dots short.
+const count = (peer, hex) => peer.commands.filter((p) => p.subarray(4).toString('hex') === hex).length;
+const READ_0032 = '1a050032fd', READ_MODE = '04fd', PTT_ON = '1c0001fd';
+
+test('CW paddle: elements in a burst skip the 0032 and mode reads', async (t) => {
+  const { peer, driver, errors } = await radio(t);
+  await driver.setMode('CW');
+  const before = [count(peer, READ_0032), count(peer, READ_MODE)];
+  await driver.setPtt(true);
+  assert.equal(peer.ptt, true);
+  assert.equal(driver.playback.keyed, false, 'CW does not key the LAN audio');
+  await driver.setPtt(false);
+  assert.deepEqual([count(peer, READ_0032), count(peer, READ_MODE)], [before[0] + 1, before[1] + 1], 'the first element reads both');
+  for (let i = 0; i < 5; i++) {
+    await driver.setPtt(true);
+    assert.equal(peer.ptt, true);
+    await driver.setPtt(false);
+    assert.equal(peer.ptt, false);
+  }
+  assert.deepEqual([count(peer, READ_0032), count(peer, READ_MODE)], [before[0] + 1, before[1] + 1], 'later elements read neither');
+  assert.equal(count(peer, PTT_ON), 6);
+  assert.deepEqual(errors, []);
+});
+
+test('CW paddle: a gap or a mode change ends the burst', async (t) => {
+  for (const end of ['gap', 'mode event from the radio', 'setMode']) await t.test(end, async (t) => {
+    const { peer, driver } = await radio(t);
+    await driver.setMode('CW');
+    await driver.setPtt(true); await driver.setPtt(false);
+    assert.equal(driver.inCwBurst(), true);
+    const reads = count(peer, READ_MODE);
+    if (end === 'gap') driver.cwBurstUntil = performance.now() - 1;
+    if (end === 'mode event from the radio') driver.emit('mode', { mode: 'CW', filter: 2 });
+    if (end === 'setMode') await driver.setMode('CW');
+    assert.equal(driver.inCwBurst(), false);
+    await driver.setPtt(true); await driver.setPtt(false);
+    assert.equal(count(peer, READ_MODE), reads + 1, 'the mode is read again');
+  });
+});
+
+test('CW paddle: an emergency unkey ends the burst', async (t) => {
+  // forcePttOff is for shutdown only (its reply may answer the next
+  // request), so this checks the state rather than keying again.
+  const { driver } = await radio(t);
+  await driver.setMode('CW');
+  await driver.setPtt(true); await driver.setPtt(false);
+  assert.equal(driver.inCwBurst(), true);
+  await driver.forcePttOff();
+  assert.equal(driver.inCwBurst(), false);
+});
+
+test('CW paddle: a mode changed to USB is set up for LAN audio, not keyed as CW', async (t) => {
+  const { peer, driver } = await radio(t);
+  await driver.setMode('CW');
+  await driver.setPtt(true); await driver.setPtt(false);
+  await driver.setMode('USB'); // emits 'mode', ending the burst
+  await driver.setPtt(true);
+  assert.equal(peer.parameters.get('0084')[0], 5, 'modulation source set to LAN');
+  assert.equal(driver.playback.keyed, true, 'LAN audio keyed outside CW');
+  await driver.setPtt(false);
+});
+
+test('CW paddle: 0032 is read again after TIMEOUT_RECHECK_MS, even in a burst', async (t) => {
+  const { peer, driver } = await radio(t);
+  await driver.setMode('CW');
+  await driver.setPtt(true); await driver.setPtt(false);
+  peer.parameters.set('0032', Buffer.from([0]));
+  await driver.setPtt(true); await driver.setPtt(false); // still in the burst: not read yet
+  driver.timeoutCheckedAt = performance.now() - TIMEOUT_RECHECK_MS - 1;
+  await assert.rejects(driver.setPtt(true), /OFF/);
+  assert.equal(peer.ptt, false);
+  peer.parameters.set('0032', Buffer.from([1]));
+  await driver.setPtt(true); await driver.setPtt(false);
+  assert.equal(driver.timeoutWarning, null);
 });
 
 test('confirmed receive invalidates retained CW text and invalid physical state is rejected', async (t) => {

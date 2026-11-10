@@ -45,8 +45,28 @@ Optional settings:
 The adapter verifies the actual model identity, selects LAN AF audio and the
 appropriate LAN modulation source, and restores settings on orderly shutdown
 where the link remains usable. USB DTR/RTS keying is unavailable over LAN;
-the existing paddle uses CI-V PTT. Existing upstream reverse-CW mode limits
-still apply.
+the existing paddle uses CI-V PTT, and `CW_KEY_LINE` is ignored. Existing
+upstream reverse-CW mode limits still apply.
+
+## Timing
+
+**PTT-off waits for queued audio.** Over LAN, PTT-off first sends the audio
+already queued for the radio, so the end of an over isn't cut off. This
+takes up to 2 s. After 2 s the rest is dropped and PTT goes off anyway.
+Shutdown and crash unkeys don't wait.
+
+**CW paddle.** Each paddle element is a PTT key-down and key-up. The first
+key-down reads the CI-V time-out (0032) and the mode first. Later elements
+skip those reads while all of these hold:
+
+- the last element was in CW mode, and it ended less than 2 s ago;
+- no mode change has been seen since, from PiRO or the radio;
+- 0032 was read, and was on, less than 30 s ago.
+
+So 0032 is still read at least every 30 s during sending. CW doesn't key the
+LAN audio, so key-up doesn't wait for it either. A mode changed on the front
+panel with the radio's CI-V transceive off isn't seen until the next pause
+of 2 s. USB PTT never reads the mode first, so this is no weaker than USB.
 
 ## Link loss and transmit safety
 
@@ -78,9 +98,9 @@ test:ci` also runs the upstream USB and modem suites. Tests of shared transmit
 bridges remain upstream's, and their implementation is unchanged by this PR.
 
 Process lifecycle tests wait for the real optional CW model's startup to settle
-using test-only telemetry. The separate upstream [DeepCW close-during-load
-crash](https://github.com/VK3TR/piro/issues/81) can interrupt the shared shutdown
-path; this LAN patch does not fix it or change decoder code.
+using test-only telemetry. They were written before the [DeepCW
+close-during-load crash](https://github.com/VK3TR/piro/issues/81) was fixed in
+v136; shutdown now waits for the CW3 decoder to close.
 
 The native protocol/audio path was exercised previously on an IC-7300MK2;
 that earlier full-featured fork is not a hardware certification of this smaller

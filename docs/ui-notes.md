@@ -5415,3 +5415,42 @@ rejects PTT-off, as the issues' reproductions did.
   bridge's stop() resolves only after the worker has exited. Against the
   old code all 19 checks fail, most by SIGABRT.
 - Service-worker cache v136.
+
+### IC-7300MK2 LAN: notes for #82, CW paddle timing (v137)
+- **LAN support (#82, from s53zo).** `CIV_CONNECTION=lan` controls an
+  IC-7300MK2 over its own network interface: CI-V, 48 kHz audio both ways,
+  and the scope. USB is still the default. The code is in `src/icom-lan/`;
+  the server's other code is unchanged apart from `index.js`. Before any
+  LAN transmission the server checks the radio's CI-V time-out (0032).
+  If it is off or can't be read, receive still works, but transmitting is
+  refused and every browser is warned. A lost link exits non-zero so
+  systemd starts a fresh process. Setup and limits: docs/icom-lan.md.
+  #82 had no build bump or notes of its own; this section and v137 cover
+  it (issue #83).
+- **Real bug: CW paddle elements over LAN (issue #83, found by reading
+  the code).** Every key-down read 0032 and the mode before keying. Key-up
+  had no reads. So key-down was late and key-up wasn't, and dots came out
+  short and uneven. Now, within a burst of CW keying, a key-down skips
+  both reads. The conditions: the last element was in CW and ended less
+  than 2 s ago, no mode change has been seen since (from PiRO or the
+  radio), and 0032 was read and on less than 30 s ago. CW also no longer
+  keys the LAN audio, so key-up doesn't wait for the audio buffer.
+  USB PTT never reads the mode first, so this is no weaker than USB.
+- **`CW_KEY_LINE` on LAN.** The shutdown and crash unkey tried to drop
+  the serial key line even on LAN, which logged a harmless error. It now
+  skips it on LAN.
+- **Docs.** docs/icom-lan.md now says PTT-off over LAN waits up to 2 s
+  for queued audio, and how the paddle checks work. The README has
+  `CIV_CONNECTION` in the configuration table and the two LAN test files
+  in the test list.
+- Tests: icom-lan-core.test.js has 8 new checks (53 in all). A burst of
+  six elements reads 0032 and the mode once. A gap, a mode event from the
+  radio, setMode() and an emergency unkey each end the burst. A change to
+  USB sets the modulation source to LAN and keys the LAN audio. 0032 is
+  read again after 30 s inside a burst, and OFF then refuses the key-down.
+  Against the old driver, 4 of the new tests fail.
+- Found while testing: after forcePttOff(), the next CI-V request can take
+  the radio's reply to it as its own answer. forcePttOff() says this
+  already, and it is only used on shutdown, so it was left alone.
+- Not tested on a real radio, and not tested on air.
+- Service-worker cache v137.
