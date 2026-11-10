@@ -5388,3 +5388,30 @@ rejects PTT-off, as the issues' reproductions did.
   test with every refusal logged showed none during its FT8, TTY, SSTV,
   CW and WSPR flows.
 - Service-worker cache v135.
+
+### CW3 (DeepCW) close no longer aborts the server (v136)
+- **Real bug (issue #81, reported by s53zo on a Pi).** Closing the CW3
+  decoder while its model was loading, or during an inference, killed
+  the whole Node process with SIGABRT ("terminate called after throwing
+  an instance of 'Napi::Error'"). Cause: close() called
+  Worker.terminate() at once, which stopped onnxruntime in the middle of
+  a native call. A process exit at the same moment did the same. It hit
+  the server's shutdown, so a shutdown that asked for exit code 1 ended
+  with a signal instead. On x86 the window is about 75-150 ms after the
+  decoder starts; on a Pi it is later and wider.
+- **Fix.** close() now sends the worker a close message. The worker drops
+  windows it hasn't started, lets the model load and any inference
+  finish, releases the onnxruntime session, and exits. close() returns a
+  promise that resolves when the worker has exited, and keeps the
+  process alive until then. Decodes not yet answered are dropped without
+  an error. If the worker hasn't exited after 5 s, it is terminated as a
+  last resort. CwDecoderBridge.stop() returns a promise for all of this,
+  and the server's shutdown waits for it.
+- Tests: deepcw-close.test.js (new). Each case runs in its own Node
+  process, since the abort would take the test with it: close at ten
+  points during the model load and six points into an inference (exit
+  code 3 expected, no 'error'), close() without waiting (the process
+  ends normally), a second close() returns the same promise, and the
+  bridge's stop() resolves only after the worker has exited. Against the
+  old code all 19 checks fail, most by SIGABRT.
+- Service-worker cache v136.

@@ -876,7 +876,7 @@ async function shutdown(signal, exitCode = 0) {
   try {
     await emergencyUnkey(signal);
     if (scopeBridge) await scopeBridge.stop();
-    if (cwDecoderBridge) cwDecoderBridge.stop();
+    if (cwDecoderBridge) await cwDecoderBridge.stop(); // CW3's worker must exit first (issue #81)
     if (rttyDecoderBridge) rttyDecoderBridge.stop();
     if (ft8Bridge) ft8Bridge.stop();
     if (ttyBridge) ttyBridge.stop();

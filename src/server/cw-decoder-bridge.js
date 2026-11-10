@@ -169,8 +169,13 @@ class CwDecoderBridge {
     }
   }
 
-  /** Detaches from everything — call on server shutdown. */
+  /**
+   * Detaches from everything — call on server shutdown. Resolves once
+   * CW3's worker thread has exited: wait for it before the process exits
+   * (see DeepCwDecoder#close).
+   */
   stop() {
+    const closing = [];
     this._detach();
     this.civ.off('mode', this._onMode);
     this.controlServer.off('ptt', this._onPtt);
@@ -181,8 +186,9 @@ class CwDecoderBridge {
       dec.off('space', this._spaceHandlers[variant]);
       dec.off('pitch', this._pitchHandlers[variant]);
       dec.off('error', this._errorHandlers[variant]);
-      dec.close?.(); // CW3's worker thread
+      if (dec.close) closing.push(Promise.resolve(dec.close())); // CW3's worker thread
     }
+    return Promise.all(closing).then(() => {});
   }
 
   /**
