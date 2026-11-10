@@ -48,7 +48,7 @@ operators, so frequency tables follow the WIA band plans.
 - Commit as Steve Pemberton <spemberton@gmail.com>.
 - Branch from an up-to-date `main`; open every PR against `main`. A
   PR based on another branch merges into that branch, not main.
-- Create PRs with `gh api repos/stevpem/piro/pulls`.
+- Create PRs with `gh api repos/VK3TR/piro/pulls`.
 
 ## Radio facts that cost real time (see docs/civ-notes.md)
 - DATA mode is `1A 06` (`[01, filter]` on, `[00, 00]` off). It is not

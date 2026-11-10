@@ -29,6 +29,11 @@ const DEFAULT_WINDOW_SECONDS = 8.0;
 // signal is never the thing that gets skipped.
 const SILENCE_PEAK_THRESHOLD = 0.01;
 
+// How long close() waits for the worker to finish a model load or an
+// inference before it terminates it anyway. A Pi loads the model in well
+// under a second; the server's shutdown allows 8 s in all.
+const CLOSE_TIMEOUT_MS = 5000;
+
 /**
  * "CW 3" — a from-scratch Node.js port of e04/deepcw-engine's reference
  * decoder (https://github.com/e04/deepcw-engine, itself the model/engine
@@ -145,6 +150,7 @@ class DeepCwDecoder extends EventEmitter {
     // inWorker: false runs them here (tests compare the two).
     this._engine = inWorker ? new WorkerEngine({ modelPath, metadata: this.metadata }) : new DeepCwEngine({ modelPath, metadata: this.metadata });
     this._loaded = false;
+    this._closed = false;
     this._ready = this._engine
       .load()
       .then(() => {
@@ -155,9 +161,15 @@ class DeepCwDecoder extends EventEmitter {
       });
   }
 
-  /** Stops the worker thread. The decoder can't be used after this. */
+  /**
+   * Stops the worker thread. The decoder can't be used after this.
+   * Resolves once the worker has exited. Wait for it before the process
+   * exits: exiting during the model load or an inference aborts Node
+   * (issue #81).
+   */
   close() {
-    this._engine.close();
+    this._closed = true;
+    return this._engine.close();
   }
 
   reset() {
@@ -207,7 +219,7 @@ class DeepCwDecoder extends EventEmitter {
     if (peak < SILENCE_PEAK_THRESHOLD) return; // nothing worth running inference on
 
     await this._ready;
-    if (!this._loaded) return; // model never loaded — already reported via 'error'
+    if (!this._loaded || this._closed) return; // model never loaded (already reported via 'error'), or closed
 
     try {
       const text = await this._engine.decode(window);
@@ -216,6 +228,7 @@ class DeepCwDecoder extends EventEmitter {
         else this.emit('char', c);
       }
     } catch (err) {
+      if (this._closed) return; // closed while decoding: not an error
       this.emit('error', new Error(`CW3 (DeepCW) inference failed: ${err.message}`));
     }
   }
@@ -251,7 +264,12 @@ class DeepCwEngine {
     return greedyCtcDecode(outputs[this.metadata.onnx_output_name], this.metadata.chars, this.metadata.blank_index);
   }
 
-  close() {}
+  /** Releases the onnxruntime session. Call only when no load or decode is in progress. */
+  async close() {
+    const session = this._session;
+    this._session = null;
+    if (session) await session.release();
+  }
 
   /** Ported from deepcw-engine's examples/nodejs/decode_morse.mjs#audioToSpectrogram. */
   spectrogram(audio) {
@@ -299,6 +317,8 @@ class WorkerEngine {
     this._loaded = new Promise((resolve, reject) => {
       this._settleLoad = { resolve, reject };
     });
+    this._exited = new Promise((resolve) => this._worker.once('exit', resolve));
+    this._closing = null;
     this._worker.on('message', (msg) => {
       if (msg.type === 'ready') this._settleLoad.resolve();
       else if (msg.type === 'load-error') this._settleLoad.reject(new Error(msg.message));
@@ -335,10 +355,32 @@ class WorkerEngine {
     });
   }
 
+  /**
+   * Asks the worker to stop and resolves when it has exited. Not
+   * Worker.terminate() straight away: terminating during the model load
+   * or an inference aborts the whole process with a native
+   * "terminate called after throwing an instance of 'Napi::Error'"
+   * (issue #81). The worker finishes what it is doing, releases the
+   * model, and exits. Decodes not yet answered are rejected now.
+   * terminate() is only a last resort, after CLOSE_TIMEOUT_MS.
+   */
   close() {
-    if (this._closed) return;
+    if (this._closing) return this._closing;
     this._closed = true;
-    this._worker.terminate();
+    const err = new Error('the DeepCW worker has been closed');
+    for (const p of this._pending.values()) p.reject(err);
+    this._pending.clear();
+    this._worker.ref(); // keep the process alive until the worker has exited cleanly
+    this._worker.postMessage({ type: 'close' });
+    let timer;
+    const timeout = new Promise((resolve) => {
+      timer = setTimeout(() => {
+        console.error('[deepcw] The worker did not close in time; stopping it.');
+        this._worker.terminate().then(resolve, resolve);
+      }, CLOSE_TIMEOUT_MS);
+    });
+    this._closing = Promise.race([this._exited, timeout]).then(() => clearTimeout(timer));
+    return this._closing;
   }
 }
 

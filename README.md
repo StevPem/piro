@@ -14,7 +14,7 @@ Hamlib, no separate audio server and no extra apps.
 Written by VK3TR. Licensed AGPL-3.0-only (see
 [Licence](#licence)).
 
-**Current build: v135.** This is the version the app shows next to its title.
+**Current build: v136.** This is the version the app shows next to its title.
 It is the `CACHE_NAME` number in `src/client/sw.js`, which goes up with every
 change to the web app.
 
@@ -2897,6 +2897,10 @@ The test files:
                            faster DFT bit-for-bit the same, and the worker
                            thread: the same text, the main thread free
                            while it decodes, a missing model reported
+  deepcw-close.test.js    closing CW3 during its model load or an
+                           inference, each in its own Node process: the
+                           process must not abort (issue #81), and
+                           CwDecoderBridge.stop() waits for the worker
   cw-decoder-bridge.test.js
                            unit tests for the server-side bridge's
                            mode/PTT-driven attach-to-PCM-stream logic,
