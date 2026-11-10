@@ -6,7 +6,7 @@ troubleshooting), see [`docs/install-debian.md`](docs/install-debian.md).
 
 ## What you need
 
-- Node.js 18 or newer
+- Node.js 20 or newer
 - The Icom transceiver connected via USB
 - Linux (Debian/Raspberry Pi OS recommended)
 

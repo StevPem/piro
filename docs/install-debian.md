@@ -26,10 +26,10 @@ the machine is a Pi or a generic x86/ARM Debian box.
 sudo apt update && sudo apt full-upgrade -y
 ```
 
-## 2. Install Node.js 18 or newer
+## 2. Install Node.js 20 or newer
 
 Debian's own package repos usually ship an older Node.js than this
-project needs (`>=18`). The official NodeSource setup script is the
+project needs (`>=20`). The official NodeSource setup script is the
 simplest reliable way to get a current version — it auto-detects your
 CPU architecture, so this is the same command whether you're on a Pi
 (ARM) or a regular PC (x86):
@@ -37,7 +37,7 @@ CPU architecture, so this is the same command whether you're on a Pi
 ```bash
 curl -fsSL https://deb.nodesource.com/setup_20.x | sudo -E bash -
 sudo apt install -y nodejs
-node --version   # should print v20.x or similar — needs to be 18 or higher
+node --version   # should print v20.x or newer
 ```
 
 ## 3. Install system dependencies
