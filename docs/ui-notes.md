@@ -5529,3 +5529,54 @@ Typed CW and the paddle now accept CW_R, the canonical reverse-CW name returned 
 VARA now waits for a confirmed PTT release before following either side of a QSY handshake. Native LAN audio drains before the radio releases PTT. A failed release keeps the transmit indication and blocks retuning; an old release cannot move a new link. Regression tests cover native PCM drain, rejected release, buffer-driven QSY and link replacement.
 
 Not tested on a physical radio or on air.
+
+### A port for other programs: Hamlib's rigctl commands (v144)
+- **New.** With `RIGCTL_PORT` set, PiRO answers the text commands of
+  Hamlib's `rigctld`, so programs using "Hamlib NET rigctl" (model 2) can
+  follow and set the radio: loggers, and WSJT-X or fldigi. Control only,
+  no audio. Off by default; `RIGCTL_HOST` defaults to 127.0.0.1 (the Pi
+  only); PTT needs `RIGCTL_PTT=true`, and unkeying always works.
+- **Commands.** Frequency, mode and passband (PKTUSB and PKTLSB are USB and
+  LSB with DATA mode), PTT, VFO (A only), split (off only), levels (power
+  read and set; S-meter, SWR and ALC read), `\get_powerstat`, `\chk_vfo`,
+  `\dump_state`, and "+" extended replies. Anything else answers `RPRT -11`.
+  The replies were recorded from Hamlib 4.5.5's own `rigctld` (dummy radio)
+  and the numbers (modes, levels, errors) read from its library.
+- **Same checks as a browser.** Each command that changes something goes
+  through ControlServer as a request: refused while transmitting
+  (`RPRT -9`), broadcast to the browsers, PTT under the 10-minute
+  watchdog. PTT while CW may still be sending (the receive holds of the
+  CW stop fix) is refused too: its message is now the named constant
+  RECEIVE_NOT_CONFIRMED in ws-server.js, so the port can answer `RPRT -9`
+  rather than a radio error. ControlServer#addExternalClient() is the new way in: a program
+  that isn't a browser gets no broadcasts and doesn't count as a browser.
+  Without it, `setPttFromServer()` released a program's PTT at once,
+  because its owner wasn't one of the browsers.
+- **Details.** Setting the mode PiRO already has sends nothing (the mode
+  command resets the filter to FIL1 and turns DATA mode off). After a
+  filter change DATA mode is put back. Hamlib's "data PTT" (`T 3`) is
+  refused unless the radio is in DATA mode. The passband shown is the
+  IC-7300's factory width for the filter in use. `has_set_vfo=0` stops
+  Hamlib's client switching to VFO B to read it when it opens. A program
+  that disconnects releases PTT it holds; `stop()` closes every connection.
+  At most four programs; a line over 1024 characters closes the connection.
+- **Audio.** PiRO keeps the radio's sound card open, so WSJT-X or fldigi on
+  the Pi can't use it at the same time. They can if `AUDIO_RX_DEVICE` is
+  left unset (PiRO then controls without audio). Noted in the README.
+- Tests: rigctl-server.test.js (new, 70 checks): replies byte for byte,
+  mode and DATA mode, levels the same as the browser's (SWR checked against
+  src/client/vswr.js for every raw value), refusals while transmitting, PTT
+  allowed or not, refused while CW may still be sending, the watchdog,
+  release on disconnect, the client limit,
+  and Hamlib's own `rigctl -m 2` client opening it, reading, setting and
+  being refused while transmitting (skipped if Hamlib isn't installed; CI
+  now installs it). Run against the old ControlServer, the PTT checks fail.
+  lan-startup.test.js: the whole server with `RIGCTL_PORT` set reads and
+  tunes the stand-in radio through the port, the browser is told, and PTT
+  is refused by default.
+- Not tested with a real radio or real programs (WSJT-X, loggers). Not
+  tested on air.
+- The README's troubleshooting said Node 18; now 20, as elsewhere.
+- Service-worker cache v144. (The CW stop notes above say v143, but the
+  build that shipped with them was v142; no v143 cache was released, so
+  this build is v144 to keep the numbers unambiguous.)

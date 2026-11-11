@@ -32,6 +32,9 @@ const TRANSMITTING_REFUSAL = "Can't change that while transmitting.";
 // with TRANSMITTING_REFUSAL: a change mid-transmission could put the
 // microphone or higher power on the air, or move the signal. Transmit
 // controls (PTT, Stop/abort, sending) and reads are not in this list.
+// PTT-on refused while a feature that keys without PTT (CW) hasn't confirmed
+// the radio is receiving again (see holdReceiveConfirmation).
+const RECEIVE_NOT_CONFIRMED = 'The radio may still be sending CW; receive has not been confirmed.';
 const RADIO_SETTING_REQUESTS = new Set([
   REQUEST.SET_FREQUENCY,
   REQUEST.SET_MODE,
@@ -259,6 +262,11 @@ class ControlServer extends EventEmitter {
       },
     });
     this.clients = new Set();
+    // Programs that aren't browsers, such as a logger on the Hamlib-style
+    // port (rigctl-server.js). They send requests through the same checks
+    // as a browser, and can hold PTT, but get no broadcasts and don't count
+    // as browsers (see addExternalClient).
+    this.externalClients = new Set();
 
     // Cached last-known state so a newly-connected client gets an
     // immediate snapshot instead of waiting for the next change.
@@ -523,6 +531,53 @@ class ControlServer extends EventEmitter {
     }
   }
 
+  /**
+   * Registers a program that isn't a browser, such as a logger on the
+   * Hamlib-style port (rigctl-server.js). Returns a handle:
+   * - request(msg): runs a request (REQUEST.*) through the same path as a
+   *   browser's, so the same checks apply, including "Can't change that
+   *   while transmitting." Resolves with the reply: {ok: true, data} or
+   *   {ok: false, error}. Never rejects.
+   * - close(): call when the program disconnects. If it holds PTT, PTT is
+   *   released, as for a browser.
+   * It gets no broadcasts and doesn't count as a browser, so it doesn't
+   * keep receivers running when the last browser leaves.
+   */
+  addExternalClient(name) {
+    const pending = new Map();
+    let nextId = 0;
+    const client = {
+      name,
+      readyState: 1,
+      OPEN: 1,
+      // _handleMessage() replies here; hand each reply to its request.
+      send: (payload) => {
+        let reply;
+        try {
+          reply = JSON.parse(payload);
+        } catch {
+          return;
+        }
+        const resolve = pending.get(reply.id);
+        if (!resolve) return;
+        pending.delete(reply.id);
+        resolve(reply.ok ? { ok: true, data: reply.data } : { ok: false, error: reply.error });
+      },
+      request: (msg) =>
+        new Promise((resolve) => {
+          const id = `${name}#${++nextId}`;
+          pending.set(id, resolve);
+          this._handleMessage(client, JSON.stringify({ ...msg, id }));
+        }),
+      close: () => {
+        if (!this.externalClients.delete(client)) return;
+        this._releasePttIfOwnerGone(client);
+      },
+    };
+    this.externalClients.add(client);
+    return client;
+  }
+
   /** A browser closed, errored or was dropped by the heartbeat ('close' and 'error' may both call this). */
   _onClientGone(ws) {
     this.clients.delete(ws);
@@ -543,7 +598,7 @@ class ControlServer extends EventEmitter {
     if (!this._pttOwner || this._pttOwner !== ws) return;
     this._pttOwner = null; // first, so 'close' after 'error' doesn't send it twice
     if (!this.state.ptt) return;
-    console.warn('[ws] the browser holding PTT disconnected; releasing PTT');
+    console.warn(`[ws] ${ws.name || 'the browser'} holding PTT disconnected; releasing PTT`);
     this.setPttFromServer(false).catch((err) => {
       console.error('[ws] releasing PTT after a disconnect failed:', err.message);
       this._broadcast(makeEvent(EVENT.RIG_ERROR, { message: `Releasing PTT after a browser disconnected failed: ${err.message}` }));
@@ -1619,7 +1674,7 @@ class ControlServer extends EventEmitter {
     if (on) {
       // Never key up in the middle of putting settings back.
       await this._restoreChain;
-      if (this._receiveHolds.size) throw new Error('The radio may still be sending CW; receive has not been confirmed.');
+      if (this._receiveHolds.size) throw new Error(RECEIVE_NOT_CONFIRMED);
       // From here the radio may be transmitting, even if the answer is lost.
       this._rxConfirmed = false;
       this.refreshTransmitting();
@@ -1638,7 +1693,7 @@ class ControlServer extends EventEmitter {
     this._broadcast(makeEvent(EVENT.PTT, { value: on }), except);
     this.emit('ptt', on);
     // The browser went while the radio was being keyed: unkey now.
-    if (on && owner && !this.clients.has(owner)) this._releasePttIfOwnerGone(owner);
+    if (on && owner && !this.clients.has(owner) && !this.externalClients.has(owner)) this._releasePttIfOwnerGone(owner);
   }
 
   _armOrClearPttWatchdog(pttOn) {
@@ -1796,4 +1851,4 @@ class ControlServer extends EventEmitter {
   }
 }
 
-module.exports = { ControlServer, TRANSMITTING_REFUSAL, RADIO_SETTING_REQUESTS, originAllowed, parseAllowedOrigins, HEARTBEAT_MS, MAX_MESSAGE_BYTES, MAX_FREQUENCY_HZ, LIVE_BACKLOG_BYTES, LIVE_FRAME_TYPES };
+module.exports = { ControlServer, TRANSMITTING_REFUSAL, RECEIVE_NOT_CONFIRMED, RADIO_SETTING_REQUESTS, originAllowed, parseAllowedOrigins, HEARTBEAT_MS, MAX_MESSAGE_BYTES, MAX_FREQUENCY_HZ, LIVE_BACKLOG_BYTES, LIVE_FRAME_TYPES };
