@@ -14,7 +14,7 @@ Hamlib, no separate audio server and no extra apps.
 Written by VK3TR. Licensed AGPL-3.0-only (see
 [Licence](#licence)).
 
-**Current build: v137.** This is the version the app shows next to its title.
+**Current build: v143.** This is the version the app shows next to its title.
 It is the `CACHE_NAME` number in `src/client/sw.js`, which goes up with every
 change to the web app.
 
@@ -871,6 +871,14 @@ Send turns into **Stop** while it goes out, which stops the radio's keyer
 at once. Every browser sees the progress. Letters, digits and
 `/ ? . , : ' ( ) = + " @ -` can be sent; `^` joins the next two letters
 into one prosign (`^AR`, `^SK`), as on the radio's own keyer memories.
+
+After Stop or a radio error, PiRO reads back the transmit state before
+putting speed and break-in back. If receive cannot be confirmed, it reports
+the problem and keeps settings locked. It checks for receive in the
+background and puts settings back once the radio has stopped. Changes
+made at the radio while waiting are kept. This applies to USB and LAN.
+The CW button stays **Stop** while receive is unconfirmed, so you can
+retry the stop command.
 Anything else is left out, and the status line says what was dropped.
 Messages are limited to 300 characters and under 9 minutes. PTT isn't used,
 so the 10-minute PTT cut-off doesn't apply; the length limit stands in for
@@ -2960,6 +2968,12 @@ The test files:
   cw-tx-bridge.test.js    CW text through the radio's keyer: speed and
                            break-in set and put back, 30-character pieces,
                            buffer-full retries, Stop, refusals, timing
+  cw-stop-safety.test.js  real LAN driver and synthetic radio: rejected CW
+                           stop on timeout, Stop and send errors; settings
+                           held until actual receive, later recovery and
+                           front-panel changes kept
+  cw-stop-client.test.js  client Stop action stays available after an
+                           uncertain CW error and resets on confirmed RX
   tx-safety.test.js       transmit safety (issues #75-#79), with a stand-in
                            radio that rejects PTT-off: release confirmed or
                            reported; settings put back only once unkeyed

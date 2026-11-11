@@ -6155,9 +6155,9 @@ cwTextInput.addEventListener('keydown', (event) => {
 });
 
 link.addEventListener('cw-tx-status', (event) => {
-  const { status, text, wpm, durationSec, dropped, error } = event.detail || {};
+  const { status, text, wpm, durationSec, dropped, error, transmitting } = event.detail || {};
   clearInterval(cwTxTimer);
-  cwTxBusy = status === 'sending';
+  cwTxBusy = status === 'sending' || transmitting === true;
   cwSendBtn.textContent = cwTxBusy ? 'Stop' : 'Send';
   cwSendBtn.classList.toggle('ptt--active', cwTxBusy);
   cwStatusEl.hidden = false;

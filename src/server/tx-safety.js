@@ -50,6 +50,14 @@ function refreshTransmitting(controlServer) {
   controlServer.refreshTransmitting?.();
 }
 
+function holdReceiveConfirmation(controlServer, owner) {
+  controlServer.holdReceiveConfirmation?.(owner);
+}
+
+function confirmReceive(controlServer, owner) {
+  return Promise.resolve(controlServer.confirmReceive?.(owner));
+}
+
 const RELEASE_NOT_CONFIRMED = 'PTT release not confirmed: the radio may still be transmitting. Check the radio.';
 
-module.exports = { releasePtt, restoreWhenReceiving, refreshTransmitting, settingStillIs, RELEASE_NOT_CONFIRMED };
+module.exports = { releasePtt, restoreWhenReceiving, refreshTransmitting, holdReceiveConfirmation, confirmReceive, settingStillIs, RELEASE_NOT_CONFIRMED };
