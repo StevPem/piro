@@ -14,7 +14,7 @@ Hamlib, no separate audio server and no extra apps.
 Written by VK3TR. Licensed AGPL-3.0-only (see
 [Licence](#licence)).
 
-**Current build: v143.** This is the version the app shows next to its title.
+**Current build: v142.** This is the version the app shows next to its title.
 It is the `CACHE_NAME` number in `src/client/sw.js`, which goes up with every
 change to the web app.
 
@@ -607,7 +607,8 @@ PiRO doesn't wait that long when it knows something is wrong. If the
 browser holding PTT disconnects, or stops answering the server's pings
 for about 15 to 30 seconds (a phone that lost its signal), PTT is released
 at once. PiRO also sends PTT off to the radio when the service stops or
-crashes.
+crashes. That emergency unkey cancels queued transmissions and blocks new
+RF starts while shutdown puts settings back.
 
 **No changes while transmitting.** While the radio is transmitting (voice,
 the CW paddle, CW text, or a digital or picture mode), the frequency, band,
@@ -773,6 +774,10 @@ its API (the request, the keyterms, the key, its answer), not yet against
 the real service or on air.
 
 ##### Compressed audio for remote use
+
+Mic packets must contain complete 16-bit sample frames and at most 500 ms
+of audio. Invalid packets and playback errors raise an `audio-error` event;
+later valid packets and radio controls keep working.
 
 Full audio is raw 16-bit PCM: about 770 kbit/s each way at 48 kHz. That
 is fine at home, but too much for most mobile data or a slow VPN. The
@@ -2816,7 +2821,12 @@ The test files:
                            own process: the LAN settings are checked, the
                            time-out warning reaches every browser, a lost
                            link exits non-zero so systemd restarts it, and
-                           a VARA CQ is sent over the stand-in radio
+                           a VARA CQ is sent over the stand-in radio;
+                           shutdown cannot rekey after emergency PTT off
+  emergency-unkey.test.js queued and later PTT, CW text and tuner starts
+                           cancelled by emergency unkey, over USB and LAN;
+                           OFF, STOP and settings cleanup still work
+                           malformed mic packets are rejected while keyed
   frame.test.js           unit tests for CI-V framing/BCD, no hardware needed;
                            numbers that would encode as garbage are refused
   scope.test.js           unit tests for scope waveform decoding/reassembly,
@@ -2862,6 +2872,8 @@ The test files:
                            all three formats sent through backpressure),
                            and the startup volume-maximizing behavior: real
                            WebSocket, fake ALSA I/O, tagged binary frame format
+  audio-mic-boundary.test.js microphone sample alignment, packet size and
+                           contained playback/observer errors
   scope-bridge.test.js    integration test for the scope bridge: real
                            WebSocket, tagged binary frame encode/decode
                            round-trip, coexistence with audio frames
@@ -2870,6 +2882,8 @@ The test files:
                            server keeps running)
   tls-server.test.js      confirms the server actually works over
                            HTTPS/WSS when TLS_CERT_PATH/TLS_KEY_PATH are set
+  cw-reverse-mode.test.js  real driver reverse-CW text/paddle support and non-CW rejection
+  vara-release-order.test.js  VARA QSY waits for confirmed release, failures and link replacement
   run-all.js              not a test: runs every *.test.js and *.test.mjs
                            file (npm test); with npm run test:ci, a failed
                            file is run once more

@@ -151,7 +151,7 @@ class CwPaddleBridge {
   _begin(ws, id, t, now) {
     const cs = this.controlServer;
     const mode = cs.state?.mode?.mode;
-    if (mode !== 'CW' && mode !== 'CW-R') throw new Error('Put the radio in CW first.');
+    if (mode !== 'CW' && mode !== 'CW_R' && mode !== 'CW-R') throw new Error('Put the radio in CW first.');
     if (cs.state?.ptt) throw new Error('The radio is already transmitting.');
     if (cs.cwTxBusy?.()) throw new Error('CW text is being sent.');
     const s = {

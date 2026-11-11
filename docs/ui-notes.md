@@ -5489,3 +5489,40 @@ rejects PTT-off, as the issues' reproductions did.
   through the real client.
 - Not tested on a real radio, and not tested on air.
 - Service-worker cache v143.
+### Emergency unkey retires pending RF starts (v141)
+
+- Real bug: shutdown sent emergency PTT off ahead of the CI-V queue, but
+  an old PTT-on could still leave the queue afterward. The radio keyed
+  again during cleanup until the final close sent another PTT off.
+- Emergency unkey now cancels queued PTT-on, CW text and tuner-start
+  commands. It also refuses later RF starts, including a LAN request
+  that was still checking the radio when shutdown began. USB DTR/RTS
+  key-down is refused too. OFF, STOP, reads and settings cleanup remain
+  available. This is for shutdown; normal PTT release is unchanged.
+- Tests: USB queue and key-line checks, LAN queue and preparation checks,
+  and the real server receiving SIGTERM with PTT-on behind a browser poll.
+  Emergency OFF is followed only by OFF commands during shutdown.
+- Not tested on a real radio, and not tested on air.
+- Service-worker cache v141.
+### Reject malformed microphone packets without stopping LAN (v140)
+
+- Real bug: a browser could send one PCM byte while LAN PTT was on. The
+  native playback rejected the incomplete sample by throwing through the
+  WebSocket callback. The fatal handler unkeyed the radio and stopped PiRO.
+- Microphone input now requires complete S16LE channel frames and at most
+  500 ms per packet. Validation runs before audio observers and playback.
+  Normal browser packets are about 20 ms. Finite modem waveforms still use
+  playback directly. Playback and observer errors are reported through the
+  existing audio-error event, and the next valid mic packet can proceed.
+- Tests: a normal LAN server and real WebSocket reject odd and oversized
+  packets while keyed, then transmit valid PCM and answer radio controls.
+  Focused tests cover stereo alignment and playback/observer failures.
+  Not tested on a real radio or on air. Service-worker cache v140.
+### Accept the driver reverse CW mode (v139)
+
+Typed CW and the paddle now accept CW_R, the canonical reverse-CW name returned by the real CI-V driver. CW-R remains accepted for compatibility. A localhost radio regression sets and reads the actual CW_R mode and transmits through both interfaces; non-CW modes remain refused.
+### Confirm VARA release before QSY (v138)
+
+VARA now waits for a confirmed PTT release before following either side of a QSY handshake. Native LAN audio drains before the radio releases PTT. A failed release keeps the transmit indication and blocks retuning; an old release cannot move a new link. Regression tests cover native PCM drain, rejected release, buffer-driven QSY and link replacement.
+
+Not tested on a physical radio or on air.
