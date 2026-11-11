@@ -2,7 +2,9 @@
 
 `src/icom-lan/protocol.js` adapts AetherSDR contributors' GPLv3 IcomProtocol
 field layouts, packet construction and credential substitution table.
-wfview is a second implementation reference. Pinned source revisions and
+wfview is a second implementation reference. `src/server/icom-lan-server.js`
+(PiRO answering the protocol as a radio) follows wfview's GPLv3 network
+server. Pinned source revisions and
 additional credits are in [protocol sources](../../docs/icom-lan-sources.md).
 
 The GPLv3 license text is provided alongside this notice. Preserve these

@@ -14,6 +14,13 @@ at `098568546731aff25c7e9ea93c0f009eeee19137` provides a second reference:
 `rigs/IC-7300MK2.rig`. Its Icom UDP sources credit Phil Taylor M0VSE and
 Kappanhang authors HA2NON, ES1AKOS and W6EL.
 
+The Icom LAN server (`src/server/icom-lan-server.js`) follows wfview's
+network server at the same revision: `src/radio/icomserver.cpp` (the order
+of a session, the login, token, capabilities, connection and status
+packets, retransmits) and `include/packettypes.h` (the layouts), with the
+audio codec numbers from `include/audioconverter.h`. The code is written
+for PiRO and carries the GPL notice.
+
 These references are GPLv3; the adapted primitives retain their GPL notice and
 the [license text](../third_party/icom-lan/GPL-3.0.txt). PiRO remains
 AGPL-3.0-only. The reference applications are not runtime dependencies.

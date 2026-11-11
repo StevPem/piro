@@ -5,6 +5,8 @@ const assert = require('node:assert/strict');
 const { spawn } = require('node:child_process');
 const path = require('node:path');
 const net = require('node:net');
+const dgram = require('node:dgram');
+const { IcomSession } = require('../src/icom-lan/session');
 const { once } = require('node:events');
 const WebSocket = require('ws');
 const { IcomPeer } = require('./fixtures/icom-lan-peer');
@@ -181,6 +183,35 @@ test('the Hamlib-style rigctl port reads and sets the radio, and refuses PTT unl
   await until(() => peer.frequency.equals(Buffer.from('0040070700', 'hex')), 'the radio was not tuned');
   await until(() => browser.events.some((e) => e.type === 'frequency' && e.data.value === 7074000), 'the browser was not told');
   assert.equal(await ask('T 1'), 'RPRT -11\n');
+  assert.equal(peer.ptt, false);
+});
+
+test('the Icom LAN server: a LAN client takes the radio, PiRO pauses, and resumes when it leaves', async (t) => {
+  const peer = await new IcomPeer().start();
+  t.after(() => peer.close());
+  // A free UDP port to start from; the server uses it and the next two.
+  const probe = dgram.createSocket('udp4');
+  await new Promise((resolve) => probe.bind(0, '127.0.0.1', resolve));
+  const base = Math.min(probe.address().port, 65000);
+  probe.close();
+  const h = await start(t, peer, { env: { ICOM_SERVER_PORT: String(base), ICOM_SERVER_HOST: '127.0.0.1', ICOM_SERVER_USERNAME: 'shack', ICOM_SERVER_PASSWORD: 'secret12' } });
+  assert.match(h.output, new RegExp(`Icom LAN server on 127\\.0\\.0\\.1: control ${base}, CI-V ${base + 1}, audio ${base + 2}`));
+  const browser = await h.connect();
+  const client = new IcomSession({ host: '127.0.0.1', controlPort: base, civPort: base + 1, audioPort: base + 2, username: 'shack', password: 'secret12', timeoutMs: 5000 });
+  t.after(() => client.close().catch(() => {}));
+  const civIn = [];
+  client.on('civ', (b) => civIn.push(b.toString('hex')));
+  await client.open();
+  await until(() => browser.events.some((e) => e.type === 'lan-control' && e.data.active), 'the browser was not told');
+  const refused = await h.request(browser, 'getFrequency');
+  assert.equal(refused.ok, false);
+  assert.match(refused.error, /^Paused: icom-pc \(127\.0\.0\.1\) has control of the radio over the LAN\.$/);
+  // The client's CI-V reaches the stand-in MK2 through PiRO, and back.
+  client.sendCiv(Buffer.from('fefeb6e003fd', 'hex'));
+  await until(() => civIn.some((x) => x.startsWith('fefee0b603')), 'no frequency answer at the client');
+  await client.close();
+  await until(() => browser.events.some((e) => e.type === 'lan-control' && !e.data.active), 'PiRO did not resume');
+  assert.equal((await h.request(browser, 'getFrequency')).ok, true);
   assert.equal(peer.ptt, false);
 });
 

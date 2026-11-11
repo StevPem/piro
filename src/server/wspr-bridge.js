@@ -322,6 +322,15 @@ class WsprBridge {
     this._onBoundary = ({ slotStartMs }) => this._handleBoundary(slotStartMs);
     this._onClientJoined = (ws) => this._clientJoined(ws);
     this._onClientGone = () => this._clientGone();
+    // A LAN client taking the radio (ControlServer#pause): stop unattended
+    // receive, putting the radio back first; start it again when it leaves.
+    this._onLanControl = ({ active, waitFor }) => {
+      if (active) {
+        this._cancelUnattendedTimer();
+        this._abortTx();
+        if (this._unattended || this._starting) waitFor(this._stopUnattended());
+      } else if (this._clientCount() === 0) this._armUnattended();
+    };
   }
 
   start() {
@@ -331,6 +340,7 @@ class WsprBridge {
     cs.on('ptt', this._onPtt);
     cs.on('client-connected', this._onClientJoined);
     cs.on('client-disconnected', this._onClientGone);
+    cs.on('lan-control', this._onLanControl);
     this.slotClock.on('boundary', this._onBoundary);
     this.slotClock.start();
     if (cs.state.wsprActive) this._onActive(true);
@@ -344,6 +354,7 @@ class WsprBridge {
     cs.off('ptt', this._onPtt);
     cs.off('client-connected', this._onClientJoined);
     cs.off('client-disconnected', this._onClientGone);
+    cs.off('lan-control', this._onLanControl);
     this.slotClock.off('boundary', this._onBoundary);
     this.slotClock.stop();
     this._cancelUnattendedTimer();
@@ -732,7 +743,7 @@ class WsprBridge {
   }
 
   _armUnattended() {
-    if (!this.unattendedEnabled || this._unattendedTimer || this._unattended) return;
+    if (!this.unattendedEnabled || this._unattendedTimer || this._unattended || this.controlServer.paused) return;
     this._unattendedTimer = setTimeout(() => {
       this._unattendedTimer = null;
       this._startUnattended().catch((err) => this._warn(`unattended receive did not start: ${err.message}`));
@@ -819,7 +830,7 @@ class WsprBridge {
   }
 
   async _startUnattended() {
-    if (this._clientCount() !== 0 || this._unattended || this._active || this.controlServer.state.ptt) return;
+    if (this._clientCount() !== 0 || this._unattended || this._active || this.controlServer.state.ptt || this.controlServer.paused) return;
     const civ = this._civ();
     const state = this.controlServer.state;
     const run = (async () => {
