@@ -5455,6 +5455,20 @@ rejects PTT-off, as the issues' reproductions did.
 - Not tested on a real radio, and not tested on air.
 - Service-worker cache v137.
 
+### Reject malformed microphone packets without stopping LAN (v140)
+
+- Real bug: a browser could send one PCM byte while LAN PTT was on. The
+  native playback rejected the incomplete sample by throwing through the
+  WebSocket callback. The fatal handler unkeyed the radio and stopped PiRO.
+- Microphone input now requires complete S16LE channel frames and at most
+  500 ms per packet. Validation runs before audio observers and playback.
+  Normal browser packets are about 20 ms. Finite modem waveforms still use
+  playback directly. Playback and observer errors are reported through the
+  existing audio-error event, and the next valid mic packet can proceed.
+- Tests: a normal LAN server and real WebSocket reject odd and oversized
+  packets while keyed, then transmit valid PCM and answer radio controls.
+  Focused tests cover stereo alignment and playback/observer failures.
+  Not tested on a real radio or on air. Service-worker cache v140.
 ### Accept the driver reverse CW mode (v139)
 
 Typed CW and the paddle now accept CW_R, the canonical reverse-CW name returned by the real CI-V driver. CW-R remains accepted for compatibility. A localhost radio regression sets and reads the actual CW_R mode and transmits through both interfaces; non-CW modes remain refused.

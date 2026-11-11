@@ -125,6 +125,33 @@ test('a newly disabled timeout warns already connected browsers before native ke
   await h.request(a, 'setPtt', { value: false });
 });
 
+test('malformed microphone packets cannot terminate a keyed native LAN server', async (t) => {
+  const peer = await new IcomPeer().start();
+  t.after(() => peer.close());
+  const h = await start(t, peer);
+  const socket = await h.connect();
+  assert.equal((await h.request(socket, 'setPtt', { value: true })).ok, true);
+  assert.equal(peer.ptt, true);
+  for (const [pcm, message] of [[Buffer.alloc(1), /complete S16LE/], [Buffer.alloc(48002), /exceeds 500 ms/]]) {
+    const before = socket.events.length;
+    socket.ws.send(Buffer.concat([Buffer.from([1]), pcm]));
+    await until(() => h.exit || socket.events.slice(before).some((e) =>
+      e.type === 'audio-error' && e.data.context === 'mic' && message.test(e.data.message)),
+    () => h.output + h.errors);
+    assert.equal(h.exit, null, h.errors);
+    assert.equal(peer.txAudio.length, 0, 'invalid microphone samples must not reach the radio');
+  }
+  const valid = Buffer.alloc(1920, 42);
+  socket.ws.send(Buffer.concat([Buffer.from([1]), valid]));
+  await until(() => peer.txAudio.length >= 2 || h.exit, () => h.output + h.errors);
+  assert.equal(h.exit, null, h.errors);
+  assert.deepEqual(Buffer.concat(peer.txAudio.map((p) => p.bytes)), valid);
+  assert.equal((await h.request(socket, 'getFrequency')).ok, true);
+  assert.equal((await h.request(socket, 'setPtt', { value: false })).ok, true);
+  assert.equal(peer.ptt, false);
+  assert.doesNotMatch(h.errors, /Fatal uncaughtException|Fatal unhandledRejection/);
+});
+
 test('lost LAN media exits cleanly non-zero and a fresh process connects again', async (t) => {
   const peer = await new IcomPeer().start();
   t.after(() => peer.close());
