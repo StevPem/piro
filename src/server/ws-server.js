@@ -206,6 +206,7 @@ class ControlServer extends EventEmitter {
     // a PTT-off is acknowledged. Settings a feature changed for a
     // transmission are put back only while it is true (restoreWhenReceiving).
     this._rxConfirmed = true;
+    this._receiveHolds = new Set(); // autonomous transmitters awaiting actual RX
     this._heldRestores = []; // restores waiting for a confirmed unkey
     this._restoreChain = Promise.resolve(); // restores run one at a time; a key-up waits for them
     this._lastTransmitting = false;
@@ -1618,6 +1619,7 @@ class ControlServer extends EventEmitter {
     if (on) {
       // Never key up in the middle of putting settings back.
       await this._restoreChain;
+      if (this._receiveHolds.size) throw new Error('The radio may still be sending CW; receive has not been confirmed.');
       // From here the radio may be transmitting, even if the answer is lost.
       this._rxConfirmed = false;
       this.refreshTransmitting();
@@ -1699,7 +1701,19 @@ class ControlServer extends EventEmitter {
 
   /** Whether the radio's last answer was that it is unkeyed (see _rxConfirmed). */
   get receiveConfirmed() {
-    return this._rxConfirmed && !this.state.ptt;
+    return this._rxConfirmed && !this.state.ptt && this._receiveHolds.size === 0;
+  }
+
+  /** Autonomous keyers must confirm actual RX, independently of a PTT-off ACK. */
+  holdReceiveConfirmation(owner) {
+    this._receiveHolds.add(owner);
+    this.refreshTransmitting();
+  }
+
+  /** The autonomous transmitter has read back a stable receive state. */
+  confirmReceive(owner) {
+    if (this._receiveHolds.delete(owner)) this._confirmedReceive();
+    return this._restoreChain;
   }
 
   /**
@@ -1731,11 +1745,13 @@ class ControlServer extends EventEmitter {
     return run;
   }
 
-  /** A PTT-off was acknowledged: the radio is receiving. Runs any held restores. */
+  /** PTT-off or autonomous RX was confirmed. Runs restores once all holds clear. */
   _confirmedReceive() {
     this._rxConfirmed = true;
-    const held = this._heldRestores.splice(0);
-    for (const restore of held) this._runRestore(restore, true).catch(() => {});
+    if (this.receiveConfirmed) {
+      const held = this._heldRestores.splice(0);
+      for (const restore of held) this._runRestore(restore, true).catch(() => {});
+    }
     this.refreshTransmitting();
   }
 
@@ -1745,7 +1761,7 @@ class ControlServer extends EventEmitter {
    * keyer. Radio settings can't be changed meanwhile (RADIO_SETTING_REQUESTS).
    */
   get transmitting() {
-    return !!(this.state.ptt || !this._rxConfirmed || this.state.cwKeying || this.cwTxBusy?.());
+    return !!(this.state.ptt || !this._rxConfirmed || this._receiveHolds.size || this.state.cwKeying || this.cwTxBusy?.());
   }
 
   /** Re-checks `transmitting` and tells every browser if it changed (EVENT.TRANSMITTING). Features that key without PTT call this. */

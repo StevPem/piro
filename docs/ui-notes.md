@@ -5455,6 +5455,40 @@ rejects PTT-off, as the issues' reproductions did.
 - Not tested on a real radio, and not tested on air.
 - Service-worker cache v137.
 
+### CW stop: keep settings held until receive is confirmed (v143)
+- A rejected CW stop used to be ignored. PiRO then put key speed and
+  break-in back and reported the radio idle, even when the keyer was
+  still transmitting. The same gap affected Stop, send errors and the
+  deadline after the estimated sending time.
+- CW text now confirms a stable receive state after stopping, rather
+  than treating a stop command or a PTT-off acknowledgement as proof.
+  If receive cannot be confirmed, every browser keeps the transmit
+  guard and the settings restore is held. Background reads release the
+  guard and restore settings once receive is confirmed. A later Stop
+  retries the stop command. A speed or break-in change made at the
+  radio while waiting is kept.
+- An uncertain CW error keeps the button on Stop, using the server's
+  transmit flag. A later confirmed receive changes it back to Send and
+  keeps the error history visible. A reconnecting browser receives the
+  current CW status and can retry Stop too.
+- ControlServer tracks receive holds for autonomous transmitters. A
+  normal PTT-off cannot release these holds. Other transmit features
+  keep their existing PTT release path.
+- Tests: cw-stop-safety.test.js uses the real native LAN driver,
+  ControlServer and CW bridge against the independent UDP radio peer.
+  It covers rejected stops after timeout, Stop and a send error; a
+  stop ACK while still transmitting; PTT-off during autonomous CW;
+  failed transmit-state reads; eventual receive and restoration;
+  front-panel changes; and retrying Stop. Existing CW and shared
+  transmit-safety tests also pass.
+- cw-stop-client.test.js runs the real client event and button handlers:
+  an uncertain error keeps Stop active, a retry sends abortCw, and later
+  receive confirmation restores Send while retaining the error message.
+- manual-tty-ui.js passes in Chrome, including a rejected CW stop,
+  a new browser joining during the failed stop, and retrying Stop
+  through the real client.
+- Not tested on a real radio, and not tested on air.
+- Service-worker cache v143.
 ### Emergency unkey retires pending RF starts (v141)
 
 - Real bug: shutdown sent emergency PTT off ahead of the CI-V queue, but
