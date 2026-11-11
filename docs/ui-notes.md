@@ -5454,3 +5454,9 @@ rejects PTT-off, as the issues' reproductions did.
   already, and it is only used on shutdown, so it was left alone.
 - Not tested on a real radio, and not tested on air.
 - Service-worker cache v137.
+
+### Confirm VARA release before QSY (v138)
+
+VARA now waits for a confirmed PTT release before following either side of a QSY handshake. Native LAN audio drains before the radio releases PTT. A failed release keeps the transmit indication and blocks retuning; an old release cannot move a new link. Regression tests cover native PCM drain, rejected release, buffer-driven QSY and link replacement.
+
+Not tested on a physical radio or on air.

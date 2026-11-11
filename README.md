@@ -14,7 +14,7 @@ Hamlib, no separate audio server and no extra apps.
 Written by VK3TR. Licensed AGPL-3.0-only (see
 [Licence](#licence)).
 
-**Current build: v137.** This is the version the app shows next to its title.
+**Current build: v138.** This is the version the app shows next to its title.
 It is the `CACHE_NAME` number in `src/client/sw.js`, which goes up with every
 change to the web app.
 
@@ -2862,6 +2862,7 @@ The test files:
                            server keeps running)
   tls-server.test.js      confirms the server actually works over
                            HTTPS/WSS when TLS_CERT_PATH/TLS_KEY_PATH are set
+  vara-release-order.test.js  VARA QSY waits for confirmed release, failures and link replacement
   run-all.js              not a test: runs every *.test.js and *.test.mjs
                            file (npm test); with npm run test:ci, a failed
                            file is run once more
