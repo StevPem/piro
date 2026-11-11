@@ -5455,7 +5455,7 @@ rejects PTT-off, as the issues' reproductions did.
 - Not tested on a real radio, and not tested on air.
 - Service-worker cache v137.
 
-### Reject malformed microphone packets without stopping LAN (v138)
+### Reject malformed microphone packets without stopping LAN (v140)
 
 - Real bug: a browser could send one PCM byte while LAN PTT was on. The
   native playback rejected the incomplete sample by throwing through the
@@ -5468,4 +5468,4 @@ rejects PTT-off, as the issues' reproductions did.
 - Tests: a normal LAN server and real WebSocket reject odd and oversized
   packets while keyed, then transmit valid PCM and answer radio controls.
   Focused tests cover stereo alignment and playback/observer failures.
-  Not tested on a real radio or on air. Service-worker cache v138.
+  Not tested on a real radio or on air. Service-worker cache v140.
