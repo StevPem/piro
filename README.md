@@ -775,6 +775,10 @@ the real service or on air.
 
 ##### Compressed audio for remote use
 
+Mic packets must contain complete 16-bit sample frames and at most 500 ms
+of audio. Invalid packets and playback errors raise an `audio-error` event;
+later valid packets and radio controls keep working.
+
 Full audio is raw 16-bit PCM: about 770 kbit/s each way at 48 kHz. That
 is fine at home, but too much for most mobile data or a slow VPN. The
 **Audio** button beside Speaker switches this browser between:
@@ -2814,6 +2818,7 @@ The test files:
   emergency-unkey.test.js queued and later PTT, CW text and tuner starts
                            cancelled by emergency unkey, over USB and LAN;
                            OFF, STOP and settings cleanup still work
+                           malformed mic packets are rejected while keyed
   frame.test.js           unit tests for CI-V framing/BCD, no hardware needed;
                            numbers that would encode as garbage are refused
   scope.test.js           unit tests for scope waveform decoding/reassembly,
@@ -2859,6 +2864,8 @@ The test files:
                            all three formats sent through backpressure),
                            and the startup volume-maximizing behavior: real
                            WebSocket, fake ALSA I/O, tagged binary frame format
+  audio-mic-boundary.test.js microphone sample alignment, packet size and
+                           contained playback/observer errors
   scope-bridge.test.js    integration test for the scope bridge: real
                            WebSocket, tagged binary frame encode/decode
                            round-trip, coexistence with audio frames
@@ -2867,6 +2874,8 @@ The test files:
                            server keeps running)
   tls-server.test.js      confirms the server actually works over
                            HTTPS/WSS when TLS_CERT_PATH/TLS_KEY_PATH are set
+  cw-reverse-mode.test.js  real driver reverse-CW text/paddle support and non-CW rejection
+  vara-release-order.test.js  VARA QSY waits for confirmed release, failures and link replacement
   run-all.js              not a test: runs every *.test.js and *.test.mjs
                            file (npm test); with npm run test:ci, a failed
                            file is run once more

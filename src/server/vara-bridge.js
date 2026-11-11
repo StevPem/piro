@@ -3,6 +3,7 @@
 const path = require('path');
 const { Worker } = require('worker_threads');
 const { EVENT } = require('./protocol');
+const { releasePtt } = require('./tx-safety');
 const { ensureDataMode, watchDataMode } = require('../civ/data-mode-guard');
 const { CALLSIGN_RE: PSK_CALLSIGN_RE } = require('../audio/psk-reporter');
 const varac = require('./varac');
@@ -146,6 +147,7 @@ class VaraBridge {
     this._active = false;
     this._session = 0; // bumped on every start/stop, so late replies from an old modem are ignored
     this._keyed = false;
+    this._release = null;
     this._keyTimer = null;
     this._idleTimer = null;
     this._dataReady = false;
@@ -443,8 +445,12 @@ class VaraBridge {
       case 'PTT':
         if (rest[0] === 'ON') this._key().catch(() => {});
         else {
-          this._unkey().catch(() => {});
-          if (this._link?.qsy?.phase === 'ack') this._qsyMove();
+          const link = this._link;
+          this._unkey().then((released) => {
+            const q = link?.qsy;
+            if (released && this._link === link && (q?.phase === 'ack'
+              || (q?.phase === 'sending' && q.queued && this.state.buffer === 0))) this._qsyMove();
+          }).catch(() => {});
         }
         break;
       case 'KISS':
@@ -600,16 +606,23 @@ class VaraBridge {
   }
 
   async _unkey() {
-    clearTimeout(this._keyTimer);
-    this._keyTimer = null;
-    if (!this._keyed) return;
-    this._keyed = false;
-    this._update({ ptt: false });
-    try {
-      await this.controlServer.setPttFromServer(false);
-    } catch (err) {
-      this._error(`Couldn't unkey the radio: ${err.message}`);
-    }
+    if (this._release) return this._release;
+    if (!this._keyed) return this.controlServer.state.ptt === false;
+    // Every caller waits for the same release, including native audio drain.
+    // Keep the local latch and timer until the radio confirms it is off.
+    this._release = (async () => {
+      const released = await releasePtt(this.controlServer);
+      if (!released) {
+        this._error("Couldn't confirm PTT release; not following QSY. Check the radio.");
+        return false;
+      }
+      clearTimeout(this._keyTimer);
+      this._keyTimer = null;
+      this._keyed = false;
+      this._update({ ptt: false });
+      return true;
+    })().finally(() => { this._release = null; });
+    return this._release;
   }
 
   /** Sends one line in the QSO: as a VarAC message, or as plain text (CR) to a station that doesn't frame its messages. */
@@ -768,6 +781,7 @@ class VaraBridge {
     const link = this._link;
     const q = link?.qsy;
     if (!q || (q.phase !== 'ack' && q.phase !== 'sending') || q.moving) return;
+    if (this._keyed || this.controlServer.state.ptt !== false) return;
     q.moving = true;
     clearTimeout(q.timer);
     try {
