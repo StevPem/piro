@@ -2882,6 +2882,7 @@ The test files:
                            server keeps running)
   tls-server.test.js      confirms the server actually works over
                            HTTPS/WSS when TLS_CERT_PATH/TLS_KEY_PATH are set
+  lan-paddle-preparation.test.js  native CW cold preparation, scheduled edges and preparation cancellation
   cw-reverse-mode.test.js  real driver reverse-CW text/paddle support and non-CW rejection
   vara-release-order.test.js  VARA QSY waits for confirmed release, failures and link replacement
   run-all.js              not a test: runs every *.test.js and *.test.mjs
