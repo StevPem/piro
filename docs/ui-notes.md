@@ -5455,7 +5455,7 @@ rejects PTT-off, as the issues' reproductions did.
 - Not tested on a real radio, and not tested on air.
 - Service-worker cache v137.
 
-### Accept the driver reverse CW mode (v138)
+### Accept the driver reverse CW mode (v139)
 
 Typed CW and the paddle now accept CW_R, the canonical reverse-CW name returned by the real CI-V driver. CW-R remains accepted for compatibility. A localhost radio regression sets and reads the actual CW_R mode and transmits through both interfaces; non-CW modes remain refused.
 
