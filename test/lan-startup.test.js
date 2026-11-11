@@ -181,6 +181,43 @@ test('silent packet loss exits non-zero without requiring a radio disconnect mes
   assert.match(h.output, /Shutting down \(LAN link lost\)/);
 });
 
+test('SIGTERM emergency OFF is never followed by an old queued PTT-on during cleanup', async (t) => {
+  const peer = await new IcomPeer().start();
+  t.after(() => peer.close());
+  const h = await start(t, peer);
+  const socket = await h.connect();
+  assert.equal((await h.request(socket, 'setMode', { mode: 'CW' })).ok, true);
+  const before = peer.commands.length;
+  let preparing = false, signalled = false;
+  const injectPoll = (frame) => {
+    if (frame.subarray(4).toString('hex') === '1a050032fd') preparing = true;
+    if (!preparing || frame[4] !== 4) return;
+    peer.off('command', injectPoll);
+    // Queue a real browser poll while PTT's mode read is waiting. When
+    // the mode reply arrives, PTT-on will sit behind this frequency read.
+    peer.options.delayNextReply = 120;
+    socket.ws.send(JSON.stringify({ id: 'shutdown-poll', type: 'getFrequency' }));
+  };
+  peer.on('command', injectPoll);
+  const original = peer.civ.bind(peer);
+  peer.civ = (frame, association) => {
+    if (preparing && frame[4] === 3 && !signalled) {
+      signalled = true;
+      peer.options.delayNextReply = 500;
+      peer.schedule(() => h.child.kill('SIGTERM'), 30);
+    }
+    return original(frame, association);
+  };
+  socket.ws.send(JSON.stringify({ id: 'shutdown-on', type: 'setPtt', value: true }));
+  await until(() => h.exit, () => h.output + h.errors, 12000);
+  assert.equal(signalled, true, 'shutdown happened with a poll ahead of PTT-on');
+  assert.deepEqual(h.exit, { code: 0, signal: null });
+  const ptt = peer.commands.slice(before).filter((p) => p[4] === 0x1c && p[5] === 0 && p.length === 8);
+  assert.ok(ptt.length >= 1, 'emergency unkey reached the radio');
+  assert.ok(ptt.every((p) => p[6] === 0), 'cleanup never rekeyed after emergency OFF');
+  assert.equal(peer.ptt, false);
+});
+
 test('the unchanged VARA bridge finishes a real modem CQ and resumes receive without its watchdog', async (t) => {
   const peer = await new IcomPeer().start();
   t.after(() => peer.close());
