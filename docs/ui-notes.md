@@ -5454,3 +5454,19 @@ rejects PTT-off, as the issues' reproductions did.
   already, and it is only used on shutdown, so it was left alone.
 - Not tested on a real radio, and not tested on air.
 - Service-worker cache v137.
+
+### Emergency unkey retires pending RF starts (v141)
+
+- Real bug: shutdown sent emergency PTT off ahead of the CI-V queue, but
+  an old PTT-on could still leave the queue afterward. The radio keyed
+  again during cleanup until the final close sent another PTT off.
+- Emergency unkey now cancels queued PTT-on, CW text and tuner-start
+  commands. It also refuses later RF starts, including a LAN request
+  that was still checking the radio when shutdown began. USB DTR/RTS
+  key-down is refused too. OFF, STOP, reads and settings cleanup remain
+  available. This is for shutdown; normal PTT release is unchanged.
+- Tests: USB queue and key-line checks, LAN queue and preparation checks,
+  and the real server receiving SIGTERM with PTT-on behind a browser poll.
+  Emergency OFF is followed only by OFF commands during shutdown.
+- Not tested on a real radio, and not tested on air.
+- Service-worker cache v141.

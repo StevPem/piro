@@ -14,7 +14,7 @@ Hamlib, no separate audio server and no extra apps.
 Written by VK3TR. Licensed AGPL-3.0-only (see
 [Licence](#licence)).
 
-**Current build: v137.** This is the version the app shows next to its title.
+**Current build: v141.** This is the version the app shows next to its title.
 It is the `CACHE_NAME` number in `src/client/sw.js`, which goes up with every
 change to the web app.
 
@@ -607,7 +607,8 @@ PiRO doesn't wait that long when it knows something is wrong. If the
 browser holding PTT disconnects, or stops answering the server's pings
 for about 15 to 30 seconds (a phone that lost its signal), PTT is released
 at once. PiRO also sends PTT off to the radio when the service stops or
-crashes.
+crashes. That emergency unkey cancels queued transmissions and blocks new
+RF starts while shutdown puts settings back.
 
 **No changes while transmitting.** While the radio is transmitting (voice,
 the CW paddle, CW text, or a digital or picture mode), the frequency, band,
@@ -2808,7 +2809,11 @@ The test files:
                            own process: the LAN settings are checked, the
                            time-out warning reaches every browser, a lost
                            link exits non-zero so systemd restarts it, and
-                           a VARA CQ is sent over the stand-in radio
+                           a VARA CQ is sent over the stand-in radio;
+                           shutdown cannot rekey after emergency PTT off
+  emergency-unkey.test.js queued and later PTT, CW text and tuner starts
+                           cancelled by emergency unkey, over USB and LAN;
+                           OFF, STOP and settings cleanup still work
   frame.test.js           unit tests for CI-V framing/BCD, no hardware needed;
                            numbers that would encode as garbage are refused
   scope.test.js           unit tests for scope waveform decoding/reassembly,
