@@ -2869,6 +2869,8 @@ The test files:
                            server keeps running)
   tls-server.test.js      confirms the server actually works over
                            HTTPS/WSS when TLS_CERT_PATH/TLS_KEY_PATH are set
+  cw-reverse-mode.test.js  real driver reverse-CW text/paddle support and non-CW rejection
+  vara-release-order.test.js  VARA QSY waits for confirmed release, failures and link replacement
   run-all.js              not a test: runs every *.test.js and *.test.mjs
                            file (npm test); with npm run test:ci, a failed
                            file is run once more

@@ -5469,3 +5469,11 @@ rejects PTT-off, as the issues' reproductions did.
   packets while keyed, then transmit valid PCM and answer radio controls.
   Focused tests cover stereo alignment and playback/observer failures.
   Not tested on a real radio or on air. Service-worker cache v140.
+### Accept the driver reverse CW mode (v139)
+
+Typed CW and the paddle now accept CW_R, the canonical reverse-CW name returned by the real CI-V driver. CW-R remains accepted for compatibility. A localhost radio regression sets and reads the actual CW_R mode and transmits through both interfaces; non-CW modes remain refused.
+### Confirm VARA release before QSY (v138)
+
+VARA now waits for a confirmed PTT release before following either side of a QSY handshake. Native LAN audio drains before the radio releases PTT. A failed release keeps the transmit indication and blocks retuning; an old release cannot move a new link. Regression tests cover native PCM drain, rejected release, buffer-driven QSY and link replacement.
+
+Not tested on a physical radio or on air.
