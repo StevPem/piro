@@ -5458,5 +5458,74 @@ rejects PTT-off, as the issues' reproductions did.
 ### Prepare the native CW paddle before timed edges (v142)
 
 Native LAN paddle setup checks the radio time-out and CW mode in the buffering window before scheduling its first key edge. If setup exceeds that window, the pending elements move together, preserving their lengths and gaps. Stop and failed preparation discard all pending key-downs. Idle gaps and expiring time-out checks start another preparation after the preceding key-up; buffered pairs then move together. Tests cover the first dot and following dash with 35 ms CI-V replies, stop during preparation, disabled radio time-out, idle gaps and renewal between buffered pairs.
+### CW stop: keep settings held until receive is confirmed (v143)
+- A rejected CW stop used to be ignored. PiRO then put key speed and
+  break-in back and reported the radio idle, even when the keyer was
+  still transmitting. The same gap affected Stop, send errors and the
+  deadline after the estimated sending time.
+- CW text now confirms a stable receive state after stopping, rather
+  than treating a stop command or a PTT-off acknowledgement as proof.
+  If receive cannot be confirmed, every browser keeps the transmit
+  guard and the settings restore is held. Background reads release the
+  guard and restore settings once receive is confirmed. A later Stop
+  retries the stop command. A speed or break-in change made at the
+  radio while waiting is kept.
+- An uncertain CW error keeps the button on Stop, using the server's
+  transmit flag. A later confirmed receive changes it back to Send and
+  keeps the error history visible. A reconnecting browser receives the
+  current CW status and can retry Stop too.
+- ControlServer tracks receive holds for autonomous transmitters. A
+  normal PTT-off cannot release these holds. Other transmit features
+  keep their existing PTT release path.
+- Tests: cw-stop-safety.test.js uses the real native LAN driver,
+  ControlServer and CW bridge against the independent UDP radio peer.
+  It covers rejected stops after timeout, Stop and a send error; a
+  stop ACK while still transmitting; PTT-off during autonomous CW;
+  failed transmit-state reads; eventual receive and restoration;
+  front-panel changes; and retrying Stop. Existing CW and shared
+  transmit-safety tests also pass.
+- cw-stop-client.test.js runs the real client event and button handlers:
+  an uncertain error keeps Stop active, a retry sends abortCw, and later
+  receive confirmation restores Send while retaining the error message.
+- manual-tty-ui.js passes in Chrome, including a rejected CW stop,
+  a new browser joining during the failed stop, and retrying Stop
+  through the real client.
+- Not tested on a real radio, and not tested on air.
+- Service-worker cache v143.
+### Emergency unkey retires pending RF starts (v141)
+
+- Real bug: shutdown sent emergency PTT off ahead of the CI-V queue, but
+  an old PTT-on could still leave the queue afterward. The radio keyed
+  again during cleanup until the final close sent another PTT off.
+- Emergency unkey now cancels queued PTT-on, CW text and tuner-start
+  commands. It also refuses later RF starts, including a LAN request
+  that was still checking the radio when shutdown began. USB DTR/RTS
+  key-down is refused too. OFF, STOP, reads and settings cleanup remain
+  available. This is for shutdown; normal PTT release is unchanged.
+- Tests: USB queue and key-line checks, LAN queue and preparation checks,
+  and the real server receiving SIGTERM with PTT-on behind a browser poll.
+  Emergency OFF is followed only by OFF commands during shutdown.
+- Not tested on a real radio, and not tested on air.
+- Service-worker cache v141.
+### Reject malformed microphone packets without stopping LAN (v140)
+
+- Real bug: a browser could send one PCM byte while LAN PTT was on. The
+  native playback rejected the incomplete sample by throwing through the
+  WebSocket callback. The fatal handler unkeyed the radio and stopped PiRO.
+- Microphone input now requires complete S16LE channel frames and at most
+  500 ms per packet. Validation runs before audio observers and playback.
+  Normal browser packets are about 20 ms. Finite modem waveforms still use
+  playback directly. Playback and observer errors are reported through the
+  existing audio-error event, and the next valid mic packet can proceed.
+- Tests: a normal LAN server and real WebSocket reject odd and oversized
+  packets while keyed, then transmit valid PCM and answer radio controls.
+  Focused tests cover stereo alignment and playback/observer failures.
+  Not tested on a real radio or on air. Service-worker cache v140.
+### Accept the driver reverse CW mode (v139)
+
+Typed CW and the paddle now accept CW_R, the canonical reverse-CW name returned by the real CI-V driver. CW-R remains accepted for compatibility. A localhost radio regression sets and reads the actual CW_R mode and transmits through both interfaces; non-CW modes remain refused.
+### Confirm VARA release before QSY (v138)
+
+VARA now waits for a confirmed PTT release before following either side of a QSY handshake. Native LAN audio drains before the radio releases PTT. A failed release keeps the transmit indication and blocks retuning; an old release cannot move a new link. Regression tests cover native PCM drain, rejected release, buffer-driven QSY and link replacement.
 
 Not tested on a physical radio or on air.

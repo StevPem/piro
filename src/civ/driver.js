@@ -92,6 +92,9 @@ class CivDriver extends EventEmitter {
     this._parser = new FrameParser();
     this._queue = [];
     this._current = null;
+    // forcePttOff is terminal: shutdown cleanup may keep the event loop
+    // running long enough for old or newly prepared work to reach the bus.
+    this._emergencyStopped = false;
     // Set after a request times out: until it passes, nothing is sent and
     // any OK/NG that arrives is a late reply to the timed-out request.
     this._guardTimer = null;
@@ -142,6 +145,10 @@ class CivDriver extends EventEmitter {
    */
   setKeyLine(line, on) {
     return new Promise((resolve, reject) => {
+      if (on && this._emergencyStopped) {
+        reject(new Error('RF start cancelled by emergency unkey'));
+        return;
+      }
       if (line !== 'dtr' && line !== 'rts') {
         reject(new Error(`The key line must be 'dtr' or 'rts', not ${line}`));
         return;
@@ -275,6 +282,12 @@ class CivDriver extends EventEmitter {
    * @returns {Promise<object>} the parsed reply frame
    */
   _send(cmd, subCmd, data, { urgent = false } = {}) {
+    const rfStart = (cmd === CMD.PTT && ((subCmd === SUBCMD.PTT && data?.[0] === 1)
+      || (subCmd === SUBCMD.TUNER && data?.[0] === 2)))
+      || (cmd === CMD.SEND_CW && data?.[0] !== 0xff);
+    if (rfStart && this._emergencyStopped) {
+      return Promise.reject(new Error('RF start cancelled by emergency unkey'));
+    }
     if (this.radioAddr === null || this.radioAddr === undefined) {
       return Promise.reject(
         new Error('radioAddr is not set; call detectRadioAddress() or pass it in opts')
@@ -288,7 +301,7 @@ class CivDriver extends EventEmitter {
         subCmd,
         data,
       });
-      const job = { raw, cmd, subCmd, urgent, resolve, reject };
+      const job = { raw, cmd, subCmd, urgent, rfStart, resolve, reject };
       if (urgent) {
         // Ahead of everything else, but never ahead of an urgent job or
         // the same command already waiting: a PTT off must not overtake a
@@ -618,8 +631,17 @@ class CivDriver extends EventEmitter {
    * whatever request is in flight, so don't use this in normal running.
    * Resolves true once the bytes have left for the radio, false if they
    * couldn't be written in `timeoutMs`; never rejects.
+   * Retires queued RF starts and refuses later ones for this driver. Reads,
+   * OFF/STOP commands and settings cleanup remain available during shutdown.
    */
   forcePttOff({ timeoutMs = 1000 } = {}) {
+    this._emergencyStopped = true;
+    for (let i = this._queue.length - 1; i >= 0; i--) {
+      if (this._queue[i].rfStart) {
+        const [job] = this._queue.splice(i, 1);
+        job.reject(new Error('RF start cancelled by emergency unkey'));
+      }
+    }
     return new Promise((resolve) => {
       if (!this.port || !this.port.isOpen || this.radioAddr === null || this.radioAddr === undefined) {
         resolve(false);

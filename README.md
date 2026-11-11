@@ -607,7 +607,8 @@ PiRO doesn't wait that long when it knows something is wrong. If the
 browser holding PTT disconnects, or stops answering the server's pings
 for about 15 to 30 seconds (a phone that lost its signal), PTT is released
 at once. PiRO also sends PTT off to the radio when the service stops or
-crashes.
+crashes. That emergency unkey cancels queued transmissions and blocks new
+RF starts while shutdown puts settings back.
 
 **No changes while transmitting.** While the radio is transmitting (voice,
 the CW paddle, CW text, or a digital or picture mode), the frequency, band,
@@ -774,6 +775,10 @@ the real service or on air.
 
 ##### Compressed audio for remote use
 
+Mic packets must contain complete 16-bit sample frames and at most 500 ms
+of audio. Invalid packets and playback errors raise an `audio-error` event;
+later valid packets and radio controls keep working.
+
 Full audio is raw 16-bit PCM: about 770 kbit/s each way at 48 kHz. That
 is fine at home, but too much for most mobile data or a slow VPN. The
 **Audio** button beside Speaker switches this browser between:
@@ -871,6 +876,14 @@ Send turns into **Stop** while it goes out, which stops the radio's keyer
 at once. Every browser sees the progress. Letters, digits and
 `/ ? . , : ' ( ) = + " @ -` can be sent; `^` joins the next two letters
 into one prosign (`^AR`, `^SK`), as on the radio's own keyer memories.
+
+After Stop or a radio error, PiRO reads back the transmit state before
+putting speed and break-in back. If receive cannot be confirmed, it reports
+the problem and keeps settings locked. It checks for receive in the
+background and puts settings back once the radio has stopped. Changes
+made at the radio while waiting are kept. This applies to USB and LAN.
+The CW button stays **Stop** while receive is unconfirmed, so you can
+retry the stop command.
 Anything else is left out, and the status line says what was dropped.
 Messages are limited to 300 characters and under 9 minutes. PTT isn't used,
 so the 10-minute PTT cut-off doesn't apply; the length limit stands in for
@@ -2808,7 +2821,12 @@ The test files:
                            own process: the LAN settings are checked, the
                            time-out warning reaches every browser, a lost
                            link exits non-zero so systemd restarts it, and
-                           a VARA CQ is sent over the stand-in radio
+                           a VARA CQ is sent over the stand-in radio;
+                           shutdown cannot rekey after emergency PTT off
+  emergency-unkey.test.js queued and later PTT, CW text and tuner starts
+                           cancelled by emergency unkey, over USB and LAN;
+                           OFF, STOP and settings cleanup still work
+                           malformed mic packets are rejected while keyed
   frame.test.js           unit tests for CI-V framing/BCD, no hardware needed;
                            numbers that would encode as garbage are refused
   scope.test.js           unit tests for scope waveform decoding/reassembly,
@@ -2854,6 +2872,8 @@ The test files:
                            all three formats sent through backpressure),
                            and the startup volume-maximizing behavior: real
                            WebSocket, fake ALSA I/O, tagged binary frame format
+  audio-mic-boundary.test.js microphone sample alignment, packet size and
+                           contained playback/observer errors
   scope-bridge.test.js    integration test for the scope bridge: real
                            WebSocket, tagged binary frame encode/decode
                            round-trip, coexistence with audio frames
@@ -2863,6 +2883,8 @@ The test files:
   tls-server.test.js      confirms the server actually works over
                            HTTPS/WSS when TLS_CERT_PATH/TLS_KEY_PATH are set
   lan-paddle-preparation.test.js  native CW cold preparation, scheduled edges and preparation cancellation
+  cw-reverse-mode.test.js  real driver reverse-CW text/paddle support and non-CW rejection
+  vara-release-order.test.js  VARA QSY waits for confirmed release, failures and link replacement
   run-all.js              not a test: runs every *.test.js and *.test.mjs
                            file (npm test); with npm run test:ci, a failed
                            file is run once more
@@ -2961,6 +2983,12 @@ The test files:
   cw-tx-bridge.test.js    CW text through the radio's keyer: speed and
                            break-in set and put back, 30-character pieces,
                            buffer-full retries, Stop, refusals, timing
+  cw-stop-safety.test.js  real LAN driver and synthetic radio: rejected CW
+                           stop on timeout, Stop and send errors; settings
+                           held until actual receive, later recovery and
+                           front-panel changes kept
+  cw-stop-client.test.js  client Stop action stays available after an
+                           uncertain CW error and resets on confirmed RX
   tx-safety.test.js       transmit safety (issues #75-#79), with a stand-in
                            radio that rejects PTT-off: release confirmed or
                            reported; settings put back only once unkeyed

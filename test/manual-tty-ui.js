@@ -897,6 +897,27 @@ class Civ extends EventEmitter {
     await page.locator('#cw-send-btn').click();
     await page.waitForFunction(() => document.getElementById('cw-status').textContent === 'Stopped.', null, { timeout: 5000 });
     check(civ.log.some((e) => e[0] === 'stopCw') && civ.log.slice(-2).map((e) => e.join(' ')).join(' | ') === 'setBreakIn 0 | setKeySpeed 15' && (await page.locator('#cw-send-btn').textContent()) === 'Send', 'Stop: the keyer stopped, break-in and speed put back, Send again');
+
+    const originalStop = civ.stopCw.bind(civ);
+    const timing = [cwTx.estimateSeconds, cwTx.txEndMaxWaitMs, cwTx.txEndQuietMs];
+    cwTx.estimateSeconds = () => 0.001;
+    cwTx.txEndMaxWaitMs = 50;
+    cwTx.txEndQuietMs = 10;
+    civ.stopCw = async () => { throw new Error('CW stop rejected'); };
+    await page.locator('#cw-text-input').fill('E');
+    await page.locator('#cw-send-btn').click();
+    await page.waitForFunction(() => /CW stop not confirmed/.test(document.getElementById('cw-status').textContent));
+    check((await page.locator('#cw-send-btn').textContent()) === 'Stop' && server.transmitting, 'a rejected CW stop keeps Stop and the transmit guard');
+    const retryPage = await browser.newPage({ viewport: { width: 430, height: 1100 } });
+    await retryPage.goto(`http://localhost:${port}/`);
+    await retryPage.waitForFunction(() => document.getElementById('cw-send-btn').textContent === 'Stop');
+    check(/CW stop not confirmed/.test(await retryPage.locator('#cw-status').textContent()), 'a reconnecting browser receives the uncertain CW status and Stop action');
+    await retryPage.close();
+    civ.stopCw = originalStop;
+    await page.locator('#cw-send-btn').click();
+    await page.waitForFunction(() => /Receive is now confirmed/.test(document.getElementById('cw-status').textContent));
+    check((await page.locator('#cw-send-btn').textContent()) === 'Send' && !server.transmitting, 'retry Stop releases CW, restores Send and retains the error history');
+    [cwTx.estimateSeconds, cwTx.txEndMaxWaitMs, cwTx.txEndQuietMs] = timing;
   }
 
   // CW paddle: elements go to the server (cwKey), which keys them a fixed delay later, timed on its own clock

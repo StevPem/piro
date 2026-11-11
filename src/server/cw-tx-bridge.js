@@ -1,6 +1,7 @@
 'use strict';
 
-const { refreshTransmitting } = require('./tx-safety');
+const { refreshTransmitting, holdReceiveConfirmation, confirmReceive,
+  restoreWhenReceiving, settingStillIs } = require('./tx-safety');
 const { EVENT } = require('./protocol');
 const { MORSE_TABLE } = require('../audio/cw-decoder');
 
@@ -106,33 +107,46 @@ class CwTxBridge {
     this.txEndQuietMs = txEndQuietMs;
     this.txEndMaxWaitMs = txEndMaxWaitMs;
     this._tx = null;
+    this._recovery = null;
+    this._stopped = false;
     this._onSend = (req) => this.send(req).catch(() => {});
     this._onAbort = () => this.abort();
+    this._onClientJoined = (ws) => {
+      const status = this.controlServer.state.cwTx;
+      if (status) this.controlServer.sendJsonEvent?.(ws, EVENT.CW_TX_STATUS, status);
+    };
     // Nobody left to press Stop.
     this._onClientGone = () => {
-      if (this._tx && this.controlServer.clients && this.controlServer.clients.size === 0) this.abort();
+      if (this.transmitting && this.controlServer.clients && this.controlServer.clients.size === 0) this.abort();
     };
   }
 
   start() {
+    this._stopped = false;
     this.controlServer.on('cw-send', this._onSend);
     this.controlServer.on('cw-abort', this._onAbort);
+    this.controlServer.on('client-connected', this._onClientJoined);
     this.controlServer.on('client-disconnected', this._onClientGone);
   }
 
   stop() {
+    this._stopped = true;
+    clearTimeout(this._recovery?.timer);
     this.controlServer.off('cw-send', this._onSend);
     this.controlServer.off('cw-abort', this._onAbort);
+    this.controlServer.off('client-connected', this._onClientJoined);
     this.controlServer.off('client-disconnected', this._onClientGone);
-    if (this._tx) this.abort();
+    if (this.transmitting) this.abort();
   }
 
   get transmitting() {
-    return this._tx !== null;
+    return this._tx !== null || this._recovery !== null;
   }
 
   _status(data) {
-    this.controlServer.broadcastJsonEvent(EVENT.CW_TX_STATUS, data);
+    const status = { ...data, transmitting: this.transmitting };
+    this.controlServer.state.cwTx = status;
+    this.controlServer.broadcastJsonEvent(EVENT.CW_TX_STATUS, status);
   }
 
   /** Sleeps, but wakes early if the transmission is stopped. */
@@ -155,9 +169,10 @@ class CwTxBridge {
       return Promise.reject(new Error(error));
     };
     const civ = this.controlServer.civ;
-    if (this._tx) return fail('Already sending CW.');
+    if (this.transmitting) return fail('Already sending CW, or waiting for the radio to confirm it has stopped.');
     if (this.controlServer.state?.ptt) return fail('The radio is already transmitting.');
     if (this.controlServer.state?.cwKeying) return fail('The CW paddle is keying.');
+    if (this.controlServer.transmitting) return fail('The radio may still be transmitting.');
     if (!civ || typeof civ.sendCw !== 'function') return fail("This radio can't be sent CW text.");
     const { text: clean, dropped } = cleanCwText(text);
     if (!clean) return fail('Nothing to send.');
@@ -168,6 +183,7 @@ class CwTxBridge {
 
     const tx = { aborted: false, wakers: new Set() };
     this._tx = tx;
+    holdReceiveConfirmation(this.controlServer, tx);
     refreshTransmitting(this.controlServer); // the radio's keyer is about to send: settings can't be changed meanwhile
     // After each awaited step: stop before changing anything once Stop was pressed.
     const step = () => {
@@ -178,12 +194,14 @@ class CwTxBridge {
     let changedSpeed = false;
     let changedBreakIn = false;
     let started = false; // the keyer has been given some text
+    let failure = null;
+    let completed = false;
     const info = { text: clean, wpm: speed, durationSec };
     if (dropped.length) info.dropped = dropped;
     try {
       const mode = (await civ.getMode()).mode;
       step();
-      if (mode !== 'CW' && mode !== 'CW-R') throw new Error('Put the radio in CW first.');
+      if (mode !== 'CW' && mode !== 'CW_R' && mode !== 'CW-R') throw new Error('Put the radio in CW first.');
       prevSpeed = await civ.getKeySpeed().catch(() => null);
       step();
       prevBreakIn = await civ.getBreakIn().catch(() => null);
@@ -214,26 +232,38 @@ class CwTxBridge {
       // Then until it has all gone out: the estimate, then until the radio is back on receive.
       await this._wait(tx, queuedSec * 1000 - (Date.now() - t0));
       // "sent" only once the radio has reported receive for txEndQuietMs (issue #78).
-      const confirmed = tx.aborted || typeof civ.getTransmitting !== 'function' || (await this._confirmReceive(tx, civ));
-      if (tx.aborted || !confirmed) await civ.stopCw().catch(() => {});
-      await this._restore(civ, { changedSpeed, prevSpeed, changedBreakIn, prevBreakIn });
-      this._done();
-      if (!confirmed) {
-        this._status({ status: 'error', ...info, error: "The radio didn't confirm it had stopped sending, so the keyer was stopped. Check the radio." });
-        return;
-      }
-      this._status({ status: tx.aborted ? 'aborted' : 'sent', ...info });
+      completed = !tx.aborted && await this._confirmReceive(tx, civ);
     } catch (err) {
-      if (started) await civ.stopCw().catch(() => {});
-      await this._restore(civ, { changedSpeed, prevSpeed, changedBreakIn, prevBreakIn }).catch(() => {});
-      this._done();
-      if (err === ABORTED) {
-        this._status({ status: 'aborted', ...info });
-        return;
-      }
-      this._status({ status: 'error', ...info, error: err.message });
-      throw err;
+      failure = err;
     }
+
+    let confirmed = !started || completed;
+    if (started && !completed) {
+      await this._stopKeyer(tx, civ);
+      // An ACK to STOP is not proof of receive. Stop, errors and abort all
+      // use the same read-back check, including when STOP was rejected.
+      confirmed = await this._confirmReceive(tx, civ, true);
+    }
+    if (confirmed) await confirmReceive(this.controlServer, tx);
+    else this._recovery = { tx, civ, info, quietSince: null, timer: null };
+    try {
+      await restoreWhenReceiving(this.controlServer, ({ held }) => this._restore(civ,
+        { changedSpeed, prevSpeed, changedBreakIn, prevBreakIn, speed }, held));
+    } catch (err) {
+      failure ||= err;
+    }
+    this._done();
+    if (!confirmed) {
+      this._pollRecovery(this._recovery);
+      this._status({ status: 'error', ...info, error: "CW stop not confirmed: the radio may still be transmitting. Settings are held until receive is confirmed. Check the radio." });
+    } else if (failure && failure !== ABORTED) {
+      this._status({ status: 'error', ...info, error: failure.message });
+    } else if (tx.aborted || failure === ABORTED) {
+      this._status({ status: 'aborted', ...info });
+    } else if (!completed) {
+      this._status({ status: 'error', ...info, error: "The radio didn't finish sending in time; the keyer was stopped and receive confirmed." });
+    } else this._status({ status: 'sent', ...info });
+    if (failure && failure !== ABORTED) throw failure;
   }
 
   _done() {
@@ -246,10 +276,10 @@ class CwTxBridge {
    * for txEndQuietMs before TX_END_MAX_WAIT_MS ran out. A read that fails,
    * or anything but a plain false, doesn't count as receive.
    */
-  async _confirmReceive(tx, civ) {
+  async _confirmReceive(tx, civ, afterStop = false) {
     const until = Date.now() + this.txEndMaxWaitMs;
     let quietSince = null;
-    while (!tx.aborted && Date.now() < until) {
+    while ((afterStop || !tx.aborted) && Date.now() < until) {
       let on;
       try {
         on = await civ.getTransmitting();
@@ -262,24 +292,56 @@ class CwTxBridge {
       } else {
         quietSince = null;
       }
-      await this._wait(tx, 150);
+      if (afterStop) await new Promise((resolve) => setTimeout(resolve, 150));
+      else await this._wait(tx, 150);
     }
-    return tx.aborted;
+    return false;
   }
 
-  async _restore(civ, { changedSpeed, prevSpeed, changedBreakIn, prevBreakIn }) {
-    if (changedBreakIn && prevBreakIn != null) await civ.setBreakIn(prevBreakIn);
-    if (changedSpeed && prevSpeed != null) await civ.setKeySpeed(prevSpeed);
+  async _restore(civ, { changedSpeed, prevSpeed, changedBreakIn, prevBreakIn, speed }, held) {
+    if (changedBreakIn && prevBreakIn != null && (!held || await settingStillIs(() => civ.getBreakIn(), 1))) await civ.setBreakIn(prevBreakIn);
+    if (changedSpeed && prevSpeed != null && (!held || await settingStillIs(() => civ.getKeySpeed(), speed))) await civ.setKeySpeed(prevSpeed);
+  }
+
+  _stopKeyer(tx, civ) {
+    tx.stopPromise ||= Promise.resolve().then(() => civ.stopCw()).catch(() => {});
+    return tx.stopPromise;
+  }
+
+  async _pollRecovery(recovery) {
+    if (this._stopped || this._recovery !== recovery) return;
+    let on;
+    try { on = await recovery.civ.getTransmitting(); } catch { on = null; }
+    if (this._stopped || this._recovery !== recovery) return;
+    if (on === false) {
+      recovery.quietSince ??= Date.now();
+      if (Date.now() - recovery.quietSince >= this.txEndQuietMs) {
+        await confirmReceive(this.controlServer, recovery.tx);
+        this._recovery = null;
+        refreshTransmitting(this.controlServer);
+        this._status({ status: 'error', ...recovery.info,
+          error: 'The CW stop was not confirmed at first. Receive is now confirmed.' });
+        return;
+      }
+    } else recovery.quietSince = null;
+    recovery.timer = setTimeout(() => this._pollRecovery(recovery), 250);
+    recovery.timer.unref?.();
   }
 
   /** Stops the CW being sent: the radio drops the rest, and the speed and break-in are put back. */
   abort() {
-    const tx = this._tx;
+    const tx = this._tx || this._recovery?.tx;
+    if (this._recovery && tx) {
+      // A later Stop can retry a rejected command without dropping the guard.
+      tx.stopPromise = null;
+      this._stopKeyer(tx, this.controlServer.civ);
+      return;
+    }
     if (!tx || tx.aborted) return;
     tx.aborted = true;
     for (const wake of [...tx.wakers]) wake();
     // Stop the keyer straight away rather than when send() next looks.
-    this.controlServer.civ?.stopCw?.().catch(() => {});
+    this._stopKeyer(tx, this.controlServer.civ);
   }
 }
 
