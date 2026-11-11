@@ -5454,3 +5454,9 @@ rejects PTT-off, as the issues' reproductions did.
   already, and it is only used on shutdown, so it was left alone.
 - Not tested on a real radio, and not tested on air.
 - Service-worker cache v137.
+
+### Prepare the native CW paddle before timed edges (v142)
+
+Native LAN paddle setup checks the radio time-out and CW mode in the buffering window before scheduling its first key edge. If setup exceeds that window, the pending elements move together, preserving their lengths and gaps. Stop and failed preparation discard all pending key-downs. Idle gaps and expiring time-out checks start another preparation after the preceding key-up; buffered pairs then move together. Tests cover the first dot and following dash with 35 ms CI-V replies, stop during preparation, disabled radio time-out, idle gaps and renewal between buffered pairs.
+
+Not tested on a physical radio or on air.

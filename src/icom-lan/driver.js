@@ -225,6 +225,28 @@ class IcomLanDriver extends CivDriver {
       && now - this.timeoutCheckedAt < TIMEOUT_RECHECK_MS && this.prepared && this.session.connected;
   }
 
+  // Reserve the known CW/timeout state through buffered element edges. A
+  // later mode event invalidates this just like the ordinary burst cache.
+  reserveCwPaddle(through) {
+    if (!this.inCwBurst() || through >= this.timeoutCheckedAt + TIMEOUT_RECHECK_MS) return false;
+    this.cwBurstUntil = Math.max(this.cwBurstUntil, through + CW_BURST_MS);
+    return true;
+  }
+
+  // Run the cold-start safety reads in the paddle's buffering window,
+  // before its independently timed key-down and key-up can race them.
+  prepareCwPaddle() {
+    const revision = this.txRevision;
+    return this.queueSettings(async () => {
+      await this.requireTimeout();
+      const { mode } = await this.getMode();
+      if (mode !== 'CW' && mode !== 'CW_R') throw new Error('Put the radio in CW first.');
+      if (revision !== this.txRevision) throw new Error('CW paddle preparation was cancelled');
+      this.lastTxCw = true;
+      this.cwBurstUntil = performance.now() + CW_BURST_MS;
+    });
+  }
+
   async prepareTx(revision) {
     if (this.inCwBurst()) return;
     this.endCwBurst();
@@ -263,7 +285,7 @@ class IcomLanDriver extends CivDriver {
         }
         this.playback.setKeyed(false);
         const result = await super.setPtt(false, options);
-        if (this.lastTxCw) this.cwBurstUntil = performance.now() + CW_BURST_MS;
+        if (this.lastTxCw) this.cwBurstUntil = Math.max(this.cwBurstUntil, performance.now() + CW_BURST_MS);
         await this.restore(this.txSaved).catch((err) => this.emit('error', err));
         return result;
       }

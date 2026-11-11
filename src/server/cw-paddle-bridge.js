@@ -140,6 +140,18 @@ class CwPaddleBridge {
     if (at - now > MAX_AHEAD_MS) throw new Error('That element is too far ahead.');
     // Never overlap the previous element (a gap of at least 1 ms).
     if (at < s.lastEndAt + 1) at = s.lastEndAt + 1;
+    if (!this.keyLine && !s.preparing && typeof this.controlServer.civ.reserveCwPaddle === 'function'
+      && !this.controlServer.civ.reserveCwPaddle(at + d)) {
+      // Let already scheduled key-ups run first. Only this pair and later
+      // pairs wait for renewed safety checks, then move together.
+      s.preparing = true;
+      s.ready = Promise.resolve(s.lastRelease).then(() => {
+        if (s.ended) return;
+        if (this.controlServer.state.ptt) throw new Error('Previous CW key-up was not confirmed');
+        return this.controlServer.civ.prepareCwPaddle();
+      });
+      this._prepareNative(s, s.ready);
+    }
     s.lastT = t;
     s.lastEndAt = at + d;
     this._schedule(s, at - now, true);
@@ -167,14 +179,38 @@ class CwPaddleBridge {
       ended: false,
       restore: null,
     };
+    s.pendingEdges = [];
+    s.releaseWakers = new Set();
+    s.preparing = !this.keyLine && typeof cs.civ.prepareCwPaddle === 'function';
     // Break-in, needed for the key line to transmit: checked and set in the
     // delay window, before the first element is due.
-    s.ready = this.keyLine ? this._ensureBreakIn(s) : Promise.resolve();
+    s.ready = this.keyLine ? this._ensureBreakIn(s)
+      : s.preparing ? cs.civ.prepareCwPaddle() : Promise.resolve();
+    if (s.preparing) this._prepareNative(s, s.ready);
     this._s = s;
     cs.state.cwKeying = true;
     cs.broadcastJsonEvent(EVENT.CW_KEYING, { active: true });
     refreshTransmitting(cs); // settings can't be changed while the paddle keys
     return s;
+  }
+
+  _prepareNative(s, ready) {
+    ready.then(() => {
+      if (s.ended) return;
+      s.preparing = false;
+      const now = this.now();
+      const shift = Math.max(0, now + LATE_MARGIN_MS - s.pendingEdges[0].at);
+      s.offset += shift;
+      s.lastEndAt += shift;
+      if (!this.controlServer.civ.reserveCwPaddle(s.lastEndAt)) {
+        throw new Error('Radio mode or time-out changed during CW preparation');
+      }
+      for (const edge of s.pendingEdges) this._schedule(s, edge.at + shift - now, edge.down);
+      s.pendingEdges = [];
+      this._armIdle(s, s.lastEndAt + this.sessionIdleMs - now);
+    }).catch((err) => {
+      if (this._s === s) this._end('error', `CW preparation failed: ${err.message}`);
+    });
   }
 
   async _ensureBreakIn(s) {
@@ -191,9 +227,19 @@ class CwPaddleBridge {
   }
 
   _schedule(s, inMs, down) {
+    if (s.preparing) {
+      s.pendingEdges.push({ at: this.now() + inMs, down });
+      return;
+    }
+    let released;
+    if (!down) s.lastRelease = new Promise((resolve) => {
+      released = () => { s.releaseWakers.delete(released); resolve(); };
+      s.releaseWakers.add(released);
+    });
     const timer = this.setTimer(() => {
       s.timers.delete(timer);
-      if (!s.ended) this._setKey(s, down);
+      const result = s.ended ? null : this._setKey(s, down);
+      if (released) Promise.resolve(result).then(released, released);
     }, Math.max(0, inMs));
     s.timers.add(timer);
   }
@@ -216,9 +262,9 @@ class CwPaddleBridge {
     if (this.keyLine) {
       // Break-in is set (or failed) before the first element is due; if the
       // radio was slow, wait for it rather than key without it.
-      s.ready.then(() => (s.ended && down ? null : cs.civ.setKeyLine(this.keyLine, down))).catch(fail);
+      return s.ready.then(() => (s.ended && down ? null : cs.civ.setKeyLine(this.keyLine, down))).catch(fail);
     } else {
-      cs.setPttFromServer(down, { urgent: true }).catch(fail);
+      return cs.setPttFromServer(down, { urgent: true }).catch(fail);
     }
   }
 
@@ -230,6 +276,7 @@ class CwPaddleBridge {
     s.ended = true;
     for (const t of s.timers) this.clearTimer(t);
     s.timers.clear();
+    for (const wake of s.releaseWakers) wake();
     if (s.idle) this.clearTimer(s.idle);
     const cs = this.controlServer;
     const civ = cs.civ;
