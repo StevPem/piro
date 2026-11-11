@@ -5455,10 +5455,48 @@ rejects PTT-off, as the issues' reproductions did.
 - Not tested on a real radio, and not tested on air.
 - Service-worker cache v137.
 
-### Prepare the native CW paddle before timed edges (v142)
+### Confirm VARA release before QSY (v138)
 
-Native LAN paddle setup checks the radio time-out and CW mode in the buffering window before scheduling its first key edge. If setup exceeds that window, the pending elements move together, preserving their lengths and gaps. Stop and failed preparation discard all pending key-downs. Idle gaps and expiring time-out checks start another preparation after the preceding key-up; buffered pairs then move together. Tests cover the first dot and following dash with 35 ms CI-V replies, stop during preparation, disabled radio time-out, idle gaps and renewal between buffered pairs.
-### CW stop: keep settings held until receive is confirmed (v143)
+VARA now waits for a confirmed PTT release before following either side of a QSY handshake. Native LAN audio drains before the radio releases PTT. A failed release keeps the transmit indication and blocks retuning; an old release cannot move a new link. Regression tests cover native PCM drain, rejected release, buffer-driven QSY and link replacement.
+
+Not tested on a physical radio or on air.
+
+### Accept the driver reverse CW mode (v139)
+
+Typed CW and the paddle now accept CW_R, the canonical reverse-CW name returned by the real CI-V driver. CW-R remains accepted for compatibility. A localhost radio regression sets and reads the actual CW_R mode and transmits through both interfaces; non-CW modes remain refused.
+
+### Reject malformed microphone packets without stopping LAN (v140)
+
+- Real bug: a browser could send one PCM byte while LAN PTT was on. The
+  native playback rejected the incomplete sample by throwing through the
+  WebSocket callback. The fatal handler unkeyed the radio and stopped PiRO.
+- Microphone input now requires complete S16LE channel frames and at most
+  500 ms per packet. Validation runs before audio observers and playback.
+  Normal browser packets are about 20 ms. Finite modem waveforms still use
+  playback directly. Playback and observer errors are reported through the
+  existing audio-error event, and the next valid mic packet can proceed.
+- Tests: a normal LAN server and real WebSocket reject odd and oversized
+  packets while keyed, then transmit valid PCM and answer radio controls.
+  Focused tests cover stereo alignment and playback/observer failures.
+  Not tested on a real radio or on air. Service-worker cache v140.
+
+### Emergency unkey retires pending RF starts (v141)
+
+- Real bug: shutdown sent emergency PTT off ahead of the CI-V queue, but
+  an old PTT-on could still leave the queue afterward. The radio keyed
+  again during cleanup until the final close sent another PTT off.
+- Emergency unkey now cancels queued PTT-on, CW text and tuner-start
+  commands. It also refuses later RF starts, including a LAN request
+  that was still checking the radio when shutdown began. USB DTR/RTS
+  key-down is refused too. OFF, STOP, reads and settings cleanup remain
+  available. This is for shutdown; normal PTT release is unchanged.
+- Tests: USB queue and key-line checks, LAN queue and preparation checks,
+  and the real server receiving SIGTERM with PTT-on behind a browser poll.
+  Emergency OFF is followed only by OFF commands during shutdown.
+- Not tested on a real radio, and not tested on air.
+- Service-worker cache v141.
+
+### CW stop: keep settings held until receive is confirmed (v142)
 - A rejected CW stop used to be ignored. PiRO then put key speed and
   break-in back and reported the radio idle, even when the keyer was
   still transmitting. The same gap affected Stop, send errors and the
@@ -5491,44 +5529,15 @@ Native LAN paddle setup checks the radio time-out and CW mode in the buffering w
   a new browser joining during the failed stop, and retrying Stop
   through the real client.
 - Not tested on a real radio, and not tested on air.
-- Service-worker cache v143.
-### Emergency unkey retires pending RF starts (v141)
+- Service-worker cache v142. (This section first said v143; the build it
+  was merged in was v142.)
 
-- Real bug: shutdown sent emergency PTT off ahead of the CI-V queue, but
-  an old PTT-on could still leave the queue afterward. The radio keyed
-  again during cleanup until the final close sent another PTT off.
-- Emergency unkey now cancels queued PTT-on, CW text and tuner-start
-  commands. It also refuses later RF starts, including a LAN request
-  that was still checking the radio when shutdown began. USB DTR/RTS
-  key-down is refused too. OFF, STOP, reads and settings cleanup remain
-  available. This is for shutdown; normal PTT release is unchanged.
-- Tests: USB queue and key-line checks, LAN queue and preparation checks,
-  and the real server receiving SIGTERM with PTT-on behind a browser poll.
-  Emergency OFF is followed only by OFF commands during shutdown.
-- Not tested on a real radio, and not tested on air.
-- Service-worker cache v141.
-### Reject malformed microphone packets without stopping LAN (v140)
+### Prepare the native CW paddle before timed edges (v142)
 
-- Real bug: a browser could send one PCM byte while LAN PTT was on. The
-  native playback rejected the incomplete sample by throwing through the
-  WebSocket callback. The fatal handler unkeyed the radio and stopped PiRO.
-- Microphone input now requires complete S16LE channel frames and at most
-  500 ms per packet. Validation runs before audio observers and playback.
-  Normal browser packets are about 20 ms. Finite modem waveforms still use
-  playback directly. Playback and observer errors are reported through the
-  existing audio-error event, and the next valid mic packet can proceed.
-- Tests: a normal LAN server and real WebSocket reject odd and oversized
-  packets while keyed, then transmit valid PCM and answer radio controls.
-  Focused tests cover stereo alignment and playback/observer failures.
-  Not tested on a real radio or on air. Service-worker cache v140.
-### Accept the driver reverse CW mode (v139)
+Native LAN paddle setup checks the radio time-out and CW mode in the buffering window before scheduling its first key edge. If setup exceeds that window, the pending elements move together, preserving their lengths and gaps. Stop and failed preparation discard all pending key-downs. Idle gaps and expiring time-out checks start another preparation after the preceding key-up; buffered pairs then move together. Tests cover the first dot and following dash with 35 ms CI-V replies, stop during preparation, disabled radio time-out, idle gaps and renewal between buffered pairs.
 
-Typed CW and the paddle now accept CW_R, the canonical reverse-CW name returned by the real CI-V driver. CW-R remains accepted for compatibility. A localhost radio regression sets and reads the actual CW_R mode and transmits through both interfaces; non-CW modes remain refused.
-### Confirm VARA release before QSY (v138)
-
-VARA now waits for a confirmed PTT release before following either side of a QSY handshake. Native LAN audio drains before the radio releases PTT. A failed release keeps the transmit indication and blocks retuning; an old release cannot move a new link. Regression tests cover native PCM drain, rejected release, buffer-driven QSY and link replacement.
-
-Not tested on a physical radio or on air.
+Server only, merged after the CW stop fix with no build change, so it is
+also in v142.
 
 ### A port for other programs: Hamlib's rigctl commands (v144)
 - **New.** With `RIGCTL_PORT` set, PiRO answers the text commands of
@@ -5577,6 +5586,6 @@ Not tested on a physical radio or on air.
 - Not tested with a real radio or real programs (WSJT-X, loggers). Not
   tested on air.
 - The README's troubleshooting said Node 18; now 20, as elsewhere.
-- Service-worker cache v144. (The CW stop notes above say v143, but the
-  build that shipped with them was v142; no v143 cache was released, so
-  this build is v144 to keep the numbers unambiguous.)
+- Service-worker cache v144. There is no v143: the CW stop notes first
+  claimed it, but that change shipped in v142, so v143 was skipped to keep
+  the numbers unambiguous.
