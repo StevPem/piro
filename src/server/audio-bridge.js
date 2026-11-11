@@ -15,6 +15,10 @@ const { EVENT, BINARY_TYPE } = require('./protocol');
 // 4-level default this feature shipped with.
 const DEFAULT_RNNOISE_WET_LEVELS = [0.25, 0.5, 0.75, 1.0];
 
+// Browsers send about 20 ms per mic packet. Keep microphone input within the
+// LAN voice queue's 500 ms limit; whole modem waveforms use playback directly.
+const MAX_MIC_FRAME_MS = 500;
+
 /**
  * Wires the radio's audio (via ALSA) to every connected WebSocket client's
  * binary channel, in both directions:
@@ -726,8 +730,20 @@ class AudioBridge extends EventEmitter {
       return; // tagged for something else (e.g. scope) — not ours
     }
     if (!pcm.length) return;
-    this.emit('tx-pcm', pcm);
-    if (!this._txMuted) this.playback.write(pcm);
+    if (!Buffer.isBuffer(pcm) || pcm.length % (2 * this.channels)) {
+      this._reportError('mic', new Error('Microphone audio requires complete S16LE sample frames'));
+      return;
+    }
+    if (pcm.length > Math.floor(this.sampleRate * MAX_MIC_FRAME_MS / 1000) * 2 * this.channels) {
+      this._reportError('mic', new Error('Microphone audio packet exceeds 500 ms'));
+      return;
+    }
+    try {
+      this.emit('tx-pcm', pcm);
+      if (!this._txMuted) this.playback.write(pcm);
+    } catch (err) {
+      this._reportError('mic', err);
+    }
   }
 
   _reportError(context, err) {
