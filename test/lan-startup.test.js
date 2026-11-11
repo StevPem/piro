@@ -4,6 +4,8 @@ const test = require('node:test');
 const assert = require('node:assert/strict');
 const { spawn } = require('node:child_process');
 const path = require('node:path');
+const net = require('node:net');
+const { once } = require('node:events');
 const WebSocket = require('ws');
 const { IcomPeer } = require('./fixtures/icom-lan-peer');
 const { createLanRadio } = require('../src/server/lan-config');
@@ -17,7 +19,7 @@ async function until(predicate, detail, ms = 10000) {
   }
 }
 
-async function start(t, peer, { timeoutMs = 15000, callsign = '' } = {}) {
+async function start(t, peer, { timeoutMs = 15000, callsign = '', env = {} } = {}) {
   const o = peer.config();
   const child = spawn(process.execPath, ['--require', path.join(__dirname, 'fixtures/lan-startup-observer.js'),
     path.join(__dirname, '../src/server/index.js')], {
@@ -30,7 +32,7 @@ async function start(t, peer, { timeoutMs = 15000, callsign = '' } = {}) {
       TLS_CERT_PATH: '', TLS_KEY_PATH: '', WS_PORT: '0', CW_KEY_LINE: 'dtr',
       STATION_CALLSIGN: callsign, STATION_GRID: '', WSPR_GRID: '', WSPR_UPLOAD: 'off',
       WSPR_UNATTENDED: 'off', FREEDV_REPORTER_ENABLED: '0',
-      DEEPGRAM_API_KEY: '', STT_URL: '', STT_MODEL: '', STT_WHISPER_SERVER: '' },
+      DEEPGRAM_API_KEY: '', STT_URL: '', STT_MODEL: '', STT_WHISPER_SERVER: '', RIGCTL_PORT: '', ...env },
     stdio: ['ignore', 'pipe', 'pipe', 'ipc'],
   });
   const h = { child, output: '', errors: '', exit: null, sockets: [], audio: 0, scope: 0 };
@@ -150,6 +152,36 @@ test('malformed microphone packets cannot terminate a keyed native LAN server', 
   assert.equal((await h.request(socket, 'setPtt', { value: false })).ok, true);
   assert.equal(peer.ptt, false);
   assert.doesNotMatch(h.errors, /Fatal uncaughtException|Fatal unhandledRejection/);
+});
+
+test('the Hamlib-style rigctl port reads and sets the radio, and refuses PTT unless allowed', async (t) => {
+  const peer = await new IcomPeer().start();
+  t.after(() => peer.close());
+  const free = net.createServer().listen(0, '127.0.0.1');
+  await once(free, 'listening');
+  const port = free.address().port;
+  free.close();
+  const h = await start(t, peer, { env: { RIGCTL_PORT: String(port) } });
+  assert.match(h.output, new RegExp(`rigctl\\) on 127\\.0\\.0\\.1:${port}; programs can't key the radio`));
+  const browser = await h.connect();
+  const sock = net.connect(port, '127.0.0.1');
+  t.after(() => sock.destroy());
+  let text = '';
+  sock.setEncoding('latin1');
+  sock.on('data', (d) => { text += d; });
+  await once(sock, 'connect');
+  const ask = async (line, lines = 1) => {
+    text = '';
+    sock.write(`${line}\n`);
+    await until(() => text.split('\n').length > lines || /RPRT/.test(text), `no answer to ${line}`);
+    return text;
+  };
+  assert.equal(await ask('f'), '14074000\n');
+  assert.equal(await ask('F 7074000'), 'RPRT 0\n');
+  await until(() => peer.frequency.equals(Buffer.from('0040070700', 'hex')), 'the radio was not tuned');
+  await until(() => browser.events.some((e) => e.type === 'frequency' && e.data.value === 7074000), 'the browser was not told');
+  assert.equal(await ask('T 1'), 'RPRT -11\n');
+  assert.equal(peer.ptt, false);
 });
 
 test('lost LAN media exits cleanly non-zero and a fresh process connects again', async (t) => {

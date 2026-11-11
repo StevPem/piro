@@ -9,6 +9,7 @@ const { ControlServer, parseAllowedOrigins } = require('./ws-server');
 const { AudioBridge } = require('./audio-bridge');
 const { ScopeBridge } = require('./scope-bridge');
 const { CwDecoderBridge } = require('./cw-decoder-bridge');
+const { RigctlServer } = require('./rigctl-server');
 const { RttyDecoderBridge } = require('./rtty-decoder-bridge');
 const { JttyDecoderBridge } = require('./jtty-decoder-bridge');
 const { OliviaDecoderBridge } = require('./olivia-decoder-bridge');
@@ -58,6 +59,21 @@ const CW_PADDLE_DELAY_MS = (() => {
   return 250;
 })();
 const RADIO_MODEL = process.env.CIV_RADIO_MODEL; // e.g. "IC-7300"
+// Hamlib-style control port (rigctl-server.js), for loggers and programs
+// using "Hamlib NET rigctl". Off unless RIGCTL_PORT is set (4532 is
+// Hamlib's usual port). RIGCTL_HOST: 127.0.0.1 (programs on the Pi only)
+// unless set, e.g. to 0.0.0.0 for other computers. RIGCTL_PTT=true lets
+// those programs key the radio; without it they can't ("T 0" always works).
+const RIGCTL_PORT = (() => {
+  const raw = process.env.RIGCTL_PORT;
+  if (raw === undefined || raw.trim() === '') return null;
+  const v = Number(raw);
+  if (Number.isInteger(v) && v >= 1 && v <= 65535) return v;
+  console.warn(`RIGCTL_PORT="${raw}" is not a port number (1 to 65535); the rigctl port is off.`);
+  return null;
+})();
+const RIGCTL_HOST = (process.env.RIGCTL_HOST || '127.0.0.1').trim();
+const RIGCTL_PTT = /^(1|true|yes|on)$/i.test((process.env.RIGCTL_PTT || '').trim());
 // Must match the radio's own "CI-V USB Baud Rate" menu setting exactly —
 // defaults to 19200 (CivDriver's own default) if unset. Spectrum scope
 // data is high-volume enough that some setups need this raised (115200 is
@@ -326,6 +342,7 @@ let sttBridge;
 let bandConditions;
 let radeBridge;
 let freeDvReporterBridge;
+let rigctlServer;
 
 /**
  * Best-effort: forces the radio's own "AF output level to ACC/USB"
@@ -841,6 +858,23 @@ async function main() {
     controlServer.setScopeInfo({ enabled: false });
     console.log('CIV_SCOPE_ENABLED not set; spectrum scope disabled.');
   }
+
+  if (RIGCTL_PORT) {
+    rigctlServer = new RigctlServer({ controlServer, port: RIGCTL_PORT, host: RIGCTL_HOST, allowPtt: RIGCTL_PTT, version: `PiRO v${APP_VERSION}` });
+    try {
+      await rigctlServer.start();
+      console.log(
+        `Hamlib-style control port (rigctl) on ${RIGCTL_HOST}:${RIGCTL_PORT}; ` +
+          (RIGCTL_PTT ? 'programs may key the radio (RIGCTL_PTT).' : 'programs can\'t key the radio (set RIGCTL_PTT=true to allow).')
+      );
+      if (RIGCTL_PTT && !['127.0.0.1', 'localhost', '::1'].includes(RIGCTL_HOST)) {
+        console.warn('[rigctl] RIGCTL_PTT is on and the port is open to other computers: anything on your network can key the radio.');
+      }
+    } catch (err) {
+      console.error(`[rigctl] Could not listen on ${RIGCTL_HOST}:${RIGCTL_PORT}: ${err.message}. The rigctl port is off.`);
+      rigctlServer = null;
+    }
+  }
 }
 
 let shuttingDown = false;
@@ -876,6 +910,7 @@ async function shutdown(signal, exitCode = 0) {
   setTimeout(() => process.exit(exitCode), 8000).unref();
   try {
     await emergencyUnkey(signal);
+    if (rigctlServer) await rigctlServer.stop(); // no more commands from other programs
     if (scopeBridge) await scopeBridge.stop();
     if (cwDecoderBridge) await cwDecoderBridge.stop(); // CW3's worker must exit first (issue #81)
     if (rttyDecoderBridge) rttyDecoderBridge.stop();

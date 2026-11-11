@@ -14,7 +14,7 @@ Hamlib, no separate audio server and no extra apps.
 Written by VK3TR. Licensed AGPL-3.0-only (see
 [Licence](#licence)).
 
-**Current build: v142.** This is the version the app shows next to its title.
+**Current build: v144.** This is the version the app shows next to its title.
 It is the `CACHE_NAME` number in `src/client/sw.js`, which goes up with every
 change to the web app.
 
@@ -116,6 +116,10 @@ you put PiRO behind a reverse proxy that changes the host name, see
   [FreeDV Reporter](https://qso.freedv.org) map.
 - **A noise reducer for received audio**: "HamNoise" (a neural denoiser
   trained on HF signals). RNNoise is also supported but hidden for now.
+- **A port for other programs** (opt-in): loggers and other programs that
+  can use Hamlib's "NET rigctl" can read and set the frequency and mode,
+  and (if you allow it) key the radio, through PiRO. Control only, no
+  audio. See [Other programs: the rigctl port](#other-programs-the-rigctl-port).
 - **A voice squelch** for SSB, AM and FM: mutes the hiss between overs by
   listening for the pitch of a voice, so it needs no level setting and
   ignores carriers and static crashes. See [Voice squelch](#voice-squelch).
@@ -656,6 +660,63 @@ browser opened later sees them) and cleared after an hour with no new
 note, or two minutes after the last browser closes. Browsers only play
 sound once the page has been tapped, and a phone that is locked or has the
 browser in the background usually won't chime at all.
+
+#### Other programs: the rigctl port
+
+PiRO can answer the same commands as Hamlib's `rigctld`, so a logger or
+other program can follow and set the radio while PiRO has it. Programs
+that use Hamlib call this radio model "Hamlib NET rigctl" (model 2):
+Log4OM, N1MM, CQRLOG, WSJT-X, fldigi, JS8Call and many more. It is
+control only: no audio goes to the program.
+
+It is off until you set `RIGCTL_PORT` (Hamlib's usual port is 4532) and
+restart PiRO:
+
+```ini
+RIGCTL_PORT=4532
+# Programs on other computers too (default: the Pi only):
+#RIGCTL_HOST=0.0.0.0
+# Let the programs key the radio (default: they can't):
+#RIGCTL_PTT=true
+```
+
+In the program, choose the radio "Hamlib NET rigctl" and the network
+server `127.0.0.1:4532` (or the Pi's address). In WSJT-X: Settings,
+Radio, Rig "Hamlib NET rigctl", Network Server, PTT method CAT, Mode
+Data/Pkt, Split Operation None.
+
+What it does:
+
+- **Frequency and mode**, read and set. PKTUSB and PKTLSB are USB and LSB
+  with DATA mode on. Setting the mode PiRO already has changes nothing, so
+  a program that sets it often doesn't reset the filter.
+- **Passband**: the filter in use, shown as the IC-7300's factory width for
+  it (FIL1, FIL2, FIL3). If you changed the filter widths on the radio, the
+  number shown is the factory one. A width asked for picks the nearest
+  filter.
+- **Levels**: power (read and set), S-meter, SWR and ALC, read as the
+  browser shows them.
+- **PTT**, only with `RIGCTL_PTT=true`. Unkeying always works. PTT from a
+  program is under the same 10-minute limit as the browser's, and released
+  if the program disconnects. "Data PTT" (Hamlib's `T 3`) is refused unless
+  the radio is in DATA mode, so it can't put the microphone on the air.
+- Changes from a program go through the same checks as the browser's:
+  while the radio is transmitting they are refused, and every browser
+  sees them.
+
+What it doesn't do: audio, VFO B and split, CW sending, and the other
+Hamlib commands (they answer "not available", `RPRT -11`). Up to four
+programs can be connected at once.
+
+**Audio for programs on the Pi.** PiRO keeps the radio's sound card open,
+so a program on the Pi that needs it (WSJT-X, fldigi) can't have it at the
+same time. To run one of those, leave `AUDIO_RX_DEVICE` unset: PiRO then
+controls the radio without audio.
+
+**Safety.** The port has no password, like PiRO itself. Keep the default
+(the Pi only), or open it only on a network you trust. With `RIGCTL_PTT`
+on and the port open to other computers, anything on that network can key
+the radio.
 
 #### Voice: SSB, AM and FM
 
@@ -1872,6 +1933,9 @@ All settings are environment variables. For the systemd service they go in
 | `WSPR_SKIP_BANDS` | none | Bands left out of the unattended band cycle, separated by commas: for example `160m,6m` (or `160,6`). The bands are 160m 80m 40m 30m 20m 17m 15m 12m 10m 6m. If the radio is on a skipped band, the cycle starts on the next one. |
 | `TLS_CERT_PATH`, `TLS_KEY_PATH` | none | Set both to serve HTTPS and WSS. Needed for the microphone from other devices. |
 | `ALLOWED_ORIGINS` | none | Extra web origins allowed to open the WebSocket, separated by commas, such as `https://radio.example.net`. Normally not needed: PiRO's own page is always allowed. Set it only behind a reverse proxy that changes the `Host` header. `*` allows any origin (not recommended). |
+| `RIGCTL_PORT` | none | Turns on the port for other programs, on this TCP port (Hamlib's usual one is `4532`). See [Other programs: the rigctl port](#other-programs-the-rigctl-port). |
+| `RIGCTL_HOST` | `127.0.0.1` | Who can connect to it: `127.0.0.1` is programs on the Pi only; `0.0.0.0` is other computers too. |
+| `RIGCTL_PTT` | off | `true` lets those programs key the radio. Without it they can't; unkeying always works. |
 | `CW_KEY_LINE` | none | USB only; ignored with `CIV_CONNECTION=lan`. `dtr` or `rts`: the CW paddle keys the radio with that line of the USB serial port. Set the radio's USB Keying (CW) to the same line. Unset or `off`: the paddle keys with CI-V PTT. See [CW](#cw). |
 | `CW_PADDLE_DELAY_MS` | `250` | How long the server holds paddle elements before sending them, so they go out with even timing (50 to 1000). Lower at home, higher on a poor link. |
 | `SOURCE_CODE_URL` | PiRO's repository | Where the page's title links: the source of the PiRO you run. Leave it unset for an unchanged copy; if you have changed PiRO, point it at your own source (see [Licence](#licence)). |
@@ -1911,7 +1975,12 @@ one hard refresh (Ctrl+Shift+R, or Cmd+Shift+R on a Mac).
   `dialout`, then log out and in. Under systemd the unit adds the group, so
   check `CIV_SERIAL_PATH` instead.
 - **`npm install` fails with `node-gyp` or compiler errors.** Install
-  `build-essential` and `python3`, and check that Node is version 18 or newer.
+  `build-essential` and `python3`, and check that Node is version 20 or newer.
+- **A program can't use the rigctl port.** Check the log for "Hamlib-style
+  control port (rigctl) on ...". If the program is on another computer, set
+  `RIGCTL_HOST=0.0.0.0`. `RPRT -11` for PTT means `RIGCTL_PTT` isn't on;
+  `RPRT -9` means the change was refused because the radio is transmitting,
+  or (data PTT) the radio isn't in DATA mode.
 - **Every CI-V command times out.** The baud rate must match the radio's menu
   setting exactly, CI-V Transceive must be on, and nothing else (another CAT
   program, or a second PiRO) may hold the port. "CI-V queue full" errors
@@ -2820,13 +2889,21 @@ The test files:
   lan-startup.test.js     the server started with CIV_CONNECTION=lan, in its
                            own process: the LAN settings are checked, the
                            time-out warning reaches every browser, a lost
-                           link exits non-zero so systemd restarts it, and
-                           a VARA CQ is sent over the stand-in radio;
-                           shutdown cannot rekey after emergency PTT off
+                           link exits non-zero so systemd restarts it, a
+                           VARA CQ is sent over the stand-in radio,
+                           shutdown cannot rekey after emergency PTT off,
+                           malformed mic packets are rejected while keyed,
+                           and the rigctl port reads and tunes the radio
   emergency-unkey.test.js queued and later PTT, CW text and tuner starts
                            cancelled by emergency unkey, over USB and LAN;
                            OFF, STOP and settings cleanup still work
-                           malformed mic packets are rejected while keyed
+  rigctl-server.test.js   the Hamlib-style rigctl port with a real
+                           ControlServer: rigctld's replies byte for byte,
+                           mode and DATA mode, levels as the browser shows
+                           them, changes refused while transmitting, PTT
+                           only when allowed and released on disconnect,
+                           and Hamlib's own client (rigctl -m 2) if
+                           installed
   frame.test.js           unit tests for CI-V framing/BCD, no hardware needed;
                            numbers that would encode as garbage are refused
   scope.test.js           unit tests for scope waveform decoding/reassembly,

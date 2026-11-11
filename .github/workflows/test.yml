@@ -32,6 +32,9 @@ jobs:
         with:
           node-version: ${{ matrix.node }}
           cache: npm
+      # Hamlib's rigctl client, so rigctl-server.test.js also checks the
+      # rigctl port against Hamlib's own NET rigctl client.
+      - run: sudo apt-get update -qq && sudo apt-get install -y -qq libhamlib-utils
       # onnxruntime-node's install script downloads CUDA (GPU) binaries on
       # Linux x64. DeepCW only needs the CPU build, which is in the package.
       - run: npm ci
