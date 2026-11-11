@@ -990,6 +990,32 @@ class Civ extends EventEmitter {
     await sleep(200);
   }
 
+  // A LAN client (an Icom network program) has the radio: PiRO is paused in every browser
+  {
+    const who = 'wfview-shack (192.168.1.50)';
+    const msg = `Paused: ${who} has control of the radio over the LAN.`;
+    const errText = async (p) => ((await p.locator('#error-line').isVisible()) ? await p.locator('#error-line').textContent() : '');
+    check(await page.locator('#paused-line').isHidden(), 'no paused banner normally');
+    await server.pause(who);
+    await page.waitForFunction(() => !document.getElementById('paused-line').hidden, null, { timeout: 3000 }).catch(() => {});
+    const banner = await page.locator('#paused-line').textContent();
+    check(banner === `${msg} PiRO is paused until it disconnects.`, `paused: the banner says who has the radio ("${banner}")`);
+    await pageB.waitForFunction(() => !document.getElementById('paused-line').hidden, null, { timeout: 3000 }).catch(() => {});
+    check(await pageB.locator('#paused-line').isVisible(), 'in the second browser too');
+    const box = await page.locator('#paused-line').boundingBox();
+    const header = await page.locator('.panel__header').boundingBox();
+    check(box && header && box.y >= header.y + header.height - 1 && box.y < header.y + header.height + 40, 'the banner sits just below the header');
+    civ.log.length = 0;
+    await page.locator('#modes .chip', { hasText: /^CW/ }).click();
+    check((await errText(page)) === msg, `a mode chip shows the paused message ("${await errText(page)}")`);
+    await page.locator('#bands .chip', { hasText: /^20m$/ }).click();
+    check(!civ.log.some((e) => ['setMode', 'setFrequency', 'setTxPower', 'setDataMode', 'setPtt'].includes(e[0])), 'nothing reaches the radio: ' + JSON.stringify(civ.log));
+    await server.resume();
+    await page.waitForFunction(() => document.getElementById('paused-line').hidden, null, { timeout: 3000 }).catch(() => {});
+    await pageB.waitForFunction(() => document.getElementById('paused-line').hidden, null, { timeout: 3000 }).catch(() => {});
+    check((await page.locator('#paused-line').isHidden()) && (await pageB.locator('#paused-line').isHidden()), 'when the client leaves, the banner goes in both browsers');
+  }
+
   // Speech to text (copy aid), in LSB
   {
     await page.waitForFunction(() => !document.querySelector('.stt-toggle').hidden, null, { timeout: 3000 }).catch(() => {});

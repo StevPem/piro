@@ -35,6 +35,10 @@
       </span>
     </header>
 
+    <!-- Shown while a LAN client (an Icom network program) has the radio
+         and PiRO is paused; see app.js's 'lan-control' handler. -->
+    <p class="paused-line" id="paused-line" role="status" hidden></p>
+
     <div class="panel__body">
       <section class="freq" aria-label="Frequency">
         <div class="freq__row">

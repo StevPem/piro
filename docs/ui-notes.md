@@ -5589,3 +5589,61 @@ also in v142.
 - Service-worker cache v144. There is no v143: the CW stop notes first
   claimed it, but that change shipped in v142, so v143 was skipped to keep
   the numbers unambiguous.
+
+### Icom LAN server: programs using Icom's network protocol (v145)
+- **New.** With `ICOM_SERVER_PORT`, `ICOM_SERVER_USERNAME` and
+  `ICOM_SERVER_PASSWORD` set, PiRO answers Icom's network protocol on
+  three UDP ports (control, CI-V, audio), so programs written for it
+  (wfview, RS-BA1 and others) connect as to a networked Icom radio. Works
+  with the radio on USB or on LAN. Off by default.
+- **Exclusive.** One client at a time has the radio; a second is refused
+  (status error, connection info showing who has it). While a client has
+  it, PiRO is paused: ControlServer#pause() stops everything (every app
+  mode off, every transmission aborted with its settings put back, the CW
+  paddle session ended, WSPR's unattended receive stopped and the radio put
+  back), releases PTT, and waits for a confirmed receive and an idle CI-V
+  bus. Every request (browsers and the rigctl port) is refused with
+  "Paused: <client> has control of the radio over the LAN."; microphone
+  audio is ignored. The browsers get `lan-control` and show a banner below
+  the header. resume() reads the radio's frequency, mode and DATA mode and
+  tells the browsers.
+- **Pass-through.** CivDriver#beginPassthrough() refuses PiRO's own
+  requests and hands every frame from the radio to the client; the client's
+  frames go straight to the radio. The USB echo of the client's own frames
+  is dropped (a networked radio doesn't echo). The radio's frequency and
+  mode, pushed or as answers to the client's reads, and its scope data
+  still reach PiRO, so the paused browsers follow the radio.
+- **Audio.** Received audio goes to the client in its codec and rate:
+  Icom's PCM 16-bit, PCM 8-bit and uLaw, mono or stereo, 8-48 kHz
+  (src/server/icom-lan-audio.js; streaming decimation and interpolation,
+  linear for non-whole ratios). Transmit audio is decoded and written to
+  the radio. wfview's Opus and ADPCM are refused at the stream request.
+- **Safety.** The client's transmissions are timed: PTT (1C 00 01), CW
+  text (17, counting for 90 s after the last) or the radio reporting it is
+  transmitting. After 10 minutes PiRO sends PTT off and CW stop, and tells
+  the browsers (`ptt-timeout`, `lan: true`). When the client leaves (says
+  goodbye, logs out, or is silent for 15 s) PiRO sends PTT off and CW
+  stop, ends pass-through, releases PTT through its own path (confirmed)
+  and resumes. Five wrong passwords lock an address out for a minute.
+- **Protocol.** Packet layouts and the session order follow wfview's
+  network server (GPLv3, credited in docs/icom-lan-sources.md); the new
+  file carries the GPL notice. Credentials use the existing passcode table
+  in src/icom-lan/protocol.js.
+- Tests: icom-lan-server.test.js (new, 10 tests) with PiRO's own LAN client
+  (src/icom-lan/session.js, as used with a real MK2) and a stand-in IC-7300
+  (test/fixtures/fake-civ-radio.js, with USB echo) on a real CivDriver:
+  login and a wrong password, PiRO paused (FT8 turned off, a browser's PTT
+  released first, requests refused), CI-V both ways without the echo,
+  scope frames, PiRO following the frequency, audio both ways, a second
+  client refused, unkeying when the client leaves or goes silent, the
+  limit (shortened) for PTT and CW, the codecs, and PiRO's own MK2 driver
+  working through the server. lan-startup.test.js: the whole server
+  (itself a LAN client of the stand-in MK2) with `ICOM_SERVER_PORT` set;
+  a LAN client takes the radio, the browser is told and refused, the
+  client's CI-V reaches the MK2 through PiRO and back, and PiRO resumes
+  when it leaves. manual-tty-ui.js: the paused banner in both
+  browsers, below the header; a mode chip and a band refused with the
+  paused message and nothing sent to the radio; the banner gone on resume.
+- Not tried with wfview, RS-BA1 or other programs, or with a real radio.
+  Not tested on air.
+- Service-worker cache v145.

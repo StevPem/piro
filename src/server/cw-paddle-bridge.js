@@ -269,6 +269,11 @@ class CwPaddleBridge {
   }
 
   /** Ends the session: key up at once, drop what's pending, put break-in back. */
+  /** Ends any keying session now (a LAN client took the radio, say). */
+  cancel(why = 'stopped', message) {
+    if (this._s) this._end(why, message);
+  }
+
   _end(why, message) {
     const s = this._s;
     if (!s) return;

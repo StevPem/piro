@@ -106,3 +106,9 @@ The native protocol/audio path was exercised previously on an IC-7300MK2;
 that earlier full-featured fork is not a hardware certification of this smaller
 integration or of network-failure RF stop timing. Source references and license
 information are in [protocol sources](icom-lan-sources.md).
+
+## PiRO as a LAN server
+
+The other direction, PiRO answering this protocol so programs such as
+wfview or RS-BA1 can use a radio PiRO has (on USB or LAN), is described in
+the README under "Other programs: the Icom LAN server".

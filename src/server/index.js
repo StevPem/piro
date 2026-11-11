@@ -10,6 +10,7 @@ const { AudioBridge } = require('./audio-bridge');
 const { ScopeBridge } = require('./scope-bridge');
 const { CwDecoderBridge } = require('./cw-decoder-bridge');
 const { RigctlServer } = require('./rigctl-server');
+const { IcomLanServer } = require('./icom-lan-server');
 const { RttyDecoderBridge } = require('./rtty-decoder-bridge');
 const { JttyDecoderBridge } = require('./jtty-decoder-bridge');
 const { OliviaDecoderBridge } = require('./olivia-decoder-bridge');
@@ -73,6 +74,20 @@ const RIGCTL_PORT = (() => {
   return null;
 })();
 const RIGCTL_HOST = (process.env.RIGCTL_HOST || '127.0.0.1').trim();
+// Icom LAN server (icom-lan-server.js): programs written for Icom's network
+// protocol (wfview, RS-BA1 and others) can use the radio. Off unless
+// ICOM_SERVER_PORT is set (50001 is Icom's usual control port; CI-V and
+// audio use the next two). It needs ICOM_SERVER_USERNAME and
+// ICOM_SERVER_PASSWORD. While a client has the radio, PiRO is paused.
+const ICOM_SERVER_PORT = (() => {
+  const raw = process.env.ICOM_SERVER_PORT;
+  if (raw === undefined || raw.trim() === '') return null;
+  const v = Number(raw);
+  if (Number.isInteger(v) && v >= 1 && v <= 65533) return v;
+  console.warn(`ICOM_SERVER_PORT="${raw}" is not a port number (1 to 65533); the Icom LAN server is off.`);
+  return null;
+})();
+const ICOM_SERVER_HOST = (process.env.ICOM_SERVER_HOST || '0.0.0.0').trim();
 const RIGCTL_PTT = /^(1|true|yes|on)$/i.test((process.env.RIGCTL_PTT || '').trim());
 // Must match the radio's own "CI-V USB Baud Rate" menu setting exactly —
 // defaults to 19200 (CivDriver's own default) if unset. Spectrum scope
@@ -343,6 +358,7 @@ let bandConditions;
 let radeBridge;
 let freeDvReporterBridge;
 let rigctlServer;
+let icomLanServer;
 
 /**
  * Best-effort: forces the radio's own "AF output level to ACC/USB"
@@ -875,6 +891,30 @@ async function main() {
       rigctlServer = null;
     }
   }
+
+  if (ICOM_SERVER_PORT) {
+    try {
+      icomLanServer = new IcomLanServer({
+        civ,
+        controlServer,
+        audioBridge: audioBridge || null,
+        port: ICOM_SERVER_PORT,
+        host: ICOM_SERVER_HOST,
+        username: process.env.ICOM_SERVER_USERNAME,
+        password: process.env.ICOM_SERVER_PASSWORD,
+        radioName: (process.env.ICOM_SERVER_RADIO_NAME || '').trim() || (lan ? 'IC-7300MK2' : RADIO_MODEL || 'IC-7300'),
+      });
+      const ports = await icomLanServer.start();
+      console.log(
+        `Icom LAN server on ${ICOM_SERVER_HOST}: control ${ports.control}, CI-V ${ports.civ}, audio ${ports.audio}` +
+          (audioBridge ? '.' : ' (no audio: AUDIO_RX_DEVICE is not set).') +
+          ' While a client has the radio, PiRO is paused.'
+      );
+    } catch (err) {
+      console.error(`[icom-lan-server] Not started: ${err.message}. Check ICOM_SERVER_USERNAME and ICOM_SERVER_PASSWORD (1 to 16 printable characters) and that the ports are free.`);
+      icomLanServer = null;
+    }
+  }
 }
 
 let shuttingDown = false;
@@ -911,6 +951,7 @@ async function shutdown(signal, exitCode = 0) {
   try {
     await emergencyUnkey(signal);
     if (rigctlServer) await rigctlServer.stop(); // no more commands from other programs
+    if (icomLanServer) await icomLanServer.stop(); // a LAN client gives back the radio
     if (scopeBridge) await scopeBridge.stop();
     if (cwDecoderBridge) await cwDecoderBridge.stop(); // CW3's worker must exit first (issue #81)
     if (rttyDecoderBridge) rttyDecoderBridge.stop();

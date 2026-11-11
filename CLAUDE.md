@@ -102,5 +102,9 @@ operators, so frequency tables follow the WIA band plans.
   setting or the app mode ("Can't change that while transmitting."; see
   RADIO_SETTING_REQUESTS in ws-server.js). A new setting request goes in
   that list.
+- While a program on the Icom LAN server has the radio, PiRO is paused
+  (ControlServer#pause): every request is refused, its features are off,
+  and CivDriver is in pass-through. A feature that changes the radio on its
+  own (like WSPR's unattended receive) must not start while paused.
 - Third-party code keeps its licence notice (`third_party/`, `models/`).
   Parts are AGPL-3.0, so `SOURCE_CODE_URL` matters.

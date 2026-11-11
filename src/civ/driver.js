@@ -24,6 +24,14 @@ const {
 
 const BROADCAST_ADDR = 0x00;
 
+// Refusal for PiRO's own CI-V requests while a LAN client has the radio
+// (see beginPassthrough()).
+const PASSTHROUGH_REFUSAL = 'A LAN client has control of the radio.';
+// A frame the radio sends back within this long, byte for byte the same as
+// one written for the LAN client, is the USB echo of it, not the radio's
+// answer: a radio on the network doesn't echo, so the client isn't sent it.
+const ECHO_WINDOW_MS = 1000;
+
 /**
  * Driver for talking to an Icom transceiver over CI-V via a USB serial
  * connection. Handles framing, echo suppression, and a simple
@@ -95,6 +103,9 @@ class CivDriver extends EventEmitter {
     // forcePttOff is terminal: shutdown cleanup may keep the event loop
     // running long enough for old or newly prepared work to reach the bus.
     this._emergencyStopped = false;
+    // Pass-through for a LAN client (icom-lan-server.js): see beginPassthrough().
+    this._passthrough = false;
+    this._echoes = []; // [{raw, at}] frames written for the LAN client, recently
     // Set after a request times out: until it passes, nothing is sent and
     // any OK/NG that arrives is a late reply to the timed-out request.
     this._guardTimer = null;
@@ -190,7 +201,85 @@ class CivDriver extends EventEmitter {
       this.emit('error', err);
       return;
     }
-    for (const frame of frames) this._handleFrame(frame);
+    for (const frame of frames) {
+      if (this._passthrough) this._passthroughFrame(frame);
+      else this._handleFrame(frame);
+    }
+  }
+
+  // ---- pass-through for a LAN client --------------------------------
+
+  /**
+   * Hands the radio to a LAN client (icom-lan-server.js). From now on PiRO's
+   * own requests are refused (PASSTHROUGH_REFUSAL), requests still waiting
+   * are refused, and every frame from the radio is emitted as
+   * 'passthrough-frame' for the client. Resolves once the request already
+   * on the bus has finished. Frequency and mode (pushed by the radio, or its
+   * answers to the client's reads) and scope data still reach PiRO's own
+   * listeners, so the paused browsers stay in step. forcePttOff() still
+   * works.
+   */
+  async beginPassthrough({ timeoutMs = 3000 } = {}) {
+    this._passthrough = true;
+    this._echoes = [];
+    for (const job of this._queue.splice(0)) job.reject(new Error(PASSTHROUGH_REFUSAL));
+    const end = Date.now() + timeoutMs;
+    while ((this._current || this._guardTimer) && Date.now() < end) await new Promise((r) => setTimeout(r, 10));
+    if (this._current || this._guardTimer) throw new Error('The radio did not finish the last request');
+  }
+
+  /** Ends pass-through: PiRO's requests work again. */
+  endPassthrough() {
+    if (!this._passthrough) return;
+    this._passthrough = false;
+    this._echoes = [];
+    this._dequeueNext();
+  }
+
+  get passthrough() {
+    return this._passthrough;
+  }
+
+  /** Whether a request is on the bus or waiting. */
+  get busy() {
+    return !!(this._current || this._guardTimer || this._queue.length);
+  }
+
+  /**
+   * Writes CI-V bytes from the LAN client straight to the radio. Only
+   * during pass-through. `bytes` may hold several frames.
+   */
+  writePassthrough(bytes) {
+    if (!this._passthrough) throw new Error('Not in pass-through');
+    if (!this.port || !this.port.isOpen) throw new Error('The radio port is not open');
+    const now = Date.now();
+    this._echoes = this._echoes.filter((e) => now - e.at < ECHO_WINDOW_MS);
+    for (const frame of new FrameParser().push(bytes)) this._echoes.push({ raw: frame.raw, at: now });
+    while (this._echoes.length > 32) this._echoes.shift();
+    this.port.write(Buffer.from(bytes));
+  }
+
+  _passthroughFrame(frame) {
+    const now = Date.now();
+    const echo = this._echoes.findIndex((e) => now - e.at < ECHO_WINDOW_MS && e.raw.equals(frame.raw));
+    if (echo !== -1) {
+      this._echoes.splice(echo, 1);
+      return;
+    }
+    this.emit('passthrough-frame', frame);
+    // Keep PiRO's own state in step: the radio's frequency and mode, as it
+    // pushes them or answers the client's reads (03, 04), and the scope.
+    try {
+      if ((frame.cmd === CMD.TRANSCEIVE_FREQ || frame.cmd === CMD.SEND_FREQ) && frame.payload.length >= 5) {
+        this.emit('frequency', bcdToFreq(frame.payload));
+      } else if ((frame.cmd === CMD.TRANSCEIVE_MODE || frame.cmd === CMD.SEND_MODE) && frame.payload.length >= 1) {
+        this.emit('mode', { mode: MODE_NAMES[frame.payload[0]] ?? frame.payload[0], filter: frame.payload.length > 1 ? frame.payload[1] : null });
+      } else if (frame.cmd === CMD.SCOPE && frame.subCmd === SCOPE_SUBCMD.WAVEFORM_DATA) {
+        this._scope.push(frame.data);
+      }
+    } catch {
+      // a reading PiRO can't decode is still the client's
+    }
   }
 
   _handleFrame(frame) {
@@ -282,6 +371,7 @@ class CivDriver extends EventEmitter {
    * @returns {Promise<object>} the parsed reply frame
    */
   _send(cmd, subCmd, data, { urgent = false } = {}) {
+    if (this._passthrough) return Promise.reject(new Error(PASSTHROUGH_REFUSAL));
     const rfStart = (cmd === CMD.PTT && ((subCmd === SUBCMD.PTT && data?.[0] === 1)
       || (subCmd === SUBCMD.TUNER && data?.[0] === 2)))
       || (cmd === CMD.SEND_CW && data?.[0] !== 0xff);
@@ -331,7 +421,7 @@ class CivDriver extends EventEmitter {
   }
 
   _dequeueNext() {
-    if (this._current || this._guardTimer || this._queue.length === 0) return;
+    if (this._current || this._guardTimer || this._passthrough || this._queue.length === 0) return;
     const job = this._queue.shift();
     this._current = job;
     job.timer = setTimeout(() => {
@@ -1170,4 +1260,4 @@ class CivDriver extends EventEmitter {
   }
 }
 
-module.exports = { CivDriver };
+module.exports = { CivDriver, PASSTHROUGH_REFUSAL };

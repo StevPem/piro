@@ -1043,6 +1043,7 @@ link.addEventListener('connected', (event) => {
   setClientCount(data.clients);
 
   radioTransmitting = !!data.transmitting;
+  setLanControl(data.lanControl);
   if (data.screenTitle) {
     document.title = data.screenTitle;
     if (appTitleLinkEl) appTitleLinkEl.textContent = data.screenTitle;
@@ -6561,20 +6562,37 @@ function isTransmitting() {
   return radioTransmitting || pttActive; // pttActive: this browser's own PTT, before the server says so
 }
 
+// --- Paused: a LAN client has the radio ---
+// While a program using Icom's network protocol has the radio, the server
+// refuses every request (ControlServer#pause). The banner says who, and the
+// controls are stopped here with the same message.
+const pausedLine = document.getElementById('paused-line');
+let lanControl = { active: false, client: null };
+function pausedMessage() {
+  return `Paused: ${lanControl.client || 'a LAN client'} has control of the radio over the LAN.`;
+}
+function setLanControl(value) {
+  lanControl = { active: !!value?.active, client: value?.client || null };
+  pausedLine.hidden = !lanControl.active;
+  pausedLine.textContent = lanControl.active ? `${pausedMessage()} PiRO is paused until it disconnects.` : '';
+}
+
 /** Shows the message and returns true if a setting may not be changed now; stops `event` if given. */
 function refuseWhileTransmitting(event) {
-  if (!isTransmitting()) return false;
+  const paused = lanControl.active;
+  if (!paused && !isTransmitting()) return false;
   if (event) {
     event.preventDefault();
     event.stopImmediatePropagation();
   }
-  showError(TRANSMITTING_MESSAGE);
+  showError(paused ? pausedMessage() : TRANSMITTING_MESSAGE);
   return true;
 }
 
 link.addEventListener('transmitting', (event) => {
   radioTransmitting = !!event.detail.active;
 });
+link.addEventListener('lan-control', (event) => setLanControl(event.detail));
 
 // Buttons: a capture-phase listener on their container sees the click first.
 for (const el of [

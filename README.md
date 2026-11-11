@@ -14,7 +14,7 @@ Hamlib, no separate audio server and no extra apps.
 Written by VK3TR. Licensed AGPL-3.0-only (see
 [Licence](#licence)).
 
-**Current build: v144.** This is the version the app shows next to its title.
+**Current build: v145.** This is the version the app shows next to its title.
 It is the `CACHE_NAME` number in `src/client/sw.js`, which goes up with every
 change to the web app.
 
@@ -120,6 +120,10 @@ you put PiRO behind a reverse proxy that changes the host name, see
   can use Hamlib's "NET rigctl" can read and set the frequency and mode,
   and (if you allow it) key the radio, through PiRO. Control only, no
   audio. See [Other programs: the rigctl port](#other-programs-the-rigctl-port).
+- **An Icom LAN server** (opt-in): programs written for Icom's network
+  protocol, such as wfview and Icom's RS-BA1, can connect to PiRO as if to a
+  networked Icom radio, with CI-V, audio and the scope. While one has the
+  radio, PiRO pauses. See [Other programs: the Icom LAN server](#other-programs-the-icom-lan-server).
 - **A voice squelch** for SSB, AM and FM: mutes the hiss between overs by
   listening for the pitch of a voice, so it needs no level setting and
   ignores carriers and static crashes. See [Voice squelch](#voice-squelch).
@@ -717,6 +721,68 @@ controls the radio without audio.
 (the Pi only), or open it only on a network you trust. With `RIGCTL_PTT`
 on and the port open to other computers, anything on that network can key
 the radio.
+
+#### Other programs: the Icom LAN server
+
+PiRO can answer Icom's own network protocol, the one networked Icom radios
+(the IC-7300MK2, IC-705, IC-9700 and others) and Icom's RS-BA1 server use.
+A program written for it then connects to PiRO as if to a networked Icom
+radio, whether the radio is on USB or on the LAN: wfview, Icom's RS-BA1
+Remote Control, and others. Not every program has been tried; see below.
+
+It is off until you set a port, a username and a password, and restart
+PiRO:
+
+```ini
+ICOM_SERVER_PORT=50001
+ICOM_SERVER_USERNAME=shack
+ICOM_SERVER_PASSWORD=change-me-1
+# The name programs show (default: the radio model):
+#ICOM_SERVER_RADIO_NAME=IC-7300
+```
+
+It uses three UDP ports: the one you set (control), and the next two
+(CI-V and audio). In the program, give the Pi's address, port 50001, and
+the username and password.
+
+**While a program has the radio, PiRO is paused.** PiRO stops everything it
+is doing on the radio first: every mode such as FT8 or WSPR is turned off,
+any transmission is stopped and its settings put back, and PTT is
+released. Then the program has the radio to itself. Every browser shows a
+banner saying who has it, and refuses every control with "Paused: ... has
+control of the radio over the LAN." The rigctl port is refused too. The
+browsers still show the frequency, mode and scope as they change. When the
+program disconnects, PiRO takes the radio back and carries on. One program
+at a time: a second is refused while the first has the radio.
+
+What the program gets:
+
+- **CI-V**: its commands go straight to the radio, and everything the radio
+  sends goes straight back, including scope data. The radio's own USB echo
+  is removed, as a networked radio doesn't echo.
+- **Audio** (needs `AUDIO_RX_DEVICE`, or a radio on the LAN): received
+  audio in the format and rate the program asks for, and its transmit
+  audio to the radio. The formats are Icom's: 16-bit or 8-bit PCM or
+  uLaw, mono or stereo, at 8 to 48 kHz. wfview's own Opus and ADPCM
+  formats aren't offered; choose PCM or uLaw in wfview.
+
+PiRO keeps two safety rules over the program:
+
+- A transmission from it stops after 10 minutes, as for the browser: PTT,
+  CW text, or the radio saying it is transmitting. PiRO sends PTT off and
+  CW stop, and tells the browsers. Not tested on air.
+- If the program disconnects, or stops answering for 15 seconds (a lost
+  network, say), PiRO sends PTT off and CW stop, then takes the radio back
+  with a confirmed release.
+
+**Safety.** The protocol hides the password with a fixed character swap,
+not encryption, and nothing it sends is encrypted. Use it only on your
+home network or over a VPN, like PiRO itself. After five wrong passwords
+an address is ignored for a minute.
+
+**Tested so far** with PiRO's own IC-7300MK2 client (`src/icom-lan/`)
+against a stand-in radio. Not yet tried with wfview, RS-BA1 or other
+programs, with a real radio, or on air.
 
 #### Voice: SSB, AM and FM
 
@@ -1936,6 +2002,10 @@ All settings are environment variables. For the systemd service they go in
 | `RIGCTL_PORT` | none | Turns on the port for other programs, on this TCP port (Hamlib's usual one is `4532`). See [Other programs: the rigctl port](#other-programs-the-rigctl-port). |
 | `RIGCTL_HOST` | `127.0.0.1` | Who can connect to it: `127.0.0.1` is programs on the Pi only; `0.0.0.0` is other computers too. |
 | `RIGCTL_PTT` | off | `true` lets those programs key the radio. Without it they can't; unkeying always works. |
+| `ICOM_SERVER_PORT` | none | Turns on the Icom LAN server: its control port (Icom's usual one is `50001`); CI-V and audio use the next two. See [Other programs: the Icom LAN server](#other-programs-the-icom-lan-server). |
+| `ICOM_SERVER_USERNAME`, `ICOM_SERVER_PASSWORD` | none | The login programs must give. Both are needed: 1 to 16 printable characters each. |
+| `ICOM_SERVER_HOST` | `0.0.0.0` | The address it listens on: all of the Pi's addresses, or one of them. |
+| `ICOM_SERVER_RADIO_NAME` | the radio model | The radio's name as programs show it. |
 | `CW_KEY_LINE` | none | USB only; ignored with `CIV_CONNECTION=lan`. `dtr` or `rts`: the CW paddle keys the radio with that line of the USB serial port. Set the radio's USB Keying (CW) to the same line. Unset or `off`: the paddle keys with CI-V PTT. See [CW](#cw). |
 | `CW_PADDLE_DELAY_MS` | `250` | How long the server holds paddle elements before sending them, so they go out with even timing (50 to 1000). Lower at home, higher on a poor link. |
 | `SOURCE_CODE_URL` | PiRO's repository | Where the page's title links: the source of the PiRO you run. Leave it unset for an unchanged copy; if you have changed PiRO, point it at your own source (see [Licence](#licence)). |
@@ -1976,6 +2046,16 @@ one hard refresh (Ctrl+Shift+R, or Cmd+Shift+R on a Mac).
   check `CIV_SERIAL_PATH` instead.
 - **`npm install` fails with `node-gyp` or compiler errors.** Install
   `build-essential` and `python3`, and check that Node is version 20 or newer.
+- **A program can't connect to the Icom LAN server.** Check the log for
+  "Icom LAN server on ...". "wrong username or password" means just that;
+  after five, that address is ignored for a minute. "refused: ... has the
+  radio" means another program has it. "receive audio codec ... is not
+  offered" means the program asked for an audio format PiRO doesn't have
+  (in wfview, choose PCM or uLaw, not Opus). A firewall must let the three
+  UDP ports through.
+- **The page says "Paused".** A program on the Icom LAN server has the
+  radio. PiRO carries on when it disconnects, or 15 seconds after it stops
+  answering.
 - **A program can't use the rigctl port.** Check the log for "Hamlib-style
   control port (rigctl) on ...". If the program is on another computer, set
   `RIGCTL_HOST=0.0.0.0`. `RPRT -11` for PTT means `RIGCTL_PTT` isn't on;
@@ -2660,7 +2740,12 @@ it is active, requests that change a radio setting or the app mode
 (`setFrequency`, `setMode`, `setDataMode`, `setFilter`, `setTxPower`,
 `setRxGain`, `setPreamp`, `setNoiseReduction`, `setNoiseBlanker`,
 `setNotch`, `setTuner`, `setScopeSpan`, and `set…Active` when it would
-change the mode) are refused with "Can't change that while transmitting." Live binary frames (audio, scope lines, spectra) are skipped for a
+change the mode) are refused with "Can't change that while transmitting."
+`lan-control` (`{active, client}`, also `lanControl` in the `connected`
+snapshot) is broadcast when a program on the Icom LAN server takes or
+gives back the radio; while active, every request is refused with
+"Paused: <client> has control of the radio over the LAN." and microphone
+audio is ignored. Live binary frames (audio, scope lines, spectra) are skipped for a
 browser with more than `LIVE_BACKLOG_BYTES` waiting (128 kB on raw audio,
 32 kB on compressed) until it is under a quarter of that; picture frames
 (SSTV, fax, Feld-Hell) and JSON are always sent. See `src/server/protocol.js` for the full JSON message
@@ -2893,7 +2978,9 @@ The test files:
                            VARA CQ is sent over the stand-in radio,
                            shutdown cannot rekey after emergency PTT off,
                            malformed mic packets are rejected while keyed,
-                           and the rigctl port reads and tunes the radio
+                           the rigctl port reads and tunes the radio, and
+                           a client of the Icom LAN server reaches the
+                           radio through PiRO while PiRO is paused
   emergency-unkey.test.js queued and later PTT, CW text and tuner starts
                            cancelled by emergency unkey, over USB and LAN;
                            OFF, STOP and settings cleanup still work
@@ -2904,6 +2991,14 @@ The test files:
                            only when allowed and released on disconnect,
                            and Hamlib's own client (rigctl -m 2) if
                            installed
+  icom-lan-server.test.js the Icom LAN server with PiRO's own LAN client
+                           and a stand-in IC-7300 on a real CivDriver:
+                           login, PiRO paused and refusing everything, CI-V
+                           both ways without the USB echo, scope data,
+                           audio both ways, one client at a time, unkeying
+                           when the client leaves or goes quiet, the
+                           10-minute limit, the codecs, and PiRO's own MK2
+                           driver through it
   frame.test.js           unit tests for CI-V framing/BCD, no hardware needed;
                            numbers that would encode as garbage are refused
   scope.test.js           unit tests for scope waveform decoding/reassembly,

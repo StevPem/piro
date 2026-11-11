@@ -34,6 +34,11 @@ const TRANSMITTING_REFUSAL = "Can't change that while transmitting.";
 // controls (PTT, Stop/abort, sending) and reads are not in this list.
 // PTT-on refused while a feature that keys without PTT (CW) hasn't confirmed
 // the radio is receiving again (see holdReceiveConfirmation).
+/** The refusal while a LAN client has the radio (see ControlServer#pause). */
+function pausedMessage(client) {
+  return `Paused: ${client} has control of the radio over the LAN.`;
+}
+
 const RECEIVE_NOT_CONFIRMED = 'The radio may still be sending CW; receive has not been confirmed.';
 const RADIO_SETTING_REQUESTS = new Set([
   REQUEST.SET_FREQUENCY,
@@ -476,6 +481,7 @@ class ControlServer extends EventEmitter {
       notes: [],
       cwKeying: false, // the CW paddle is keying (EVENT.CW_KEYING); see cw-paddle-bridge.js
       transmitting: false, // the radio is, or may be, transmitting (EVENT.TRANSMITTING); see ControlServer#transmitting
+      lanControl: { active: false, client: null }, // a LAN client has the radio and PiRO is paused (EVENT.LAN_CONTROL); see pause()
     };
     this.cwPaddle = null; // set by CwPaddleBridge#start()
 
@@ -513,6 +519,7 @@ class ControlServer extends EventEmitter {
 
       ws.on('message', (raw, isBinary) => {
         if (isBinary) {
+          if (this._paused) return; // no microphone audio while a LAN client has the radio
           this.emit('binary-message', ws, raw);
           return;
         }
@@ -796,6 +803,12 @@ class ControlServer extends EventEmitter {
     const { id, type } = msg;
     if (!type) {
       ws.send(makeError(id ?? null, 'Missing "type"'));
+      return;
+    }
+
+    // Nothing at all while a LAN client has the radio (see pause()).
+    if (this._paused) {
+      ws.send(makeError(id ?? null, pausedMessage(this._paused.client)));
       return;
     }
 
@@ -1754,6 +1767,111 @@ class ControlServer extends EventEmitter {
     return false;
   }
 
+  /** Whether PiRO is paused because a LAN client has the radio (see pause()). */
+  get paused() {
+    return !!this._paused;
+  }
+
+  /**
+   * Hands the radio to a LAN client (icom-lan-server.js). PiRO stops
+   * everything it is doing on the radio, as when the last browser leaves:
+   * every app mode off, every transmission stopped (and its settings put
+   * back), PTT released. Then it waits for the radio to confirm it is
+   * receiving and for the last CI-V request to finish. From the start,
+   * every request (browsers and other programs) is refused with
+   * "Paused: <client> has control of the radio over the LAN." and
+   * microphone audio is ignored. Browsers are told (EVENT.LAN_CONTROL).
+   * Listeners to the internal 'lan-control' event ({active, client,
+   * waitFor}) can pass a promise to waitFor() to be waited for.
+   * Rejects (and resumes) if the radio may still be transmitting after
+   * `timeoutMs`.
+   */
+  async pause(client, { timeoutMs = 10000 } = {}) {
+    if (this._paused) throw new Error(pausedMessage(this._paused.client));
+    this._paused = { client };
+    this.state.lanControl = { active: true, client };
+    this._broadcast(makeEvent(EVENT.LAN_CONTROL, this.state.lanControl));
+    console.log(`[lan] ${client} has the radio; PiRO is paused.`);
+    const waits = [];
+    this.emit('lan-control', { active: true, client, waitFor: (p) => waits.push(Promise.resolve(p).catch(() => {})) });
+    this._stopEverything();
+    await Promise.all(waits);
+    try {
+      if (this.state.ptt || !this._rxConfirmed) await this.releasePtt();
+      const end = Date.now() + timeoutMs;
+      const settled = () => !this.transmitting && !this.civ.busy;
+      // Settings being put back, or a feature's last request, finish first.
+      while (Date.now() < end) {
+        await this._restoreChain;
+        if (settled()) {
+          await new Promise((r) => setTimeout(r, 200));
+          if (settled()) break;
+        } else await new Promise((r) => setTimeout(r, 50));
+      }
+      if (this.transmitting) throw new Error('The radio may still be transmitting.');
+    } catch (err) {
+      await this.resume();
+      throw err;
+    }
+  }
+
+  /** Ends pause(): PiRO works again, reads the radio's state and tells the browsers. */
+  async resume() {
+    if (!this._paused) return;
+    const { client } = this._paused;
+    this._paused = null;
+    this.state.lanControl = { active: false, client: null };
+    this._broadcast(makeEvent(EVENT.LAN_CONTROL, this.state.lanControl));
+    this.emit('lan-control', { active: false, client, waitFor: () => {} });
+    console.log(`[lan] ${client} gave back the radio; PiRO is running again.`);
+    // The client may have changed anything: show what the radio has now.
+    try {
+      const hz = await this.civ.getFrequency();
+      this.state.frequency = hz;
+      this._broadcast(makeEvent(EVENT.FREQUENCY, { value: hz }));
+      this.emit('frequency', hz);
+      const mode = await this.civ.getMode();
+      this.state.mode = mode;
+      this._broadcast(makeEvent(EVENT.MODE, { value: mode }));
+      if (typeof this.civ.getDataMode === 'function') {
+        const on = await this.civ.getDataMode();
+        this.state.dataMode = on;
+        this._broadcast(makeEvent(EVENT.DATA_MODE, { on }));
+      }
+      this.emit('mode-changed');
+    } catch (err) {
+      console.warn(`[lan] reading the radio after the LAN client left: ${err.message}`);
+    }
+  }
+
+  /** Every app mode off and every transmission stopped (see pause()). */
+  _stopEverything() {
+    this.emit('cw-abort');
+    this.emit('tty-abort');
+    this.emit('sstv-abort');
+    this.emit('easypal-abort');
+    this.emit('fax-stop');
+    this.cwPaddle?.cancel?.('paused', 'A LAN client took the radio.');
+    if (this.state.ft8Active) {
+      this.state.ft8Active = false;
+      this.emit('ft8-active', false);
+    }
+    if (this.state.freeDvActive) {
+      this.state.freeDvActive = false;
+      this.emit('freedv-active', false);
+    }
+    if (this.state.jttyActive) this._setJttyActive(false);
+    if (this.state.oliviaActive) this._setOliviaActive(false);
+    if (this.state.js8Active) this._setJs8Active(false);
+    if (this.state.hellActive) this._setHellActive(false);
+    if (this.state.varaActive) this._setVaraActive(false);
+    if (this.state.sstvActive) this._setSstvActive(false);
+    if (this.state.faxActive) this._setFaxActive(false);
+    if (this.state.easypalActive) this._setEasypalActive(false);
+    if (this.state.wsprActive) this._setWsprActive(false);
+    this._broadcastAppModes();
+  }
+
   /** Whether the radio's last answer was that it is unkeyed (see _rxConfirmed). */
   get receiveConfirmed() {
     return this._rxConfirmed && !this.state.ptt && this._receiveHolds.size === 0;
@@ -1851,4 +1969,4 @@ class ControlServer extends EventEmitter {
   }
 }
 
-module.exports = { ControlServer, TRANSMITTING_REFUSAL, RECEIVE_NOT_CONFIRMED, RADIO_SETTING_REQUESTS, originAllowed, parseAllowedOrigins, HEARTBEAT_MS, MAX_MESSAGE_BYTES, MAX_FREQUENCY_HZ, LIVE_BACKLOG_BYTES, LIVE_FRAME_TYPES };
+module.exports = { ControlServer, pausedMessage, TRANSMITTING_REFUSAL, RECEIVE_NOT_CONFIRMED, RADIO_SETTING_REQUESTS, originAllowed, parseAllowedOrigins, HEARTBEAT_MS, MAX_MESSAGE_BYTES, MAX_FREQUENCY_HZ, LIVE_BACKLOG_BYTES, LIVE_FRAME_TYPES };
