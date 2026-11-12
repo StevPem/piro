@@ -5644,6 +5644,25 @@ also in v142.
   when it leaves. manual-tty-ui.js: the paused banner in both
   browsers, below the header; a mode chip and a band refused with the
   paused message and nothing sent to the radio; the banner gone on resume.
-- Not tried with wfview, RS-BA1 or other programs, or with a real radio.
+- Tested by the user with wfview (November 2026, after this build was
+  merged). Not tried with RS-BA1 or other programs.
   Not tested on air.
 - Service-worker cache v145.
+
+### Architecture diagram: Icom LAN server and rigctl port (v145, docs only)
+- Page 1: IcomLanServer, icom-lan-audio and RigctlServer in the server
+  area, with "Icom network programs (wfview, RS-BA1)" and "Loggers,
+  WSJT-X, fldigi (Hamlib NET rigctl)" outside PiRO. Their network lines
+  come down the gaps between the bridge boxes. Lines from the servers to
+  ControlServer (pause() / resume(), addExternalClient()) and CivDriver
+  (pass-through). ControlServer and CivDriver list the new methods.
+- Page 2: rows for IcomLanServer and RigctlServer; ControlServer sends
+  lan-control.
+- docs/architecture.png made again from page 1, as before (draw.io's
+  viewer in headless Chromium, 0.45 scale, 128 colours). Checked by eye:
+  ControlServer's new line first pushed two older lines into AudioBridge's
+  title, so the methods share one line; the pass-through line was moved
+  clear of the "civ (mode)" label.
+- The Icom LAN server was tested by the user with wfview (November 2026);
+  the README and the v145 notes say so. Not tested on air.
+- No app change, no build change.

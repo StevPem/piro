@@ -780,9 +780,9 @@ not encryption, and nothing it sends is encrypted. Use it only on your
 home network or over a VPN, like PiRO itself. After five wrong passwords
 an address is ignored for a minute.
 
-**Tested so far** with PiRO's own IC-7300MK2 client (`src/icom-lan/`)
-against a stand-in radio. Not yet tried with wfview, RS-BA1 or other
-programs, with a real radio, or on air.
+**Tested** with wfview (November 2026), and with PiRO's own IC-7300MK2
+client (`src/icom-lan/`) against a stand-in radio. Not yet tried with
+RS-BA1 or other programs. Not tested on air.
 
 #### Voice: SSB, AM and FM
 
@@ -2309,8 +2309,8 @@ browser. There is no build step: the browser loads plain ES modules.
 
 [`docs/architecture.drawio`](docs/architecture.drawio) is a UML diagram of
 the main classes and how they connect: browser client, server, feature
-bridges, CI-V, the IC-7300MK2 LAN driver, audio, and the programs and
-services outside PiRO. Its
+bridges, CI-V, the IC-7300MK2 LAN driver, audio, the Icom LAN server and
+the rigctl port, and the programs and services outside PiRO. Its
 second page lists which events each server
 part listens to and sends. Open it in [draw.io](https://app.diagrams.net/)
 or the draw.io desktop app. [`docs/architecture.png`](docs/architecture.png)
