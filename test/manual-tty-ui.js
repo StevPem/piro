@@ -1016,6 +1016,23 @@ class Civ extends EventEmitter {
     check((await page.locator('#paused-line').isHidden()) && (await pageB.locator('#paused-line').isHidden()), 'when the client leaves, the banner goes in both browsers');
   }
 
+  // The radio stops answering CI-V: a banner in every browser until it answers again
+  {
+    check(await page.locator('#radio-line').isHidden(), 'no "not answering" banner normally');
+    civ.emit('answering', false);
+    await page.waitForFunction(() => !document.getElementById('radio-line').hidden, null, { timeout: 3000 }).catch(() => {});
+    await pageB.waitForFunction(() => !document.getElementById('radio-line').hidden, null, { timeout: 3000 }).catch(() => {});
+    const text = await page.locator('#radio-line').textContent();
+    check(/^The radio isn't answering\. Check that it is on\./.test(text) && (await pageB.locator('#radio-line').isVisible()), `the radio not answering: a banner in both browsers ("${text}")`);
+    const box = await page.locator('#radio-line').boundingBox();
+    const header = await page.locator('.panel__header').boundingBox();
+    check(box && header && box.y >= header.y + header.height - 1 && box.y < header.y + header.height + 60, 'below the header');
+    civ.emit('answering', true);
+    await page.waitForFunction(() => document.getElementById('radio-line').hidden, null, { timeout: 3000 }).catch(() => {});
+    await pageB.waitForFunction(() => document.getElementById('radio-line').hidden, null, { timeout: 3000 }).catch(() => {});
+    check((await page.locator('#radio-line').isHidden()) && (await pageB.locator('#radio-line').isHidden()), 'it answers again: the banner goes in both');
+  }
+
   // Speech to text (copy aid), in LSB
   {
     await page.waitForFunction(() => !document.querySelector('.stt-toggle').hidden, null, { timeout: 3000 }).catch(() => {});

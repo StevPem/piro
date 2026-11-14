@@ -26,6 +26,10 @@ const BROADCAST_ADDR = 0x00;
 
 // Refusal for PiRO's own CI-V requests while a LAN client has the radio
 // (see beginPassthrough()).
+// Requests in a row that must time out (with none answered for
+// silentAfterMs) before the radio counts as not answering.
+const SILENT_TIMEOUTS = 3;
+
 const PASSTHROUGH_REFUSAL = 'A LAN client has control of the radio.';
 // A frame the radio sends back within this long, byte for byte the same as
 // one written for the LAN client, is the USB echo of it, not the radio's
@@ -92,6 +96,14 @@ class CivDriver extends EventEmitter {
     this.radioAddr = opts.radioAddr ?? null;
     this.requestTimeoutMs = opts.requestTimeoutMs ?? 1000;
     this.staleReplyGuardMs = opts.staleReplyGuardMs ?? 150;
+    // The radio stops answering (switched off, or its CI-V hung): after
+    // SILENT_TIMEOUTS requests in a row time out, and none has been
+    // answered for `silentAfterMs`, 'answering' (false) is emitted; the next
+    // answer emits 'answering' (true). See ControlServer and radio-watch.js.
+    this.silentAfterMs = opts.silentAfterMs ?? 30000;
+    this.answering = true;
+    this._timeoutsInARow = 0;
+    this._lastAnsweredAt = Date.now();
     this.maxQueue = opts.maxQueue ?? 64;
     this.keyLine = opts.keyLine ?? null;
     this._transport = opts.transport ?? null;
@@ -207,6 +219,25 @@ class CivDriver extends EventEmitter {
     }
   }
 
+  // ---- is the radio answering? ---------------------------------------
+
+  _answered() {
+    this._timeoutsInARow = 0;
+    this._lastAnsweredAt = Date.now();
+    if (!this.answering) {
+      this.answering = true;
+      this.emit('answering', true);
+    }
+  }
+
+  _timedOut() {
+    this._timeoutsInARow++;
+    if (this.answering && this._timeoutsInARow >= SILENT_TIMEOUTS && Date.now() - this._lastAnsweredAt >= this.silentAfterMs) {
+      this.answering = false;
+      this.emit('answering', false);
+    }
+  }
+
   // ---- pass-through for a LAN client --------------------------------
 
   /**
@@ -303,6 +334,7 @@ class CivDriver extends EventEmitter {
       const job = this._current;
       this._current = null;
       job.resolve(frame);
+      this._answered();
       this._dequeueNext();
       return;
     }
@@ -427,6 +459,7 @@ class CivDriver extends EventEmitter {
     job.timer = setTimeout(() => {
       this._current = null;
       job.reject(new Error(`CI-V request timed out (cmd 0x${job.cmd.toString(16)})`));
+      this._timedOut();
       // The radio may still answer the request that timed out. Pause
       // before the next one so that late OK/NG is dropped (see
       // _handleFrame()) instead of answering the wrong request.

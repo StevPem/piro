@@ -1044,6 +1044,7 @@ link.addEventListener('connected', (event) => {
 
   radioTransmitting = !!data.transmitting;
   setLanControl(data.lanControl);
+  setRadioAnswering(data.radioAnswering);
   if (data.screenTitle) {
     document.title = data.screenTitle;
     if (appTitleLinkEl) appTitleLinkEl.textContent = data.screenTitle;
@@ -6593,6 +6594,19 @@ link.addEventListener('transmitting', (event) => {
   radioTransmitting = !!event.detail.active;
 });
 link.addEventListener('lan-control', (event) => setLanControl(event.detail));
+
+// --- The radio isn't answering CI-V ---
+// The server says so (CivDriver 'answering'): switched off, or its CI-V
+// hung. PiRO keeps trying; the banner goes when the radio answers again.
+const radioLine = document.getElementById('radio-line');
+const RADIO_SILENT_MESSAGE =
+  "The radio isn't answering. Check that it is on. If it is, its CI-V may have hung (RF in the USB lead can do this): switch the radio off and on. PiRO keeps trying.";
+function setRadioAnswering(answering) {
+  const silent = answering === false; // older servers don't send it: answering
+  radioLine.hidden = !silent;
+  radioLine.textContent = silent ? RADIO_SILENT_MESSAGE : '';
+}
+link.addEventListener('radio-answering', (event) => setRadioAnswering(event.detail?.answering));
 
 // Buttons: a capture-phase listener on their container sees the click first.
 for (const el of [

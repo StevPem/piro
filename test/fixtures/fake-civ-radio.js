@@ -36,6 +36,7 @@ class FakeCivRadio extends EventEmitter {
     this.cwText = [];
     this.params = new Map([['0032', [0x01]], ['0079', [0x00]], ['0080', [0x00]]]);
     this.written = []; // every frame PiRO or a client sent, as hex
+    this.silent = false; // true: answers nothing, as a radio switched off or with its CI-V hung
     this.scopeTimer = null;
     this._buf = Buffer.alloc(0);
   }
@@ -79,6 +80,7 @@ class FakeCivRadio extends EventEmitter {
 
   _frame(f) {
     this.written.push(f.toString('hex'));
+    if (this.silent) return;
     if (this.echo) this.push(f);
     const to = f[2];
     const from = f[3];

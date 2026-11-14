@@ -482,6 +482,7 @@ class ControlServer extends EventEmitter {
       cwKeying: false, // the CW paddle is keying (EVENT.CW_KEYING); see cw-paddle-bridge.js
       transmitting: false, // the radio is, or may be, transmitting (EVENT.TRANSMITTING); see ControlServer#transmitting
       lanControl: { active: false, client: null }, // a LAN client has the radio and PiRO is paused (EVENT.LAN_CONTROL); see pause()
+      radioAnswering: true, // false while the radio isn't answering CI-V (EVENT.RADIO_ANSWERING; CivDriver 'answering')
     };
     this.cwPaddle = null; // set by CwPaddleBridge#start()
 
@@ -503,6 +504,14 @@ class ControlServer extends EventEmitter {
     });
     this.civ.on('error', (err) => {
       this._broadcast(makeEvent(EVENT.RIG_ERROR, { message: err.message }));
+    });
+    // The radio stopped answering CI-V, or started again (CivDriver 'answering').
+    this.civ.on('answering', (answering) => {
+      this.state.radioAnswering = answering;
+      if (answering) console.log('[civ] The radio is answering again.');
+      else console.error('[civ] The radio is not answering CI-V. Check that it is on; if it is, its CI-V may have hung (power-cycle it).');
+      this._broadcast(makeEvent(EVENT.RADIO_ANSWERING, { answering }));
+      this.emit('radio-answering', answering);
     });
   }
 

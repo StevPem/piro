@@ -11,6 +11,7 @@ const { ScopeBridge } = require('./scope-bridge');
 const { CwDecoderBridge } = require('./cw-decoder-bridge');
 const { RigctlServer } = require('./rigctl-server');
 const { IcomLanServer } = require('./icom-lan-server');
+const { watchRadio } = require('./radio-watch');
 const { RttyDecoderBridge } = require('./rtty-decoder-bridge');
 const { JttyDecoderBridge } = require('./jtty-decoder-bridge');
 const { OliviaDecoderBridge } = require('./olivia-decoder-bridge');
@@ -88,6 +89,18 @@ const ICOM_SERVER_PORT = (() => {
   return null;
 })();
 const ICOM_SERVER_HOST = (process.env.ICOM_SERVER_HOST || '0.0.0.0').trim();
+// Optional: exit (systemd restarts PiRO, reopening the serial port) once the
+// radio hasn't answered CI-V for this many minutes. Off unless set: it
+// can't fix a radio whose CI-V hung, and a radio switched off would mean a
+// restart every N minutes. See radio-watch.js.
+const CIV_SILENT_RESTART_MINUTES = (() => {
+  const raw = process.env.CIV_SILENT_RESTART_MINUTES;
+  if (raw === undefined || raw.trim() === '' || raw.trim() === '0') return 0;
+  const v = Number(raw);
+  if (Number.isFinite(v) && v >= 1 && v <= 1440) return v;
+  console.warn(`CIV_SILENT_RESTART_MINUTES="${raw}" is not 1 to 1440; it is off.`);
+  return 0;
+})();
 const RIGCTL_PTT = /^(1|true|yes|on)$/i.test((process.env.RIGCTL_PTT || '').trim());
 // Must match the radio's own "CI-V USB Baud Rate" menu setting exactly —
 // defaults to 19200 (CivDriver's own default) if unset. Spectrum scope
@@ -890,6 +903,17 @@ async function main() {
       console.error(`[rigctl] Could not listen on ${RIGCTL_HOST}:${RIGCTL_PORT}: ${err.message}. The rigctl port is off.`);
       rigctlServer = null;
     }
+  }
+
+  if (CIV_SILENT_RESTART_MINUTES) {
+    watchRadio({
+      civ,
+      minutes: CIV_SILENT_RESTART_MINUTES,
+      giveUp: () => {
+        console.error(`[civ] The radio has not answered for ${CIV_SILENT_RESTART_MINUTES} min; exiting so systemd restarts PiRO (CIV_SILENT_RESTART_MINUTES).`);
+        shutdown('radio not answering', 1);
+      },
+    });
   }
 
   if (ICOM_SERVER_PORT) {

@@ -14,7 +14,7 @@ Hamlib, no separate audio server and no extra apps.
 Written by VK3TR. Licensed AGPL-3.0-only (see
 [Licence](#licence)).
 
-**Current build: v145.** This is the version the app shows next to its title.
+**Current build: v146.** This is the version the app shows next to its title.
 It is the `CACHE_NAME` number in `src/client/sw.js`, which goes up with every
 change to the web app.
 
@@ -1999,6 +1999,7 @@ All settings are environment variables. For the systemd service they go in
 | `WSPR_SKIP_BANDS` | none | Bands left out of the unattended band cycle, separated by commas: for example `160m,6m` (or `160,6`). The bands are 160m 80m 40m 30m 20m 17m 15m 12m 10m 6m. If the radio is on a skipped band, the cycle starts on the next one. |
 | `TLS_CERT_PATH`, `TLS_KEY_PATH` | none | Set both to serve HTTPS and WSS. Needed for the microphone from other devices. |
 | `ALLOWED_ORIGINS` | none | Extra web origins allowed to open the WebSocket, separated by commas, such as `https://radio.example.net`. Normally not needed: PiRO's own page is always allowed. Set it only behind a reverse proxy that changes the `Host` header. `*` allows any origin (not recommended). |
+| `CIV_SILENT_RESTART_MINUTES` | off | If the radio hasn't answered CI-V for this many minutes (1 to 1440), PiRO exits so systemd restarts it and reopens the serial port. Helps only if the USB serial link wedged; a radio whose CI-V hung needs switching off and on. With the radio switched off, PiRO would restart every N minutes. |
 | `RIGCTL_PORT` | none | Turns on the port for other programs, on this TCP port (Hamlib's usual one is `4532`). See [Other programs: the rigctl port](#other-programs-the-rigctl-port). |
 | `RIGCTL_HOST` | `127.0.0.1` | Who can connect to it: `127.0.0.1` is programs on the Pi only; `0.0.0.0` is other computers too. |
 | `RIGCTL_PTT` | off | `true` lets those programs key the radio. Without it they can't; unkeying always works. |
@@ -2053,6 +2054,17 @@ one hard refresh (Ctrl+Shift+R, or Cmd+Shift+R on a Mac).
   offered" means the program asked for an audio format PiRO doesn't have
   (in wfview, choose PCM or uLaw, not Opus). A firewall must let the three
   UDP ports through.
+- **The page says "The radio isn't answering".** Several CI-V requests in a
+  row timed out and none has been answered for 30 seconds. Check that the
+  radio is on. If it is, and the USB audio still works, the radio's CI-V
+  has probably hung: RF getting into the USB lead while transmitting can
+  do this, more so at high power. Switch the radio off and on; PiRO keeps
+  trying, and the banner goes when the radio answers. Clip-on ferrites on
+  the USB lead, at both ends, help stop it happening. Until the radio
+  answers, PiRO may also refuse changes after CW ("Can't change that while
+  transmitting."): it can't confirm the radio stopped sending. To have
+  PiRO restart itself after a few minutes of this (which helps only if the
+  USB serial link itself wedged), set `CIV_SILENT_RESTART_MINUTES`.
 - **The page says "Paused".** A program on the Icom LAN server has the
   radio. PiRO carries on when it disconnects, or 15 seconds after it stops
   answering.
@@ -2741,6 +2753,10 @@ it is active, requests that change a radio setting or the app mode
 `setRxGain`, `setPreamp`, `setNoiseReduction`, `setNoiseBlanker`,
 `setNotch`, `setTuner`, `setScopeSpan`, and `set…Active` when it would
 change the mode) are refused with "Can't change that while transmitting."
+`radio-answering` (`{answering}`, also `radioAnswering` in the `connected`
+snapshot) is broadcast when the radio stops answering CI-V (several
+requests in a row timed out, none answered for 30 s) and when it answers
+again; requests are still tried meanwhile.
 `lan-control` (`{active, client}`, also `lanControl` in the `connected`
 snapshot) is broadcast when a program on the Icom LAN server takes or
 gives back the radio; while active, every request is refused with
@@ -2991,6 +3007,11 @@ The test files:
                            only when allowed and released on disconnect,
                            and Hamlib's own client (rigctl -m 2) if
                            installed
+  radio-answering.test.js the radio stopping answering CI-V: said only
+                           after 3 timeouts in a row with no answer for a
+                           while, once, and cleared by the next answer;
+                           ControlServer's event and snapshot; and the
+                           optional restart (radio-watch.js)
   icom-lan-server.test.js the Icom LAN server with PiRO's own LAN client
                            and a stand-in IC-7300 on a real CivDriver:
                            login, PiRO paused and refusing everything, CI-V
