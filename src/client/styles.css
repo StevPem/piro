@@ -1147,6 +1147,17 @@ button {
 
 /* --- Misc --- */
 
+/* The radio isn't answering CI-V (app.js, 'radio-answering'). */
+.radio-line {
+  margin: 8px 0;
+  padding: 10px 12px;
+  background: color-mix(in srgb, var(--led-red) 16%, var(--panel-raised));
+  border: 1px solid var(--led-red);
+  border-radius: 4px;
+  color: var(--text);
+  font-size: 0.9rem;
+}
+
 /* PiRO paused: a LAN client has the radio (app.js, 'lan-control'). */
 .paused-line {
   margin: 8px 0;

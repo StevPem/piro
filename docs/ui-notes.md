@@ -5666,3 +5666,35 @@ also in v142.
 - The Icom LAN server was tested by the user with wfview (November 2026);
   the README and the v145 notes say so. Not tested on air.
 - No app change, no build change.
+
+### The radio not answering CI-V: a banner, and an optional restart (v146)
+- **Real problem (seen by the user, 2026-11-13).** The radio stopped
+  answering CI-V at 21:44 while the USB link and its audio kept working
+  (no kernel USB messages; arecord and aplay carried on). Every request
+  then timed out, and the page looked frozen in CW: after CW, PiRO holds
+  "may still be transmitting" until the radio confirms receive (the CW
+  stop fix, v142), which a silent radio never does. The aplay underrun at
+  the same second shows transmit audio had just started, which points to
+  RF in the USB lead hanging the radio's CI-V; not proven.
+- **Now.** CivDriver emits 'answering' (false) once 3 requests in a row
+  have timed out and none has been answered for 30 s, and (true) on the
+  next answer. Requests are still tried, so recovery is seen. ControlServer
+  keeps `radioAnswering` in the snapshot, broadcasts `radio-answering`
+  and logs it. The browsers show a red banner below the header: check the
+  radio is on; if it is, switch it off and on (RF in the USB lead can hang
+  its CI-V). The CW guard is unchanged: PiRO still won't assume the radio
+  stopped sending.
+- **Optional restart.** `CIV_SILENT_RESTART_MINUTES` (off by default):
+  after that long without an answer PiRO exits so systemd restarts it and
+  reopens the serial port (src/server/radio-watch.js). Off by default
+  because it can't help a hung radio, and a radio switched off would mean
+  a restart every N minutes.
+- Tests: radio-answering.test.js (new): not said after 3 quick timeouts,
+  said after the quiet time, said once, cleared by the next answer; an
+  answer between timeouts restarts the count; ControlServer's event and
+  snapshot; radio-watch off unless set, one timer, cancelled by an answer,
+  gives up when due, stop() cleans up. The stand-in radio
+  (test/fixtures/fake-civ-radio.js) gained a `silent` switch.
+  manual-tty-ui.js: the banner in both browsers, below the header, and
+  gone when the radio answers.
+- Service-worker cache v146.
